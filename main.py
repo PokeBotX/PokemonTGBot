@@ -1,7 +1,10 @@
-"""PokéCollect Bot - Main application."""
+"""PokéCollect Bot - FastAPI application with Telegram webhook."""
 import os
 import structlog
+from contextlib import asynccontextmanager
 from dotenv import load_dotenv
+from fastapi import FastAPI, Request, Response, status
+from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler
 
 from bot.utils.logging import setup_logging
@@ -21,7 +24,27 @@ from bot.handlers.sections.support import support_handler
 from bot.handlers.sections.info import info_handler
 from bot.handlers.sections.back import back_to_menu_handler
 
+# Setup logging
+setup_logging()
 logger = structlog.get_logger()
+
+# Load environment variables
+load_dotenv()
+
+# Configuration
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Example: https://your-domain.com
+WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/webhook")
+HOST = os.getenv("HOST", "0.0.0.0")
+PORT = int(os.getenv("PORT", "8000"))
+
+if not TELEGRAM_BOT_TOKEN:
+    raise ValueError("TELEGRAM_BOT_TOKEN not set in .env")
+if not WEBHOOK_URL:
+    raise ValueError("WEBHOOK_URL not set in .env")
+
+# Global bot application
+bot_app: Application = None
 
 
 def register_routes() -> None:
@@ -52,42 +75,113 @@ async def setup_bot_commands(application: Application) -> None:
     logger.info("bot_commands_registered", commands=[c.command for c in commands])
 
 
-def main() -> None:
-    """Start the bot."""
-    # Setup logging first
-    setup_logging()
+async def setup_webhook() -> None:
+    """Set up webhook for Telegram bot."""
+    webhook_full_url = f"{WEBHOOK_URL}{WEBHOOK_PATH}"
     
-    # Load environment variables
-    load_dotenv()
+    # Delete any existing webhook
+    await bot_app.bot.delete_webhook(drop_pending_updates=True)
+    logger.info("webhook_deleted")
     
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    if not token:
-        raise ValueError("TELEGRAM_BOT_TOKEN not set in .env")
+    # Set new webhook
+    await bot_app.bot.set_webhook(
+        url=webhook_full_url,
+        allowed_updates=["message", "callback_query"],
+        drop_pending_updates=False,
+    )
+    
+    webhook_info = await bot_app.bot.get_webhook_info()
+    logger.info(
+        "webhook_configured",
+        url=webhook_info.url,
+        has_custom_certificate=webhook_info.has_custom_certificate,
+        pending_update_count=webhook_info.pending_update_count,
+    )
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """FastAPI lifespan context manager."""
+    global bot_app
     
     logger.info("bot_starting")
     
     # Register navigation routes
     register_routes()
     
-    # Create application
-    application = Application.builder().token(token).build()
+    # Create Telegram application
+    bot_app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
     # Register command handlers
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("menu", menu_command))
+    bot_app.add_handler(CommandHandler("start", start_command))
+    bot_app.add_handler(CommandHandler("menu", menu_command))
     
     # Register callback query handler
-    application.add_handler(CallbackQueryHandler(handle_callback_query))
+    bot_app.add_handler(CallbackQueryHandler(handle_callback_query))
     
     logger.info("handlers_registered")
     
-    # Set up bot commands menu (run after bot starts)
-    application.post_init = setup_bot_commands
+    # Initialize bot application
+    await bot_app.initialize()
+    await bot_app.start()
     
-    # Start bot
-    logger.info("bot_polling_started")
-    application.run_polling(allowed_updates=["message", "callback_query"])
+    # Set up bot commands
+    await setup_bot_commands(bot_app)
+    
+    # Set up webhook
+    await setup_webhook()
+    
+    logger.info("bot_started", mode="webhook", port=PORT)
+    
+    yield
+    
+    # Shutdown
+    logger.info("bot_shutting_down")
+    await bot_app.stop()
+    await bot_app.shutdown()
+
+
+# Create FastAPI application
+app = FastAPI(title="PokéCollect Bot", lifespan=lifespan)
+
+
+@app.get("/")
+async def root():
+    """Health check endpoint."""
+    return {"status": "ok", "bot": "PokéCollect"}
+
+
+@app.get("/health")
+async def health():
+    """Health check endpoint."""
+    return {"status": "healthy"}
+
+
+@app.post(WEBHOOK_PATH)
+async def telegram_webhook(request: Request):
+    """Handle incoming Telegram webhook updates."""
+    try:
+        # Parse incoming update
+        data = await request.json()
+        update = Update.de_json(data, bot_app.bot)
+        
+        # Process update
+        await bot_app.update_queue.put(update)
+        
+        return Response(status_code=status.HTTP_200_OK)
+    
+    except Exception as e:
+        logger.error("webhook_error", error=str(e))
+        return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 if __name__ == "__main__":
-    main()
+    import uvicorn
+    
+    uvicorn.run(
+        "main:app",
+        host=HOST,
+        port=PORT,
+        reload=False,
+        log_level="info",
+    )
