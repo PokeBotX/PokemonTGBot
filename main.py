@@ -14,7 +14,7 @@ from bot.handlers.navigation import handle_callback_query
 from bot.navigation.router import navigation_router
 
 # Import section handlers
-from bot.handlers.sections.shop import shop_handler
+from bot.handlers.sections.shop import register_shop_routes
 from bot.handlers.sections.market import market_handler
 from bot.handlers.sections.profile import profile_handler
 from bot.handlers.sections.games import games_handler
@@ -54,7 +54,7 @@ db: Database = None
 
 def register_routes() -> None:
     """Register all section handlers with navigation router."""
-    navigation_router.register("shop", shop_handler)
+    register_shop_routes(navigation_router)
     navigation_router.register("market", market_handler)
     navigation_router.register("profile", profile_handler)
     navigation_router.register("games", games_handler)

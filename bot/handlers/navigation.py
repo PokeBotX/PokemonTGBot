@@ -58,7 +58,9 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
         # Check for duplicate callback (double-click protection)
         if session_store.is_callback_locked(query.id):
+            logger.info("callback_duplicate_answer_start", callback_id=query.id)
             await query.answer(ERROR_PROCESSING, show_alert=False)
+            logger.info("callback_duplicate_answer_done", callback_id=query.id)
             logger.info("callback_duplicate_ignored", callback_id=query.id)
             return
         
@@ -68,7 +70,9 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         # Parse callback data
         callback_data = parse_callback_data(query.data)
         if not callback_data:
+            logger.info("callback_invalid_answer_start", raw_data=query.data)
             await query.answer(ERROR_INVALID_CALLBACK, show_alert=True)
+            logger.info("callback_invalid_answer_done", raw_data=query.data)
             logger.warning("callback_invalid_format", data=query.data)
             return
         
@@ -82,7 +86,17 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         # Validate session
         session = session_store.get_session(callback_data.session_id)
         if not session:
+            logger.info(
+                "callback_missing_session_answer_start",
+                session_id=callback_data.session_id,
+                user_id=update.effective_user.id,
+            )
             await query.answer(ERROR_BOT_RESTARTED, show_alert=True)
+            logger.info(
+                "callback_missing_session_answer_done",
+                session_id=callback_data.session_id,
+                user_id=update.effective_user.id,
+            )
             logger.warning(
                 "session_not_found",
                 session_id=callback_data.session_id,
@@ -92,7 +106,19 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         
         # Check if user is trying to use someone else's button
         if update.effective_user.id != session.user_id:
+            logger.info(
+                "callback_wrong_user_answer_start",
+                session_id=callback_data.session_id,
+                session_user_id=session.user_id,
+                actual_user_id=update.effective_user.id,
+            )
             await query.answer(ERROR_NOT_YOUR_BUTTON, show_alert=True)
+            logger.info(
+                "callback_wrong_user_answer_done",
+                session_id=callback_data.session_id,
+                session_user_id=session.user_id,
+                actual_user_id=update.effective_user.id,
+            )
             logger.warning(
                 "unauthorized_button_click",
                 session_id=callback_data.session_id,
@@ -108,7 +134,19 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             query.message.message_id,
             msg_context.message_thread_id,
         ):
+            logger.info(
+                "callback_stale_answer_start",
+                session_id=callback_data.session_id,
+                expected_chat=session.chat_id,
+                actual_chat=msg_context.chat_id,
+            )
             await query.answer(ERROR_STALE_MENU, show_alert=True)
+            logger.info(
+                "callback_stale_answer_done",
+                session_id=callback_data.session_id,
+                expected_chat=session.chat_id,
+                actual_chat=msg_context.chat_id,
+            )
             logger.warning(
                 "session_context_mismatch",
                 session_id=callback_data.session_id,
@@ -118,12 +156,32 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             return
         
         # Answer callback query (Telegram requirement) - after all validations
+        logger.info(
+            "callback_answer_start",
+            section=callback_data.section,
+            session_id=callback_data.session_id,
+            user_id=update.effective_user.id,
+        )
         await query.answer()
+        logger.info(
+            "callback_answer_done",
+            section=callback_data.section,
+            session_id=callback_data.session_id,
+            user_id=update.effective_user.id,
+        )
         
         # Route to section handler
         handler = navigation_router.get_handler(callback_data.section)
         if not handler:
+            logger.info(
+                "callback_no_handler_answer_start",
+                section=callback_data.section,
+            )
             await query.answer(ERROR_INVALID_CALLBACK, show_alert=True)
+            logger.info(
+                "callback_no_handler_answer_done",
+                section=callback_data.section,
+            )
             logger.error(
                 "no_handler_for_section",
                 section=callback_data.section,
@@ -131,7 +189,19 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             return
         
         # Execute handler
+        logger.info(
+            "callback_handler_start",
+            section=callback_data.section,
+            session_id=callback_data.session_id,
+            user_id=update.effective_user.id,
+        )
         await handler(update, context, session)
+        logger.info(
+            "callback_handler_done",
+            section=callback_data.section,
+            session_id=callback_data.session_id,
+            user_id=update.effective_user.id,
+        )
         
         logger.info(
             "callback_handled",
@@ -146,6 +216,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             callback_data=query.data if query else None,
         )
         try:
+            logger.info("callback_error_answer_start", callback_data=query.data if query else None)
             await query.answer(ERROR_INVALID_CALLBACK, show_alert=True)
+            logger.info("callback_error_answer_done", callback_data=query.data if query else None)
         except:
             pass  # Best effort

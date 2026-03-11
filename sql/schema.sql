@@ -41,6 +41,14 @@ CREATE TABLE IF NOT EXISTS "user_items" (
   PRIMARY KEY ("user_id", "item_id")
 );
 
+CREATE TABLE IF NOT EXISTS "user_shop_state" (
+  "user_id" bigint PRIMARY KEY,
+  "bonus_last_claim_at" timestamptz NOT NULL DEFAULT NOW(),
+  "epic_pity_counter" int NOT NULL DEFAULT 0,
+  "legendary_pity_counter" int NOT NULL DEFAULT 0,
+  "updated_at" timestamptz NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS "image_credits" (
   "id" bigserial PRIMARY KEY,
   "storage_bucket" varchar(128) NOT NULL,
@@ -99,6 +107,20 @@ BEGIN
     WHERE conname = 'user_settings_user_id_fkey'
   ) THEN
     ALTER TABLE "user_settings"
+      ADD FOREIGN KEY ("user_id")
+      REFERENCES "users" ("id")
+      DEFERRABLE INITIALLY IMMEDIATE;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'user_shop_state_user_id_fkey'
+  ) THEN
+    ALTER TABLE "user_shop_state"
       ADD FOREIGN KEY ("user_id")
       REFERENCES "users" ("id")
       DEFERRABLE INITIALLY IMMEDIATE;
@@ -291,4 +313,10 @@ INSERT INTO currencies (code, name)
 VALUES
   ('pokedollar', 'PokéDollar'),
   ('pokecoin', 'PokéCoin')
+ON CONFLICT (code) DO NOTHING;
+
+INSERT INTO items (code, name, item_type)
+VALUES
+  ('ultraball', 'Ultraball', 'ball'),
+  ('masterball', 'Masterball', 'ball')
 ON CONFLICT (code) DO NOTHING;

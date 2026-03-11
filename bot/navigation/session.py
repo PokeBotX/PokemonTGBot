@@ -1,8 +1,8 @@
 """Session management for menu navigation."""
 import uuid
+from typing import Any, Dict, Optional
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional
 
 
 @dataclass
@@ -13,6 +13,7 @@ class MenuSession:
     message_id: int
     message_thread_id: Optional[int]
     user_id: int
+    data: Dict[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     expires_at: datetime = field(init=False)
     
@@ -50,6 +51,7 @@ class SessionStore:
         message_id: int,
         user_id: int,
         message_thread_id: Optional[int] = None,
+        data: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Create a new menu session."""
         session_id = str(uuid.uuid4())
@@ -59,6 +61,7 @@ class SessionStore:
             message_id=message_id,
             message_thread_id=message_thread_id,
             user_id=user_id,
+            data=data or {},
         )
         self._sessions[session_id] = session
         return session_id

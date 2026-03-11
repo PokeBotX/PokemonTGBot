@@ -16,7 +16,7 @@ from bot.handlers.sections.games import games_handler
 from bot.handlers.sections.info import info_handler
 from bot.handlers.sections.market import market_handler
 from bot.handlers.sections.profile import profile_handler
-from bot.handlers.sections.shop import shop_handler
+from bot.handlers.sections.shop import register_shop_routes
 from bot.handlers.sections.support import support_handler
 from bot.handlers.sections.updates import updates_handler
 from bot.navigation.router import navigation_router
@@ -36,7 +36,7 @@ if not TELEGRAM_BOT_TOKEN:
 
 def register_routes() -> None:
     """Register all section handlers with navigation router."""
-    navigation_router.register("shop", shop_handler)
+    register_shop_routes(navigation_router)
     navigation_router.register("market", market_handler)
     navigation_router.register("profile", profile_handler)
     navigation_router.register("games", games_handler)

@@ -8,6 +8,7 @@ from bot.handlers.commands import start_command, menu_command
 from bot.handlers.sections.shop import shop_handler
 from bot.handlers.sections.back import back_to_menu_handler
 from bot.navigation.session import session_store, MenuSession
+from bot.db.database import ShopView
 
 
 @pytest.fixture(autouse=True)
@@ -94,7 +95,7 @@ async def test_menu_command_sends_menu(mock_update):
 
 @pytest.mark.asyncio
 async def test_section_handler_shows_placeholder():
-    """Test section handler shows placeholder content."""
+    """Test shop handler renders the shop screen."""
     # Create a session
     session = MenuSession(
         session_id="test-session-123",
@@ -125,9 +126,25 @@ async def test_section_handler_shows_placeholder():
     update.effective_user = user
     update.effective_chat = chat
     update.effective_message = message
-    
+
+    db = AsyncMock()
+    db.get_shop_view = AsyncMock(
+        return_value=ShopView(
+            user_id=1,
+            balance=2500,
+            ultraball_quantity=0,
+            masterball_quantity=0,
+            epic_pity_counter=2,
+            legendary_pity_counter=3,
+            bonus_available=125,
+            bonus_ready_in_seconds=0,
+        )
+    )
+    application = Mock()
+    application.bot_data = {"db": db}
     context = Mock(spec=ContextTypes.DEFAULT_TYPE)
-    
+    context.application = application
+
     # Execute handler
     await shop_handler(update, context, session)
     
@@ -135,10 +152,11 @@ async def test_section_handler_shows_placeholder():
     assert query.edit_message_text.called
     call_args = query.edit_message_text.call_args
     
-    # Check placeholder text
+    # Check shop text
     assert "Магазин" in call_args.kwargs["text"]
-    assert "в разработке" in call_args.kwargs["text"]
-    
+    assert "Баланс" in call_args.kwargs["text"]
+    assert "Epic pity" in call_args.kwargs["text"]
+
     # Verify new session was created for back button
     assert len(session_store._sessions) == 2
 
