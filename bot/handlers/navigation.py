@@ -17,6 +17,29 @@ from bot.ui.messages import (
 logger = structlog.get_logger()
 
 
+async def _sync_user_with_db(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Create or update user in DB if DB integration is enabled."""
+    application = getattr(context, "application", None)
+    if not application:
+        return
+    db = application.bot_data.get("db")
+    if not db or not update.effective_user:
+        return
+
+    try:
+        db_user_id = await db.get_or_create_user(
+            telegram_id=update.effective_user.id,
+            username=update.effective_user.username,
+        )
+        logger.info("db_user_synced", telegram_id=update.effective_user.id, db_user_id=db_user_id)
+    except Exception as e:
+        logger.warning(
+            "db_user_sync_failed",
+            telegram_id=update.effective_user.id if update.effective_user else None,
+            error=str(e),
+        )
+
+
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Handle all callback queries from inline buttons.
@@ -31,6 +54,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     query = update.callback_query
     
     try:
+        await _sync_user_with_db(update, context)
+
         # Check for duplicate callback (double-click protection)
         if session_store.is_callback_locked(query.id):
             await query.answer(ERROR_PROCESSING, show_alert=False)

@@ -43,6 +43,9 @@ uv.lock
 .vscode/
 .idea/
 .specify/
+scripts/speckit-agent.sh
+.github/agents/speckit*.md
+.github/prompts/speckit*.md
 *.swp
 *.swo
 *~

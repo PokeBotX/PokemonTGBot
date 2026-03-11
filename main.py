@@ -7,6 +7,7 @@ from fastapi import FastAPI, Request, Response, status
 from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler
 
+from bot.db import Database
 from bot.utils.logging import setup_logging
 from bot.handlers.commands import start_command, menu_command
 from bot.handlers.navigation import handle_callback_query
@@ -37,6 +38,9 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Example: https://your-domain.com
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/webhook")
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8000"))
+DB_ENABLED = os.getenv("DB_ENABLED", "false").lower() == "true"
+DB_INIT_SCHEMA = os.getenv("DB_INIT_SCHEMA", "false").lower() == "true"
+DB_SCHEMA_PATH = os.getenv("DB_SCHEMA_PATH", "sql/schema.sql")
 
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN not set in .env")
@@ -45,6 +49,7 @@ if not WEBHOOK_URL:
 
 # Global bot application
 bot_app: Application = None
+db: Database = None
 
 
 def register_routes() -> None:
@@ -102,7 +107,7 @@ async def setup_webhook() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI lifespan context manager."""
-    global bot_app
+    global bot_app, db
     
     logger.info("bot_starting")
     
@@ -124,6 +129,15 @@ async def lifespan(app: FastAPI):
     # Initialize bot application
     await bot_app.initialize()
     await bot_app.start()
+
+    # Initialize database (optional)
+    if DB_ENABLED:
+        db = Database()
+        await db.connect()
+        if DB_INIT_SCHEMA:
+            await db.init_schema(DB_SCHEMA_PATH)
+        bot_app.bot_data["db"] = db
+        logger.info("db_ready", schema_init=DB_INIT_SCHEMA)
     
     # Set up bot commands
     await setup_bot_commands(bot_app)
@@ -137,6 +151,8 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("bot_shutting_down")
+    if db:
+        await db.close()
     await bot_app.stop()
     await bot_app.shutdown()
 
