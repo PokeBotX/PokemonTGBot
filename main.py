@@ -2,6 +2,7 @@
 import os
 import structlog
 from contextlib import asynccontextmanager
+from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Response, status
 from telegram import Update
@@ -43,6 +44,7 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Example: https://your-domain.com
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/webhook")
+WEBHOOK_CERT_PATH = os.getenv("WEBHOOK_CERT_PATH")
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8000"))
 DB_ENABLED = os.getenv("DB_ENABLED", "false").lower() == "true"
@@ -101,17 +103,28 @@ async def setup_bot_commands(application: Application) -> None:
 async def setup_webhook() -> None:
     """Set up webhook for Telegram bot."""
     webhook_full_url = f"{WEBHOOK_URL}{WEBHOOK_PATH}"
+    webhook_kwargs = {
+        "url": webhook_full_url,
+        "allowed_updates": ["message", "callback_query"],
+        "drop_pending_updates": False,
+    }
+
+    if WEBHOOK_CERT_PATH:
+        cert_path = Path(WEBHOOK_CERT_PATH)
+        if not cert_path.exists():
+            raise ValueError(f"WEBHOOK_CERT_PATH does not exist: {cert_path}")
+        webhook_kwargs["certificate"] = cert_path.open("rb")
     
     # Delete any existing webhook
     await bot_app.bot.delete_webhook(drop_pending_updates=True)
     logger.info("webhook_deleted")
     
-    # Set new webhook
-    await bot_app.bot.set_webhook(
-        url=webhook_full_url,
-        allowed_updates=["message", "callback_query"],
-        drop_pending_updates=False,
-    )
+    try:
+        await bot_app.bot.set_webhook(**webhook_kwargs)
+    finally:
+        certificate = webhook_kwargs.get("certificate")
+        if certificate:
+            certificate.close()
     
     webhook_info = await bot_app.bot.get_webhook_info()
     logger.info(
@@ -119,6 +132,7 @@ async def setup_webhook() -> None:
         url=webhook_info.url,
         has_custom_certificate=webhook_info.has_custom_certificate,
         pending_update_count=webhook_info.pending_update_count,
+        webhook_cert_path=WEBHOOK_CERT_PATH,
     )
 
 

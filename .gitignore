@@ -75,6 +75,11 @@ docs/
 *.bak
 *.swp
 nohup.out
+.~lock*.xlsx#
+
+# Local MinIO
+data/minio/
+tools/minio/minio
 
 # OS
 .DS_Store
