@@ -9,7 +9,14 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler
 
 from bot.db import Database
 from bot.utils.logging import setup_logging
-from bot.handlers.commands import start_command, menu_command
+from bot.handlers.commands import (
+    items_command,
+    menu_command,
+    pokemon_command,
+    section_command,
+    shop_command,
+    start_command,
+)
 from bot.handlers.navigation import handle_callback_query
 from bot.navigation.router import navigation_router
 
@@ -74,6 +81,17 @@ async def setup_bot_commands(application: Application) -> None:
     
     commands = [
         BotCommand("menu", "Открыть главное меню"),
+        BotCommand("shop", "Открыть магазин"),
+        BotCommand("pokemon", "Открыть раздел покемонов"),
+        BotCommand("items", "Открыть раздел предметов"),
+        BotCommand("market", "Открыть рынок"),
+        BotCommand("profile", "Открыть профиль"),
+        BotCommand("games", "Открыть мини-игры"),
+        BotCommand("collection", "Открыть коллекцию"),
+        BotCommand("updates", "Открыть обновления"),
+        BotCommand("chat", "Открыть чат"),
+        BotCommand("support", "Открыть поддержку"),
+        BotCommand("info", "Открыть информацию"),
     ]
     
     await application.bot.set_my_commands(commands)
@@ -120,6 +138,10 @@ async def lifespan(app: FastAPI):
     # Register command handlers
     bot_app.add_handler(CommandHandler("start", start_command))
     bot_app.add_handler(CommandHandler("menu", menu_command))
+    bot_app.add_handler(CommandHandler("shop", shop_command))
+    bot_app.add_handler(CommandHandler("pokemon", pokemon_command))
+    bot_app.add_handler(CommandHandler("items", items_command))
+    bot_app.add_handler(CommandHandler(["market", "profile", "games", "collection", "updates", "chat", "support", "info"], section_command))
     
     # Register callback query handler
     bot_app.add_handler(CallbackQueryHandler(handle_callback_query))

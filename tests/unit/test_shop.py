@@ -50,6 +50,7 @@ def test_main_shop_keyboard_shows_category_buttons() -> None:
         ShopView(
             user_id=1,
             balance=300,
+            pokecoin_balance=0,
             ultraball_quantity=0,
             masterball_quantity=0,
             epic_pity_counter=0,
@@ -72,6 +73,7 @@ def test_pokemon_shop_keyboard_hides_only_x5_when_balance_is_low() -> None:
         ShopView(
             user_id=1,
             balance=600,
+            pokecoin_balance=0,
             ultraball_quantity=1,
             masterball_quantity=0,
             epic_pity_counter=EPIC_PITY_THRESHOLD - 1,
@@ -82,8 +84,8 @@ def test_pokemon_shop_keyboard_hides_only_x5_when_balance_is_low() -> None:
         SHOP_VIEW_POKEMON,
     )
     button_texts = [button.text for row in keyboard.inline_keyboard for button in row]
-    assert "🎰 Крутка x1" in button_texts
-    assert "🎰 Крутка x5" not in button_texts
+    assert "🎲 Случайный персонаж: 💵500" in button_texts
+    assert "🎲 Случайный персонаж x5: 💵2500" not in button_texts
 
 
 def test_pokemon_shop_keyboard_shows_x5_for_sufficient_balance() -> None:
@@ -92,6 +94,7 @@ def test_pokemon_shop_keyboard_shows_x5_for_sufficient_balance() -> None:
         ShopView(
             user_id=1,
             balance=2500,
+            pokecoin_balance=0,
             ultraball_quantity=1,
             masterball_quantity=0,
             epic_pity_counter=EPIC_PITY_THRESHOLD - 1,
@@ -102,7 +105,7 @@ def test_pokemon_shop_keyboard_shows_x5_for_sufficient_balance() -> None:
         SHOP_VIEW_POKEMON,
     )
     button_texts = [button.text for row in keyboard.inline_keyboard for button in row]
-    assert "🎰 Крутка x5" in button_texts
+    assert "🎲 Случайный персонаж x5: 💵2500" in button_texts
 
 
 def test_items_shop_keyboard_shows_both_item_buttons() -> None:
@@ -111,6 +114,7 @@ def test_items_shop_keyboard_shows_both_item_buttons() -> None:
         ShopView(
             user_id=1,
             balance=0,
+            pokecoin_balance=0,
             ultraball_quantity=0,
             masterball_quantity=0,
             epic_pity_counter=0,
@@ -121,8 +125,8 @@ def test_items_shop_keyboard_shows_both_item_buttons() -> None:
         SHOP_VIEW_ITEMS,
     )
     button_texts = [button.text for row in keyboard.inline_keyboard for button in row]
-    assert "🟡 Ultraball" in button_texts
-    assert "🟣 Masterball" in button_texts
+    assert "🟡 Ultraball: 💵200" in button_texts
+    assert "🟣 Masterball: 💵1000" in button_texts
 
 
 def test_render_shop_text_includes_status_and_counters() -> None:
@@ -130,6 +134,7 @@ def test_render_shop_text_includes_status_and_counters() -> None:
         ShopView(
             user_id=1,
             balance=500,
+            pokecoin_balance=0,
             ultraball_quantity=2,
             masterball_quantity=3,
             epic_pity_counter=4,
@@ -139,9 +144,9 @@ def test_render_shop_text_includes_status_and_counters() -> None:
         ),
         "Статус",
         SHOP_VIEW_POKEMON,
+        "@ash",
     )
-    assert "Выберите желаемую опцию" in text
-    assert "Epic pity: <b>4/15</b>" in text
-    assert "Legendary pity: <b>5/40</b>" in text
-    assert "Раздел: <b>Покемоны</b>" in text
+    assert "@ash, выберите желаемую опцию" in text
+    assert "🎲 - случайный персонаж: 💵500" in text
+    assert "👛 Ваш баланс: 💵500" in text
     assert "Статус" in text

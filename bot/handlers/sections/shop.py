@@ -19,9 +19,6 @@ from bot.db.database import (
     MASTERBALL_PRICE,
     POKEDOLLAR_CODE,
     PokemonReward,
-    SHOP_BONUS_RATE_PER_HOUR,
-    SHOP_BONUS_CAP,
-    SHOP_BONUS_CLAIM_INTERVAL_SECONDS,
     SPIN_PRICE,
     SpinResult,
     SummarySessionError,
@@ -29,6 +26,7 @@ from bot.db.database import (
     ShopView,
 )
 from bot.navigation.router import NavigationRouter, parse_callback_data
+from bot.navigation.context import extract_context
 from bot.navigation.session import MenuSession, session_store
 from bot.ui.menu import build_back_button
 
@@ -61,6 +59,55 @@ def register_shop_routes(router: NavigationRouter) -> None:
     """Register all shop-related callback sections."""
     for section in SHOP_ROUTE_SECTIONS:
         router.register(section, shop_handler)
+
+
+async def show_shop_screen(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    screen: str = SHOP_VIEW_MAIN,
+    status_text: Optional[str] = None,
+) -> Message:
+    """Send a fresh shop message for direct commands like /shop."""
+    msg_context = extract_context(update)
+    username = update.effective_user.username if update.effective_user else None
+    user_label = _display_user(update)
+    db = _get_db(context)
+
+    if not db:
+        text = "🛒 <b>Магазин временно недоступен</b>\n\nБаза данных не подключена."
+        sent_message = await update.effective_chat.send_message(
+            text=text,
+            parse_mode="HTML",
+            message_thread_id=msg_context.message_thread_id,
+        )
+        session_id = session_store.create_session(
+            chat_id=msg_context.chat_id,
+            message_id=sent_message.message_id,
+            user_id=msg_context.user_id,
+            message_thread_id=msg_context.message_thread_id,
+        )
+        await sent_message.edit_reply_markup(reply_markup=build_back_button(session_id))
+        return sent_message
+
+    logger.info("shop_command_fetch_start", screen=screen, user_id=msg_context.user_id)
+    shop_view = await db.get_shop_view(msg_context.user_id, username)
+    logger.info("shop_command_fetch_done", screen=screen, user_id=msg_context.user_id)
+    sent_message = await update.effective_chat.send_message(
+        text=_render_shop_text(shop_view, status_text, screen, user_label),
+        parse_mode="HTML",
+        message_thread_id=msg_context.message_thread_id,
+    )
+    session_id = session_store.create_session(
+        chat_id=msg_context.chat_id,
+        message_id=sent_message.message_id,
+        user_id=msg_context.user_id,
+        message_thread_id=msg_context.message_thread_id,
+    )
+    await sent_message.edit_reply_markup(
+        reply_markup=_build_shop_keyboard(session_id, shop_view, screen)
+    )
+    logger.info("shop_command_sent", screen=screen, session_id=session_id, user_id=msg_context.user_id)
+    return sent_message
 
 
 async def shop_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, session: MenuSession) -> None:
@@ -110,9 +157,9 @@ async def shop_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, sessi
             logger.info("shop_bonus_claim_done", user_id=session.user_id, amount_claimed=bonus_result.amount_claimed)
             shop_view = bonus_result.shop_view
             screen = SHOP_VIEW_MAIN
-            status_text = (
-                f"🎁 Забрано: <b>{bonus_result.amount_claimed} {POKEDOLLAR_CODE}</b>\n"
-                f"Следующий бонус через: <b>{_format_duration(bonus_result.next_bonus_in_seconds)}</b>"
+            status_text = _render_bonus_claim_text(
+                _display_user(update),
+                bonus_result,
             )
         elif section == "shop_buy_ultraball":
             logger.info("shop_purchase_start", user_id=session.user_id, item_code="ultraball")
@@ -134,9 +181,9 @@ async def shop_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, sessi
             logger.info("shop_spin_done", user_id=session.user_id, spin_count=1)
             shop_view = spin_result.shop_view
             screen = SHOP_VIEW_POKEMON
-            status_text = f"🎰 Крутка выполнена. Списано <b>{spin_result.spent_amount} {POKEDOLLAR_CODE}</b>."
+            status_text = None
             logger.info("shop_reward_card_start", user_id=session.user_id, reward_name=spin_result.rewards[0].name)
-            await _send_reward_card(context, session, spin_result.rewards[0])
+            await _send_reward_card(context, session, spin_result.rewards[0], shop_view, _display_user(update))
             logger.info("shop_reward_card_done", user_id=session.user_id, reward_name=spin_result.rewards[0].name)
         elif section == "shop_spin_5":
             logger.info("shop_spin_start", user_id=session.user_id, spin_count=5)
@@ -165,7 +212,7 @@ async def shop_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, sessi
         await _edit_shop_message(
             query,
             session,
-            _render_shop_text(shop_view, status_text, screen),
+            _render_shop_text(shop_view, status_text, screen, _display_user(update)),
             _build_shop_keyboard(_create_session(session), shop_view, screen),
         )
         logger.info("shop_edit_done", section=section, user_id=session.user_id, screen=screen)
@@ -181,8 +228,9 @@ async def shop_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, sessi
             session,
             _render_shop_text(
                 shop_view,
-                f"⏳ Бонус ещё не готов. Осталось: <b>{_format_duration(exc.remaining_seconds)}</b>",
+                _render_bonus_cooldown_text(_display_user(update), exc.remaining_seconds, shop_view.balance),
                 SHOP_VIEW_MAIN,
+                _display_user(update),
             ),
             _build_shop_keyboard(_create_session(session), shop_view, SHOP_VIEW_MAIN),
         )
@@ -201,11 +249,13 @@ async def shop_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, sessi
                 shop_view,
                 "💸 Недостаточно PokéDollar для этого действия.",
                 target_screen,
+                _display_user(update),
             ),
             _build_shop_keyboard(
                 _create_session(session),
                 shop_view,
                 target_screen,
+                _display_user(update),
             ),
         )
         logger.info("shop_edit_done", section=section, user_id=session.user_id, screen=target_screen)
@@ -237,6 +287,78 @@ async def shop_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, sessi
             error_message=str(exc),
             user_id=session.user_id,
         )
+
+
+def _display_user(update: Optional[Update]) -> str:
+    if update and update.effective_user:
+        username = getattr(update.effective_user, "username", None)
+        if username:
+            return f"@{username}"
+        first_name = getattr(update.effective_user, "first_name", None)
+        if first_name:
+            return first_name
+    return "тренер"
+
+
+def _display_user_text(update: Optional[Update]) -> str:
+    return _display_user(update)
+
+
+def _render_main_shop_text(user_label: str, shop_view: ShopView) -> str:
+    return "\n".join([
+        f"🛍 {user_label}, добро пожаловать в магазин!",
+        f"👛 Ваш баланс: 💵{shop_view.balance}  🪙{shop_view.pokecoin_balance}",
+        "",
+        "Выберите желаемый раздел:",
+    ])
+
+
+def _render_pokemon_shop_text(user_label: str, shop_view: ShopView) -> str:
+    lines = [
+        f"🎟 {user_label}, выберите желаемую опцию:",
+        f"🎲 - случайный персонаж: 💵{SPIN_PRICE}",
+    ]
+    if shop_view.balance >= SPIN_PRICE * 5:
+        lines.append(f"🎲 - случайный персонаж x5: 💵{SPIN_PRICE * 5}")
+    lines.extend(["", f"👛 Ваш баланс: 💵{shop_view.balance}"])
+    return "\n".join(lines)
+
+
+def _render_items_shop_text(user_label: str, shop_view: ShopView) -> str:
+    return "\n".join([
+        f"🎒 {user_label}, выберите нужный предмет:",
+        f"🟡 Ultraball: 💵{ULTRABALL_PRICE}",
+        f"🟣 Masterball: 💵{MASTERBALL_PRICE}",
+        "",
+        f"👛 Ваш баланс: 💵{shop_view.balance}",
+    ])
+
+
+def _render_bonus_claim_text(user_label: str, bonus_result: BonusClaimResult) -> str:
+    return "\n".join([
+        f"🎁 {user_label}, Вы получили 💵 {bonus_result.amount_claimed}, теперь у вас 💵{bonus_result.shop_view.balance}",
+        "⌛️ Можно забрать снова через: 1 час",
+        "⏰ Будет накапливаться до: 6 часов",
+    ])
+
+
+def _render_bonus_cooldown_text(user_label: str, remaining_seconds: int, balance: int) -> str:
+    return "\n".join([
+        f"🎁 {user_label}, бонус пока недоступен.",
+        f"⌛️ Можно забрать снова через: {_format_duration(remaining_seconds)}",
+        "⏰ Будет накапливаться до: 6 часов",
+        "",
+        f"👛 Ваш баланс: 💵{balance}",
+    ])
+
+
+def _build_reward_continue_keyboard(shop_view: ShopView, session_id: str) -> InlineKeyboardMarkup:
+    keyboard = []
+    if shop_view.balance >= SPIN_PRICE:
+        keyboard.append([InlineKeyboardButton(f"🎲 Крутка: 💵{SPIN_PRICE}", callback_data=f"menu:shop_spin_1:{session_id}")])
+    if shop_view.balance >= SPIN_PRICE * 5:
+        keyboard.append([InlineKeyboardButton(f"🎲 Крутка x5: 💵{SPIN_PRICE * 5}", callback_data=f"menu:shop_spin_5:{session_id}")])
+    return InlineKeyboardMarkup(keyboard)
 
 
 def _get_db(context: ContextTypes.DEFAULT_TYPE) -> Optional[Database]:
@@ -274,70 +396,37 @@ def _build_shop_keyboard(session_id: str, shop_view: ShopView, screen: str) -> I
         return InlineKeyboardMarkup(keyboard)
 
     if screen == SHOP_VIEW_POKEMON:
-        keyboard.append([InlineKeyboardButton("🎰 Крутка x1", callback_data=f"menu:shop_spin_1:{session_id}")])
+        keyboard.append([InlineKeyboardButton(f"🎲 Случайный персонаж: 💵{SPIN_PRICE}", callback_data=f"menu:shop_spin_1:{session_id}")])
         if shop_view.balance >= SPIN_PRICE * 5:
-            keyboard.append([InlineKeyboardButton("🎰 Крутка x5", callback_data=f"menu:shop_spin_5:{session_id}")])
+            keyboard.append([InlineKeyboardButton(f"🎲 Случайный персонаж x5: 💵{SPIN_PRICE * 5}", callback_data=f"menu:shop_spin_5:{session_id}")])
         keyboard.append([InlineKeyboardButton("🔙 Назад в магазин", callback_data=f"menu:shop:{session_id}")])
         return InlineKeyboardMarkup(keyboard)
 
     if screen == SHOP_VIEW_ITEMS:
-        keyboard.append([InlineKeyboardButton("🟡 Ultraball", callback_data=f"menu:shop_buy_ultraball:{session_id}")])
-        keyboard.append([InlineKeyboardButton("🟣 Masterball", callback_data=f"menu:shop_buy_masterball:{session_id}")])
+        keyboard.append([InlineKeyboardButton(f"🟡 Ultraball: 💵{ULTRABALL_PRICE}", callback_data=f"menu:shop_buy_ultraball:{session_id}")])
+        keyboard.append([InlineKeyboardButton(f"🟣 Masterball: 💵{MASTERBALL_PRICE}", callback_data=f"menu:shop_buy_masterball:{session_id}")])
         keyboard.append([InlineKeyboardButton("🔙 Назад в магазин", callback_data=f"menu:shop:{session_id}")])
         return InlineKeyboardMarkup(keyboard)
 
     return InlineKeyboardMarkup(keyboard)
 
 
-def _render_shop_text(shop_view: ShopView, status_text: Optional[str] = None, screen: str = SHOP_VIEW_MAIN) -> str:
-    bonus_line = (
-        f"Готово к выдаче: <b>{shop_view.bonus_available} {POKEDOLLAR_CODE}</b>"
-        if shop_view.bonus_ready_in_seconds == 0
-        else f"До следующего бонуса: <b>{_format_duration(shop_view.bonus_ready_in_seconds)}</b>"
-    )
-    lines = [
-        "🛒 <b>Магазин</b>",
-        "",
-        "Выберите желаемую опцию.",
-        f"Баланс: <b>{shop_view.balance} {POKEDOLLAR_CODE}</b>",
-        f"🎁 Бонус: {bonus_line}",
-        f"✨ Epic pity: <b>{shop_view.epic_pity_counter}/{15}</b>",
-        f"🌟 Legendary pity: <b>{shop_view.legendary_pity_counter}/{40}</b>",
-        f"🟡 Ultraball: <b>{shop_view.ultraball_quantity}</b>",
-        f"🟣 Masterball: <b>{shop_view.masterball_quantity}</b>",
-        "",
-    ]
+def _render_shop_text(shop_view: ShopView, status_text: Optional[str] = None, screen: str = SHOP_VIEW_MAIN, user_label: str = "тренер") -> str:
+    if status_text and screen == SHOP_VIEW_MAIN and status_text.startswith("🎁"):
+        return status_text
+
     if screen == SHOP_VIEW_MAIN:
-        lines.extend(
-            [
-                "Разделы:",
-                "• Покемоны",
-                "• Бонус",
-                "• Предметы",
-                "• VIP",
-            ]
-        )
+        base_text = _render_main_shop_text(user_label, shop_view)
     elif screen == SHOP_VIEW_POKEMON:
-        lines.extend(
-            [
-                "Раздел: <b>Покемоны</b>",
-                f"Крутка x1: <b>{SPIN_PRICE} {POKEDOLLAR_CODE}</b>",
-                f"Крутка x5: <b>{SPIN_PRICE * 5} {POKEDOLLAR_CODE}</b>",
-                "Кнопка x5 скрывается, если не хватает валюты.",
-            ]
-        )
+        base_text = _render_pokemon_shop_text(user_label, shop_view)
     elif screen == SHOP_VIEW_ITEMS:
-        lines.extend(
-            [
-                "Раздел: <b>Предметы</b>",
-                f"Ultraball: <b>{ULTRABALL_PRICE} {POKEDOLLAR_CODE}</b>",
-                f"Masterball: <b>{MASTERBALL_PRICE} {POKEDOLLAR_CODE}</b>",
-                "Покупка предметов доступна по одной штуке.",
-            ]
-        )
+        base_text = _render_items_shop_text(user_label, shop_view)
+    else:
+        base_text = ""
+
     if status_text:
-        lines.extend(["", status_text])
-    return "\n".join(lines)
+        return f"{base_text}\n\n{status_text}" if base_text else status_text
+    return base_text
 
 
 async def _edit_shop_message(
@@ -368,9 +457,9 @@ def _format_duration(total_seconds: int) -> str:
 
 
 async def _send_reward_card(
-    context: ContextTypes.DEFAULT_TYPE, session: MenuSession, reward: PokemonReward
+    context: ContextTypes.DEFAULT_TYPE, session: MenuSession, reward: PokemonReward, shop_view: Optional[ShopView] = None, user_label: Optional[str] = None
 ) -> Message:
-    caption = _render_reward_caption(reward)
+    caption = _render_reward_caption(reward, user_label)
     if FALLBACK_IMAGE_PATH.exists():
         logger.info("shop_send_photo_start", user_id=session.user_id, reward_name=reward.name)
         with FALLBACK_IMAGE_PATH.open("rb") as image_file:
@@ -382,22 +471,33 @@ async def _send_reward_card(
                 parse_mode="HTML",
             )
         logger.info("shop_send_photo_done", user_id=session.user_id, reward_name=reward.name)
-        return message
-    logger.info("shop_send_message_start", user_id=session.user_id, reward_name=reward.name)
-    message = await context.bot.send_message(
-        chat_id=session.chat_id,
-        message_thread_id=session.message_thread_id,
-        text=caption,
-        parse_mode="HTML",
-    )
-    logger.info("shop_send_message_done", user_id=session.user_id, reward_name=reward.name)
+    else:
+        logger.info("shop_send_message_start", user_id=session.user_id, reward_name=reward.name)
+        message = await context.bot.send_message(
+            chat_id=session.chat_id,
+            message_thread_id=session.message_thread_id,
+            text=caption,
+            parse_mode="HTML",
+        )
+        logger.info("shop_send_message_done", user_id=session.user_id, reward_name=reward.name)
+
+    if shop_view is not None:
+        reward_session_id = session_store.create_session(
+            chat_id=session.chat_id,
+            message_id=message.message_id,
+            user_id=session.user_id,
+            message_thread_id=session.message_thread_id,
+        )
+        logger.info("shop_reward_markup_start", user_id=session.user_id, reward_name=reward.name, reward_session_id=reward_session_id)
+        await message.edit_reply_markup(reply_markup=_build_reward_continue_keyboard(shop_view, reward_session_id))
+        logger.info("shop_reward_markup_done", user_id=session.user_id, reward_name=reward.name, reward_session_id=reward_session_id)
     return message
 
 
-def _render_reward_caption(reward: PokemonReward) -> str:
-    return "\n".join(
-        [
+def _render_reward_caption(reward: PokemonReward, user_label: Optional[str] = None) -> str:
+    return "\n".join(line for line in [
             f"🏆 <b>{reward.name}</b>",
+            (f"Тренер: <b>{user_label}</b>" if user_label else ""),
             f"Редкость: <b>{reward.rarity}</b>",
             f"Тип: <b>{reward.pokemon_type or 'unknown'}</b>",
             f"HP: <b>{reward.base_hp}</b>",
@@ -405,7 +505,7 @@ def _render_reward_caption(reward: PokemonReward) -> str:
             f"DEF: <b>{reward.base_defense}</b>",
             f"SPD: <b>{reward.base_stamina}</b>",
             f"ID экземпляра: <b>{reward.user_pokemon_id}</b>",
-        ]
+        ] if line
     )
 
 
@@ -467,5 +567,7 @@ async def _handle_spin_detail(
         image_credit_id=rewards[index].get("image_credit_id"),
     )
     logger.info("shop_detail_send_start", user_id=session.user_id, reward_name=reward.name, index=index + 1)
-    await _send_reward_card(context, session, reward)
+    db = _get_db(context)
+    shop_view = await db.get_shop_view(session.user_id, update.effective_user.username if update.effective_user else None) if db else None
+    await _send_reward_card(context, session, reward, shop_view, _display_user(update))
     logger.info("shop_spin_detail_sent", user_id=session.user_id, reward_name=reward.name, index=index + 1)

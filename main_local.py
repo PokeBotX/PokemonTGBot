@@ -7,7 +7,14 @@ from telegram import BotCommand
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler
 
 from bot.db import Database
-from bot.handlers.commands import menu_command, start_command
+from bot.handlers.commands import (
+    items_command,
+    menu_command,
+    pokemon_command,
+    section_command,
+    shop_command,
+    start_command,
+)
 from bot.handlers.navigation import handle_callback_query
 from bot.handlers.sections.back import back_to_menu_handler
 from bot.handlers.sections.chat import chat_handler
@@ -60,7 +67,20 @@ async def post_init(application: Application) -> None:
         logger.info("db_ready", schema_init=DB_INIT_SCHEMA)
 
     await application.bot.delete_webhook(drop_pending_updates=True)
-    await application.bot.set_my_commands([BotCommand("menu", "Открыть главное меню")])
+    await application.bot.set_my_commands([
+        BotCommand("menu", "Открыть главное меню"),
+        BotCommand("shop", "Открыть магазин"),
+        BotCommand("pokemon", "Открыть раздел покемонов"),
+        BotCommand("items", "Открыть раздел предметов"),
+        BotCommand("market", "Открыть рынок"),
+        BotCommand("profile", "Открыть профиль"),
+        BotCommand("games", "Открыть мини-игры"),
+        BotCommand("collection", "Открыть коллекцию"),
+        BotCommand("updates", "Открыть обновления"),
+        BotCommand("chat", "Открыть чат"),
+        BotCommand("support", "Открыть поддержку"),
+        BotCommand("info", "Открыть информацию"),
+    ])
     logger.info("bot_ready", mode="polling")
 
 
@@ -83,6 +103,10 @@ def build_application() -> Application:
     )
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("menu", menu_command))
+    application.add_handler(CommandHandler("shop", shop_command))
+    application.add_handler(CommandHandler("pokemon", pokemon_command))
+    application.add_handler(CommandHandler("items", items_command))
+    application.add_handler(CommandHandler(["market", "profile", "games", "collection", "updates", "chat", "support", "info"], section_command))
     application.add_handler(CallbackQueryHandler(handle_callback_query))
     return application
 

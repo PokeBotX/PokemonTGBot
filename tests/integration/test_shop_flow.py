@@ -62,6 +62,7 @@ def _shop_view(balance: int = 2500) -> ShopView:
     return ShopView(
         user_id=1,
         balance=balance,
+        pokecoin_balance=0,
         ultraball_quantity=1,
         masterball_quantity=0,
         epic_pity_counter=3,
@@ -82,7 +83,9 @@ async def test_shop_bonus_claim_updates_message() -> None:
     await shop_handler(update, context, session)
 
     assert update.callback_query.edit_message_text.called
-    assert "Забрано" in update.callback_query.edit_message_text.call_args.kwargs["text"]
+    text = update.callback_query.edit_message_text.call_args.kwargs["text"]
+    assert "Вы получили" in text
+    assert "теперь у вас" in text
 
 
 @pytest.mark.asyncio
@@ -120,8 +123,8 @@ async def test_pokemon_submenu_hides_only_x5() -> None:
         for row in update.callback_query.edit_message_text.call_args.kwargs["reply_markup"].inline_keyboard
         for button in row
     ]
-    assert "🎰 Крутка x1" in button_texts
-    assert "🎰 Крутка x5" not in button_texts
+    assert "🎲 Случайный персонаж: 💵500" in button_texts
+    assert "🎲 Случайный персонаж x5: 💵2500" not in button_texts
 
 
 @pytest.mark.asyncio
@@ -135,7 +138,7 @@ async def test_shop_bonus_cooldown_shows_remaining_time() -> None:
 
     await shop_handler(update, context, session)
 
-    assert "Бонус ещё не готов" in update.callback_query.edit_message_text.call_args.kwargs["text"]
+    assert "бонус пока недоступен" in update.callback_query.edit_message_text.call_args.kwargs["text"]
 
 
 @pytest.mark.asyncio
@@ -184,12 +187,29 @@ async def test_single_spin_sends_reward_card() -> None:
         )
     )
     context = _make_context(db)
+    sent_reward = AsyncMock(spec=Message)
+    sent_reward.message_id = 777
+    sent_reward.edit_reply_markup = AsyncMock()
+    context.application.bot.send_message = AsyncMock(return_value=sent_reward)
+    context.application.bot.send_photo = AsyncMock(return_value=sent_reward)
     update = _make_update("shop_spin_1", session)
 
     await shop_handler(update, context, session)
 
     assert context.application.bot.send_photo.called or context.application.bot.send_message.called
-    assert "Крутка выполнена" in update.callback_query.edit_message_text.call_args.kwargs["text"]
+    assert sent_reward.edit_reply_markup.called
+    reward_markup = sent_reward.edit_reply_markup.call_args.kwargs["reply_markup"]
+    reward_session_ids = {
+        button.callback_data.rsplit(":", maxsplit=1)[-1]
+        for row in reward_markup.inline_keyboard
+        for button in row
+    }
+    assert len(reward_session_ids) == 1
+    reward_session_id = next(iter(reward_session_ids))
+    reward_session = session_store.get_session(reward_session_id)
+    assert reward_session is not None
+    assert reward_session.message_id == sent_reward.message_id
+    assert "🎟 @ash" in update.callback_query.edit_message_text.call_args.kwargs["text"]
 
 
 @pytest.mark.asyncio

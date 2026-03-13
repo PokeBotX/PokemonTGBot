@@ -1,4 +1,4 @@
-"""Command handlers for /start and /menu."""
+"""Command handlers for /start, /menu, and direct section shortcuts."""
 import structlog
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -6,10 +6,23 @@ from telegram.error import TelegramError, BadRequest, Forbidden
 
 from bot.navigation.context import extract_context
 from bot.navigation.session import session_store
+from bot.handlers.sections.shop import show_shop_screen, SHOP_VIEW_ITEMS, SHOP_VIEW_POKEMON
 from bot.ui.menu import build_main_menu_keyboard
-from bot.ui.messages import get_main_menu_text
+from bot.ui.menu import build_back_button
+from bot.ui.messages import get_main_menu_text, get_section_placeholder
 
 logger = structlog.get_logger()
+
+PLACEHOLDER_COMMAND_SECTIONS = {
+    "market": "market",
+    "profile": "profile",
+    "games": "games",
+    "collection": "collection",
+    "updates": "updates",
+    "chat": "chat",
+    "support": "support",
+    "info": "info",
+}
 
 
 async def _sync_user_with_db(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -49,6 +62,37 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     Shows main menu to user.
     """
     await _show_main_menu(update, context)
+
+
+async def shop_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /shop command."""
+    await _sync_user_with_db(update, context)
+    await show_shop_screen(update, context)
+
+
+async def pokemon_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /pokemon command."""
+    await _sync_user_with_db(update, context)
+    await show_shop_screen(update, context, screen=SHOP_VIEW_POKEMON)
+
+
+async def items_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /items command."""
+    await _sync_user_with_db(update, context)
+    await show_shop_screen(update, context, screen=SHOP_VIEW_ITEMS)
+
+
+async def section_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle direct placeholder section commands like /market and /profile."""
+    await _sync_user_with_db(update, context)
+    if not update.message or not update.message.text:
+        return
+
+    section = update.message.text.split()[0].lstrip("/").split("@", maxsplit=1)[0]
+    section_name = PLACEHOLDER_COMMAND_SECTIONS.get(section)
+    if not section_name:
+        return
+    await _show_placeholder_section(update, section_name)
 
 
 async def _show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -138,6 +182,33 @@ async def _show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         logger.error(
             "show_main_menu_error",
             error="unexpected",
+            error_message=str(e),
+            user_id=update.effective_user.id if update.effective_user else None,
+            chat_id=update.effective_chat.id if update.effective_chat else None,
+        )
+
+
+async def _show_placeholder_section(update: Update, section: str) -> None:
+    """Send a fresh placeholder section message for direct commands."""
+    try:
+        msg_context = extract_context(update)
+        sent_message = await update.effective_chat.send_message(
+            text=get_section_placeholder(section),
+            parse_mode="HTML",
+            message_thread_id=msg_context.message_thread_id,
+        )
+        session_id = session_store.create_session(
+            chat_id=msg_context.chat_id,
+            message_id=sent_message.message_id,
+            user_id=msg_context.user_id,
+            message_thread_id=msg_context.message_thread_id,
+        )
+        await sent_message.edit_reply_markup(reply_markup=build_back_button(session_id))
+        logger.info("section_command_sent", section=section, session_id=session_id, user_id=msg_context.user_id)
+    except Exception as e:
+        logger.error(
+            "section_command_error",
+            section=section,
             error_message=str(e),
             user_id=update.effective_user.id if update.effective_user else None,
             chat_id=update.effective_chat.id if update.effective_chat else None,

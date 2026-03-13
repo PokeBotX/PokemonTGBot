@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, Mock
 from telegram import Update, Message, User, Chat, CallbackQuery
 from telegram.ext import ContextTypes
 
-from bot.handlers.commands import start_command, menu_command
+from bot.handlers.commands import menu_command, section_command, shop_command, start_command
 from bot.handlers.sections.shop import shop_handler
 from bot.handlers.sections.back import back_to_menu_handler
 from bot.navigation.session import session_store, MenuSession
@@ -94,6 +94,66 @@ async def test_menu_command_sends_menu(mock_update):
 
 
 @pytest.mark.asyncio
+async def test_shop_command_sends_shop_message(mock_update):
+    """Test /shop command sends a fresh shop message."""
+    sent_message = Mock(spec=Message)
+    sent_message.message_id = 103
+    sent_message.edit_reply_markup = AsyncMock()
+    mock_update.effective_chat.send_message = AsyncMock(return_value=sent_message)
+
+    db = AsyncMock()
+    db.get_shop_view = AsyncMock(
+        return_value=ShopView(
+            user_id=1,
+            balance=2500,
+            pokecoin_balance=15,
+            ultraball_quantity=0,
+            masterball_quantity=0,
+            epic_pity_counter=2,
+            legendary_pity_counter=3,
+            bonus_available=125,
+            bonus_ready_in_seconds=0,
+        )
+    )
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+
+    await shop_command(mock_update, context)
+
+    assert mock_update.effective_chat.send_message.called
+    call_args = mock_update.effective_chat.send_message.call_args
+    assert "добро пожаловать в магазин" in call_args.kwargs["text"]
+    assert sent_message.edit_reply_markup.called
+    assert len(session_store._sessions) == 1
+
+
+@pytest.mark.asyncio
+async def test_market_command_sends_placeholder_section(mock_update):
+    """Test /market command sends the market placeholder."""
+    sent_message = Mock(spec=Message)
+    sent_message.message_id = 104
+    sent_message.edit_reply_markup = AsyncMock()
+    mock_update.effective_chat.send_message = AsyncMock(return_value=sent_message)
+    mock_update.message = Mock()
+    mock_update.message.text = "/market"
+
+    application = Mock()
+    application.bot_data = {}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+
+    await section_command(mock_update, context)
+
+    assert mock_update.effective_chat.send_message.called
+    call_args = mock_update.effective_chat.send_message.call_args
+    assert "Рынок" in call_args.kwargs["text"]
+    assert sent_message.edit_reply_markup.called
+    assert len(session_store._sessions) == 1
+
+
+@pytest.mark.asyncio
 async def test_section_handler_shows_placeholder():
     """Test shop handler renders the shop screen."""
     # Create a session
@@ -132,6 +192,7 @@ async def test_section_handler_shows_placeholder():
         return_value=ShopView(
             user_id=1,
             balance=2500,
+            pokecoin_balance=0,
             ultraball_quantity=0,
             masterball_quantity=0,
             epic_pity_counter=2,
@@ -153,9 +214,9 @@ async def test_section_handler_shows_placeholder():
     call_args = query.edit_message_text.call_args
     
     # Check shop text
-    assert "Магазин" in call_args.kwargs["text"]
-    assert "Баланс" in call_args.kwargs["text"]
-    assert "Epic pity" in call_args.kwargs["text"]
+    assert "добро пожаловать в магазин" in call_args.kwargs["text"]
+    assert "Ваш баланс" in call_args.kwargs["text"]
+    assert "Выберите желаемый раздел" in call_args.kwargs["text"]
 
     # Verify new session was created for back button
     assert len(session_store._sessions) == 2

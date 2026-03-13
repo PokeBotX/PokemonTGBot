@@ -15,6 +15,7 @@ import structlog
 logger = structlog.get_logger()
 
 POKEDOLLAR_CODE = "pokedollar"
+POKECOIN_CODE = "pokecoin"
 SHOP_BONUS_CAP = 750
 SHOP_BONUS_RATE_PER_HOUR = 125
 SHOP_BONUS_CLAIM_INTERVAL_SECONDS = 3600
@@ -63,6 +64,7 @@ class ShopView:
 
     user_id: int
     balance: int
+    pokecoin_balance: int
     ultraball_quantity: int
     masterball_quantity: int
     epic_pity_counter: int
@@ -460,6 +462,12 @@ class Database:
                 WHERE ub.user_id = uss.user_id AND c.code = 'pokedollar'
               ), 0) AS balance,
               COALESCE((
+                SELECT ub.amount
+                FROM user_balances ub
+                JOIN currencies c ON c.id = ub.currency_id
+                WHERE ub.user_id = uss.user_id AND c.code = 'pokecoin'
+              ), 0) AS pokecoin_balance,
+              COALESCE((
                 SELECT ui.quantity
                 FROM user_items ui
                 JOIN items i ON i.id = ui.item_id
@@ -485,6 +493,7 @@ class Database:
         return ShopView(
             user_id=int(row["user_id"]),
             balance=int(row["balance"]),
+            pokecoin_balance=int(row["pokecoin_balance"]),
             ultraball_quantity=int(row["ultraball_quantity"]),
             masterball_quantity=int(row["masterball_quantity"]),
             epic_pity_counter=int(row["epic_pity_counter"]),
