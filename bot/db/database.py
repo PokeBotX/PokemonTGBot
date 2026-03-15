@@ -16,6 +16,7 @@ logger = structlog.get_logger()
 
 POKEDOLLAR_CODE = "pokedollar"
 POKECOIN_CODE = "pokecoin"
+WELCOME_POKEDOLLAR_AMOUNT = 1000
 SHOP_BONUS_CAP = 750
 SHOP_BONUS_RATE_PER_HOUR = 125
 SHOP_BONUS_CLAIM_INTERVAL_SECONDS = 3600
@@ -385,7 +386,7 @@ class Database:
             ),
             ensured_balance AS (
                 INSERT INTO user_balances (user_id, currency_id, amount)
-                SELECT upserted_user.id, currencies.id, 0
+                SELECT upserted_user.id, currencies.id, $4
                 FROM upserted_user
                 JOIN currencies ON currencies.code = $3
                 ON CONFLICT (user_id, currency_id) DO NOTHING
@@ -395,6 +396,7 @@ class Database:
             telegram_id,
             username,
             POKEDOLLAR_CODE,
+            WELCOME_POKEDOLLAR_AMOUNT,
         )
         if not row:
             raise ShopError("Unable to ensure user record")
