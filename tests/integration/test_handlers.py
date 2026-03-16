@@ -4,11 +4,11 @@ from unittest.mock import AsyncMock, Mock
 from telegram import Update, Message, User, Chat, CallbackQuery
 from telegram.ext import ContextTypes
 
-from bot.handlers.commands import menu_command, section_command, shop_command, start_command
+from bot.handlers.commands import collection_command, menu_command, section_command, shop_command, start_command
 from bot.handlers.sections.shop import shop_handler
 from bot.handlers.sections.back import back_to_menu_handler
 from bot.navigation.session import session_store, MenuSession
-from bot.db.database import ShopView
+from bot.db.database import CollectionEntry, CollectionFilterState, CollectionPage, ShopView
 
 
 @pytest.fixture(autouse=True)
@@ -149,6 +149,53 @@ async def test_market_command_sends_placeholder_section(mock_update):
     assert mock_update.effective_chat.send_message.called
     call_args = mock_update.effective_chat.send_message.call_args
     assert "Рынок" in call_args.kwargs["text"]
+    assert sent_message.edit_reply_markup.called
+    assert len(session_store._sessions) == 1
+
+
+@pytest.mark.asyncio
+async def test_collection_command_sends_collection_section(mock_update):
+    """Test /collection command sends the collection screen."""
+    sent_message = Mock(spec=Message)
+    sent_message.message_id = 105
+    sent_message.edit_reply_markup = AsyncMock()
+    mock_update.effective_chat.send_message = AsyncMock(return_value=sent_message)
+
+    db = AsyncMock()
+    db.get_collection_page = AsyncMock(
+        return_value=CollectionPage(
+            entries=[
+                CollectionEntry(
+                    pokemon_id=25,
+                    sample_user_pokemon_id=250,
+                    name="Pikachu",
+                    rarity="Rare",
+                    pokemon_type="electric",
+                    quantity=2,
+                    base_hp=35,
+                    base_attack=55,
+                    base_defense=40,
+                    base_stamina=90,
+                    image_credit_id=None,
+                )
+            ],
+            filter_state=CollectionFilterState(),
+            total_entries=1,
+            current_page=1,
+            total_pages=1,
+        )
+    )
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+
+    await collection_command(mock_update, context)
+
+    assert mock_update.effective_chat.send_message.called
+    call_args = mock_update.effective_chat.send_message.call_args
+    assert "ваша коллекция" in call_args.kwargs["text"]
+    assert "Pikachu x2 | id: 25" in call_args.kwargs["text"]
     assert sent_message.edit_reply_markup.called
     assert len(session_store._sessions) == 1
 

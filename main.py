@@ -11,6 +11,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler
 from bot.db import Database
 from bot.utils.logging import setup_logging
 from bot.handlers.commands import (
+    collection_command,
     items_command,
     menu_command,
     pokemon_command,
@@ -26,7 +27,7 @@ from bot.handlers.sections.shop import register_shop_routes
 from bot.handlers.sections.market import market_handler
 from bot.handlers.sections.profile import profile_handler
 from bot.handlers.sections.games import games_handler
-from bot.handlers.sections.collection import collection_handler
+from bot.handlers.sections.collection import register_collection_routes
 from bot.handlers.sections.updates import updates_handler
 from bot.handlers.sections.chat import chat_handler
 from bot.handlers.sections.support import support_handler
@@ -67,10 +68,10 @@ db: Database = None
 def register_routes() -> None:
     """Register all section handlers with navigation router."""
     register_shop_routes(navigation_router)
+    register_collection_routes(navigation_router)
     navigation_router.register("market", market_handler)
     navigation_router.register("profile", profile_handler)
     navigation_router.register("games", games_handler)
-    navigation_router.register("collection", collection_handler)
     navigation_router.register("updates", updates_handler)
     navigation_router.register("chat", chat_handler)
     navigation_router.register("support", support_handler)
@@ -158,7 +159,8 @@ async def lifespan(app: FastAPI):
     bot_app.add_handler(CommandHandler("shop", shop_command))
     bot_app.add_handler(CommandHandler("pokemon", pokemon_command))
     bot_app.add_handler(CommandHandler("items", items_command))
-    bot_app.add_handler(CommandHandler(["market", "profile", "games", "collection", "updates", "chat", "support", "info"], section_command))
+    bot_app.add_handler(CommandHandler("collection", collection_command))
+    bot_app.add_handler(CommandHandler(["market", "profile", "games", "updates", "chat", "support", "info"], section_command))
     
     # Register callback query handler
     bot_app.add_handler(CallbackQueryHandler(handle_callback_query))

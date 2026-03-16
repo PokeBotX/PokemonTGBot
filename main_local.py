@@ -8,6 +8,7 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler
 
 from bot.db import Database
 from bot.handlers.commands import (
+    collection_command,
     items_command,
     menu_command,
     pokemon_command,
@@ -18,7 +19,7 @@ from bot.handlers.commands import (
 from bot.handlers.navigation import handle_callback_query
 from bot.handlers.sections.back import back_to_menu_handler
 from bot.handlers.sections.chat import chat_handler
-from bot.handlers.sections.collection import collection_handler
+from bot.handlers.sections.collection import register_collection_routes
 from bot.handlers.sections.games import games_handler
 from bot.handlers.sections.info import info_handler
 from bot.handlers.sections.market import market_handler
@@ -47,10 +48,10 @@ if not TELEGRAM_BOT_TOKEN:
 def register_routes() -> None:
     """Register all section handlers with navigation router."""
     register_shop_routes(navigation_router)
+    register_collection_routes(navigation_router)
     navigation_router.register("market", market_handler)
     navigation_router.register("profile", profile_handler)
     navigation_router.register("games", games_handler)
-    navigation_router.register("collection", collection_handler)
     navigation_router.register("updates", updates_handler)
     navigation_router.register("chat", chat_handler)
     navigation_router.register("support", support_handler)
@@ -116,7 +117,8 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("shop", shop_command))
     application.add_handler(CommandHandler("pokemon", pokemon_command))
     application.add_handler(CommandHandler("items", items_command))
-    application.add_handler(CommandHandler(["market", "profile", "games", "collection", "updates", "chat", "support", "info"], section_command))
+    application.add_handler(CommandHandler("collection", collection_command))
+    application.add_handler(CommandHandler(["market", "profile", "games", "updates", "chat", "support", "info"], section_command))
     application.add_handler(CallbackQueryHandler(handle_callback_query))
     return application
 

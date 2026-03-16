@@ -24,6 +24,7 @@ SHOP_BONUS_CAP_SECONDS = 6 * 3600
 SPIN_PRICE = 500
 ULTRABALL_PRICE = 200
 MASTERBALL_PRICE = 1000
+COLLECTION_PAGE_SIZE = 12
 EPIC_PITY_THRESHOLD = 15
 LEGENDARY_PITY_THRESHOLD = 40
 RARITY_PROBABILITIES = {
@@ -134,6 +135,113 @@ class SpinResult:
     shop_view: ShopView
 
 
+@dataclass(slots=True)
+class CollectionFilterState:
+    """Current collection filters used for browsing."""
+
+    rarities: tuple[str, ...] = ()
+    types: tuple[str, ...] = ()
+    duplicates_only: bool = False
+    page: int = 1
+
+    def with_page(self, page: int) -> "CollectionFilterState":
+        """Return a copy with the requested page."""
+        return CollectionFilterState(
+            rarities=self.rarities,
+            types=self.types,
+            duplicates_only=self.duplicates_only,
+            page=page,
+        )
+
+    def to_session_payload(self) -> dict[str, object]:
+        """Serialize filter state for session storage."""
+        return {
+            "rarities": list(self.rarities),
+            "types": list(self.types),
+            "duplicates_only": self.duplicates_only,
+            "page": self.page,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: Optional[dict[str, object]]) -> "CollectionFilterState":
+        """Deserialize filter state from session payload."""
+        if not payload:
+            return cls()
+        return cls(
+            rarities=tuple(str(value) for value in payload.get("rarities", []) if value),
+            types=tuple(str(value) for value in payload.get("types", []) if value),
+            duplicates_only=bool(payload.get("duplicates_only", False)),
+            page=max(1, int(payload.get("page", 1))),
+        )
+
+
+@dataclass(slots=True)
+class CollectionEntry:
+    """Aggregated collection entry for one pokemon species."""
+
+    pokemon_id: int
+    sample_user_pokemon_id: int
+    name: str
+    rarity: str
+    pokemon_type: Optional[str]
+    quantity: int
+    base_hp: int
+    base_attack: int
+    base_defense: int
+    base_stamina: int
+    image_credit_id: Optional[int]
+
+    def as_session_payload(self) -> dict[str, object]:
+        """Serialize entry for session storage."""
+        return {
+            "pokemon_id": self.pokemon_id,
+            "sample_user_pokemon_id": self.sample_user_pokemon_id,
+            "name": self.name,
+            "rarity": self.rarity,
+            "pokemon_type": self.pokemon_type,
+            "quantity": self.quantity,
+            "base_hp": self.base_hp,
+            "base_attack": self.base_attack,
+            "base_defense": self.base_defense,
+            "base_stamina": self.base_stamina,
+            "image_credit_id": self.image_credit_id,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, object]) -> "CollectionEntry":
+        """Deserialize entry from session payload."""
+        return cls(
+            pokemon_id=int(payload["pokemon_id"]),
+            sample_user_pokemon_id=int(payload["sample_user_pokemon_id"]),
+            name=str(payload["name"]),
+            rarity=str(payload["rarity"]),
+            pokemon_type=payload.get("pokemon_type"),
+            quantity=int(payload["quantity"]),
+            base_hp=int(payload["base_hp"]),
+            base_attack=int(payload["base_attack"]),
+            base_defense=int(payload["base_defense"]),
+            base_stamina=int(payload["base_stamina"]),
+            image_credit_id=payload.get("image_credit_id"),
+        )
+
+
+@dataclass(slots=True)
+class CollectionPage:
+    """Paginated collection results."""
+
+    entries: list[CollectionEntry]
+    filter_state: CollectionFilterState
+    total_entries: int
+    current_page: int
+    total_pages: int
+
+    def has_previous(self) -> bool:
+        return self.current_page > 1
+
+    def has_next(self) -> bool:
+        return self.current_page < self.total_pages
+
+
 class Database:
     """Minimal asyncpg pool manager for bot data."""
 
@@ -191,6 +299,21 @@ class Database:
             async with conn.transaction():
                 user_id = await self._ensure_user(conn, telegram_id, username)
                 return await self._fetch_shop_view(conn, user_id)
+
+    async def get_collection_page(
+        self,
+        telegram_id: int,
+        username: Optional[str],
+        filter_state: Optional[CollectionFilterState] = None,
+    ) -> CollectionPage:
+        """Load a paginated collection view for the current user."""
+        self._ensure_pool()
+        requested_state = filter_state or CollectionFilterState()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                user_id = await self._ensure_user(conn, telegram_id, username)
+                entries = await self._fetch_collection_entries(conn, user_id)
+        return _paginate_collection_entries(entries, requested_state)
 
     async def claim_daily_bonus(self, telegram_id: int, username: Optional[str]) -> BonusClaimResult:
         """Claim the accumulated daily bonus if it is ready."""
@@ -586,6 +709,57 @@ class Database:
             raise ShopError(f"No pokemon found for rarity pool {rarities}")
         return row
 
+    async def _fetch_collection_entries(
+        self, conn: asyncpg.Connection, user_id: int
+    ) -> list[CollectionEntry]:
+        rows = await conn.fetch(
+            """
+            SELECT
+              pc.id AS pokemon_id,
+              MIN(up.id) AS sample_user_pokemon_id,
+              pc.name,
+              pc.rarity,
+              pc.type,
+              COUNT(*)::int AS quantity,
+              pc.base_hp,
+              pc.base_attack,
+              pc.base_defense,
+              pc.base_stamina,
+              pc.image_credit_id
+            FROM user_pokemon up
+            JOIN pokemon_catalog pc ON pc.id = up.pokemon_id
+            WHERE up.owner_user_id = $1
+            GROUP BY
+              pc.id,
+              pc.name,
+              pc.rarity,
+              pc.type,
+              pc.base_hp,
+              pc.base_attack,
+              pc.base_defense,
+              pc.base_stamina,
+              pc.image_credit_id
+            ORDER BY pc.id ASC
+            """,
+            user_id,
+        )
+        return [
+            CollectionEntry(
+                pokemon_id=int(row["pokemon_id"]),
+                sample_user_pokemon_id=int(row["sample_user_pokemon_id"]),
+                name=str(row["name"]),
+                rarity=str(row["rarity"]),
+                pokemon_type=row["type"],
+                quantity=int(row["quantity"]),
+                base_hp=int(row["base_hp"]),
+                base_attack=int(row["base_attack"]),
+                base_defense=int(row["base_defense"]),
+                base_stamina=int(row["base_stamina"]),
+                image_credit_id=row["image_credit_id"],
+            )
+            for row in rows
+        ]
+
 
 def _required_env(name: str) -> str:
     value = os.getenv(name)
@@ -650,3 +824,47 @@ def _update_pity_counters(result_rarity: str, epic_counter: int, legendary_count
     if result_rarity == "Legendary":
         return epic_counter + 1, 0
     return epic_counter + 1, legendary_counter + 1
+
+
+def _normalize_collection_types(raw_type: Optional[str]) -> tuple[str, ...]:
+    if not raw_type:
+        return ()
+    values = []
+    for part in str(raw_type).split("/"):
+        normalized = part.strip().lower()
+        if not normalized or normalized.isdigit():
+            continue
+        values.append(normalized)
+    return tuple(dict.fromkeys(values))
+
+
+def _entry_matches_filter(entry: CollectionEntry, filter_state: CollectionFilterState) -> bool:
+    if filter_state.rarities and entry.rarity not in filter_state.rarities:
+        return False
+
+    entry_types = set(_normalize_collection_types(entry.pokemon_type))
+    if filter_state.types and not set(filter_state.types).issubset(entry_types):
+        return False
+
+    if filter_state.duplicates_only and entry.quantity <= 1:
+        return False
+
+    return True
+
+
+def _paginate_collection_entries(
+    entries: list[CollectionEntry], filter_state: CollectionFilterState
+) -> CollectionPage:
+    filtered_entries = [entry for entry in entries if _entry_matches_filter(entry, filter_state)]
+    total_entries = len(filtered_entries)
+    total_pages = max(1, (total_entries + COLLECTION_PAGE_SIZE - 1) // COLLECTION_PAGE_SIZE)
+    current_page = min(max(1, filter_state.page), total_pages)
+    start = (current_page - 1) * COLLECTION_PAGE_SIZE
+    end = start + COLLECTION_PAGE_SIZE
+    return CollectionPage(
+        entries=filtered_entries[start:end],
+        filter_state=filter_state.with_page(current_page),
+        total_entries=total_entries,
+        current_page=current_page,
+        total_pages=total_pages,
+    )

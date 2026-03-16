@@ -6,6 +6,7 @@ from telegram.error import TelegramError, BadRequest, Forbidden
 
 from bot.navigation.context import extract_context
 from bot.navigation.session import session_store
+from bot.handlers.sections.collection import show_collection_screen
 from bot.handlers.sections.shop import show_shop_screen, SHOP_VIEW_ITEMS, SHOP_VIEW_POKEMON
 from bot.ui.menu import build_main_menu_keyboard
 from bot.ui.menu import build_back_button
@@ -17,7 +18,6 @@ PLACEHOLDER_COMMAND_SECTIONS = {
     "market": "market",
     "profile": "profile",
     "games": "games",
-    "collection": "collection",
     "updates": "updates",
     "chat": "chat",
     "support": "support",
@@ -80,6 +80,12 @@ async def items_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     """Handle /items command."""
     await _sync_user_with_db(update, context)
     await show_shop_screen(update, context, screen=SHOP_VIEW_ITEMS)
+
+
+async def collection_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /collection command."""
+    await _sync_user_with_db(update, context)
+    await show_collection_screen(update, context)
 
 
 async def section_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
