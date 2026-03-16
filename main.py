@@ -32,6 +32,7 @@ from bot.handlers.sections.chat import chat_handler
 from bot.handlers.sections.support import support_handler
 from bot.handlers.sections.info import info_handler
 from bot.handlers.sections.back import back_to_menu_handler
+from bot.navigation.session import session_store
 
 # Setup logging
 setup_logging()
@@ -50,6 +51,8 @@ PORT = int(os.getenv("PORT", "8000"))
 DB_ENABLED = os.getenv("DB_ENABLED", "false").lower() == "true"
 DB_INIT_SCHEMA = os.getenv("DB_INIT_SCHEMA", "false").lower() == "true"
 DB_SCHEMA_PATH = os.getenv("DB_SCHEMA_PATH", "sql/schema.sql")
+REDIS_ENABLED = os.getenv("REDIS_ENABLED", "false").lower() == "true"
+REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
 
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN not set in .env")
@@ -167,6 +170,12 @@ async def lifespan(app: FastAPI):
     await bot_app.start()
 
     # Initialize database (optional)
+    session_store.disable_redis()
+    if REDIS_ENABLED:
+        session_store.configure_redis(REDIS_URL)
+        bot_app.bot_data["redis_url"] = REDIS_URL
+        logger.info("redis_ready", redis_url=REDIS_URL)
+
     if DB_ENABLED:
         db = Database()
         await db.connect()
@@ -189,6 +198,7 @@ async def lifespan(app: FastAPI):
     logger.info("bot_shutting_down")
     if db:
         await db.close()
+    session_store.disable_redis()
     await bot_app.stop()
     await bot_app.shutdown()
 

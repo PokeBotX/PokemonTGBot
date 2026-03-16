@@ -27,6 +27,7 @@ from bot.handlers.sections.shop import register_shop_routes
 from bot.handlers.sections.support import support_handler
 from bot.handlers.sections.updates import updates_handler
 from bot.navigation.router import navigation_router
+from bot.navigation.session import session_store
 from bot.utils.logging import setup_logging
 
 setup_logging()
@@ -37,6 +38,8 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 DB_ENABLED = os.getenv("DB_ENABLED", "false").lower() == "true"
 DB_INIT_SCHEMA = os.getenv("DB_INIT_SCHEMA", "false").lower() == "true"
 DB_SCHEMA_PATH = os.getenv("DB_SCHEMA_PATH", "sql/schema.sql")
+REDIS_ENABLED = os.getenv("REDIS_ENABLED", "false").lower() == "true"
+REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN not set in .env")
 
@@ -58,6 +61,12 @@ def register_routes() -> None:
 
 async def post_init(application: Application) -> None:
     """Prepare bot state for local polling."""
+    session_store.disable_redis()
+    if REDIS_ENABLED:
+        session_store.configure_redis(REDIS_URL)
+        application.bot_data["redis_url"] = REDIS_URL
+        logger.info("redis_ready", redis_url=REDIS_URL)
+
     if DB_ENABLED:
         db = Database()
         await db.connect()
@@ -89,6 +98,7 @@ async def post_shutdown(application: Application) -> None:
     db = application.bot_data.get("db")
     if db:
         await db.close()
+    session_store.disable_redis()
 
 
 def build_application() -> Application:

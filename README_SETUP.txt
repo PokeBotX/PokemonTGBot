@@ -55,6 +55,9 @@ DB_PORT=5432
 DB_NAME=pokecollect
 DB_USER=postgres
 DB_PASSWORD=postgres
+
+REDIS_ENABLED=false
+REDIS_URL=redis://127.0.0.1:6379/0
 ```
 
 Важно:
@@ -129,7 +132,32 @@ DB_HOST=127.0.0.1 DB_PORT=5432 DB_NAME=pokecollect DB_USER=postgres DB_PASSWORD=
 ```
 
 
-8. Локальный запуск бота
+8. Настройка Redis (опционально, но рекомендуется)
+
+Redis нужен для хранения menu session и callback lock не только в памяти, но и во внешнем хранилище.
+
+Самый простой локальный запуск через Docker:
+
+```bash
+docker run -d --name pokemonbot-redis -p 127.0.0.1:6379:6379 redis:7-alpine
+```
+
+После этого включи Redis в `.env`:
+
+```env
+REDIS_ENABLED=true
+REDIS_URL=redis://127.0.0.1:6379/0
+```
+
+Проверка контейнера:
+
+```bash
+docker ps
+docker logs pokemonbot-redis
+```
+
+
+9. Локальный запуск бота
 
 Рекомендуемый режим для локальной проверки:
 
@@ -140,20 +168,21 @@ uv run python main_local.py
 Этот режим использует Telegram long polling и проще всего подходит для разработки.
 
 
-9. Как понять, что старт успешен
+10. Как понять, что старт успешен
 
 При нормальном запуске в логах обычно появляются события:
 
 - `routes_registered`
 - `db_connected`
 - `db_ready`
+- `redis_ready` если Redis включён
 - `bot_ready`
 - `bot_starting`
 
 Если бот стартует, но Telegram API отвечает таймаутами, проблема обычно в сети до `api.telegram.org`, а не в логике проекта.
 
 
-10. Первый тест в Telegram
+11. Первый тест в Telegram
 
 1. Открой своего бота в Telegram
 2. Отправь `/start`
@@ -165,7 +194,7 @@ uv run python main_local.py
    - `Предметы`
 
 
-11. Как выдать себе тестовую валюту
+12. Как выдать себе тестовую валюту
 
 Если знаешь свой Telegram ID, можно начислить `pokedollar` так:
 
@@ -192,7 +221,7 @@ WHERE u.tg_user_id = 123456789
 ```
 
 
-12. Полезные SQL-проверки
+13. Полезные SQL-проверки
 
 Проверить, что каталог покемонов импортирован:
 
@@ -225,7 +254,7 @@ FROM user_shop_state;
 ```
 
 
-13. Запуск тестов
+14. Запуск тестов
 
 Все тесты:
 
@@ -240,7 +269,7 @@ uv run pytest tests/unit/test_shop.py tests/integration/test_shop_flow.py -v
 ```
 
 
-14. Частые проблемы
+15. Частые проблемы
 
 Проблема: `ModuleNotFoundError`
 
@@ -272,6 +301,21 @@ getent hosts api.telegram.org
 
 Если эти команды не работают, проблема в сети, VPN, фаерволе или провайдере.
 
+Проблема: Redis включён, но бот не стартует
+
+Проверь:
+
+```bash
+docker ps
+docker logs pokemonbot-redis
+```
+
+Если контейнер не запущен, можно временно отключить Redis:
+
+```env
+REDIS_ENABLED=false
+```
+
 Проблема: магазин открывается, но крутки не работают
 
 Проверь:
@@ -289,7 +333,7 @@ psql -h 127.0.0.1 -U postgres -d pokecollect -f sql/schema.sql
 ```
 
 
-15. Рекомендуемый локальный workflow
+16. Рекомендуемый локальный workflow
 
 ```bash
 uv sync
