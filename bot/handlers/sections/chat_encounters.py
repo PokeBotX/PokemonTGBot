@@ -253,6 +253,7 @@ async def _resolve_attempt_result(
         await query.answer("Не получилось поймать.", show_alert=False)
         return
     if result.status == "caught" and result.encounter:
+        await _send_caught_message(query, result.encounter, result.catcher_label)
         await _edit_query_encounter_message(
             query,
             f"✨ <b>{result.encounter.name}</b> пойман!\nПоймал: <b>{result.catcher_label}</b>",
@@ -341,6 +342,18 @@ async def _send_failed_attempt_message(
     ball_label = BALL_LABELS.get(ball_code or "", "покебол")
     await query.message.reply_text(
         f"❌ {user_label} бросил {ball_label}, но <b>{encounter.name}</b> вырвался.",
+        parse_mode="HTML",
+        message_thread_id=getattr(query.message, "message_thread_id", None),
+    )
+
+
+async def _send_caught_message(
+    query,
+    encounter: ChatEncounter,
+    catcher_label: Optional[str],
+) -> None:
+    await query.message.reply_text(
+        f"✨ <b>{catcher_label or 'Тренер'}</b> поймал <b>{encounter.name}</b>!",
         parse_mode="HTML",
         message_thread_id=getattr(query.message, "message_thread_id", None),
     )

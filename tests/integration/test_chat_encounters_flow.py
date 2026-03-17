@@ -191,6 +191,7 @@ async def test_caught_encounter_adds_card_button() -> None:
     message.chat = chat
     message.message_thread_id = None
     message.photo = [Mock()]
+    message.reply_text = AsyncMock()
 
     query = Mock()
     query.data = "enc:1:pokeball"
@@ -219,6 +220,8 @@ async def test_caught_encounter_adds_card_button() -> None:
 
     await handle_encounter_callback(update, context)
 
+    message.reply_text.assert_awaited()
+    assert "поймал" in message.reply_text.call_args.args[0].lower()
     reply_markup = query.edit_message_caption.call_args.kwargs["reply_markup"]
     assert reply_markup.inline_keyboard[0][0].callback_data == "enc:1:card"
 
