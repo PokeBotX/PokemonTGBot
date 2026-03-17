@@ -5,22 +5,38 @@ from __future__ import annotations
 import os
 import random
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Optional, Sequence
 
 import asyncpg
 import structlog
+from redis import Redis
+from redis.exceptions import RedisError
 
 logger = structlog.get_logger()
 
 POKEDOLLAR_CODE = "pokedollar"
 POKECOIN_CODE = "pokecoin"
+REGULAR_POKEBALL_CODE = "pokeball"
+ULTRABALL_CODE = "ultraball"
+MASTERBALL_CODE = "masterball"
 WELCOME_POKEDOLLAR_AMOUNT = 1000
 SHOP_BONUS_CAP = 750
 SHOP_BONUS_RATE_PER_HOUR = 125
 SHOP_BONUS_CLAIM_INTERVAL_SECONDS = 3600
 SHOP_BONUS_CAP_SECONDS = 6 * 3600
+CHAT_ENCOUNTER_COOLDOWN_SECONDS =60
+CHAT_ENCOUNTER_MESSAGE_THRESHOLD = 10
+CHAT_ENCOUNTER_TIMEOUT_SECONDS = 5 * 60
+CHAT_ENCOUNTER_COUNTER_TTL_SECONDS = 7 * 24 * 60 * 60
+CHAT_ENCOUNTER_TEXT = "Кто-то пришёл..."
+CHAT_ENCOUNTER_EXPIRED_TEXT = "Тут кто-то был..."
+CHAT_ENCOUNTER_BALL_CATCH_CHANCES = {
+    REGULAR_POKEBALL_CODE: 60.0,
+    ULTRABALL_CODE: 80.0,
+    MASTERBALL_CODE: 100.0,
+}
 SPIN_PRICE = 500
 ULTRABALL_PRICE = 200
 MASTERBALL_PRICE = 1000
@@ -242,12 +258,48 @@ class CollectionPage:
         return self.current_page < self.total_pages
 
 
+@dataclass(slots=True)
+class ChatEncounter:
+    """Active or resolved encounter record."""
+
+    encounter_id: int
+    chat_id: int
+    message_thread_id: Optional[int]
+    encounter_message_id: Optional[int]
+    pokemon_id: int
+    name: str
+    rarity: str
+    pokemon_type: Optional[str]
+    image_credit_id: Optional[int]
+    spawned_at: datetime
+    expires_at: datetime
+    status: str
+    caught_by_user_id: Optional[int]
+    caught_user_pokemon_id: Optional[int]
+    caught_with_item_code: Optional[str]
+
+
+@dataclass(slots=True)
+class ChatEncounterAttemptResult:
+    """Result of one user attempt against a chat encounter."""
+
+    status: str
+    encounter: Optional[ChatEncounter]
+    caught: bool = False
+    ball_code: Optional[str] = None
+    ball_consumed: bool = False
+    catcher_user_id: Optional[int] = None
+    catcher_label: Optional[str] = None
+    already_attempted: bool = False
+
+
 class Database:
     """Minimal asyncpg pool manager for bot data."""
 
     def __init__(self, dsn: Optional[str] = None) -> None:
         self.dsn = dsn or os.getenv("DATABASE_URL")
         self.pool: Optional[asyncpg.Pool] = None
+        self.redis: Optional[Redis] = None
 
     async def connect(self) -> None:
         """Create connection pool."""
@@ -267,6 +319,16 @@ class Database:
                 max_size=10,
             )
 
+        if os.getenv("REDIS_ENABLED", "false").lower() == "true":
+            redis_url = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+            try:
+                self.redis = Redis.from_url(redis_url, decode_responses=True)
+                self.redis.ping()
+                logger.info("db_redis_ready", redis_url=redis_url)
+            except RedisError as exc:
+                self.redis = None
+                logger.warning("db_redis_unavailable", redis_url=redis_url, error=str(exc))
+
         logger.info("db_connected")
 
     async def close(self) -> None:
@@ -274,7 +336,13 @@ class Database:
         if self.pool:
             await self.pool.close()
             self.pool = None
-            logger.info("db_closed")
+        if self.redis is not None:
+            try:
+                self.redis.close()
+            except RedisError:
+                pass
+            self.redis = None
+        logger.info("db_closed")
 
     async def init_schema(self, schema_path: str = "sql/schema.sql") -> None:
         """Apply SQL schema from file."""
@@ -314,6 +382,495 @@ class Database:
                 user_id = await self._ensure_user(conn, telegram_id, username)
                 entries = await self._fetch_collection_entries(conn, user_id)
         return _paginate_collection_entries(entries, requested_state)
+
+    async def note_chat_message(self, chat_id: int, message_thread_id: Optional[int]) -> Optional[ChatEncounter]:
+        """Record one group-chat message and spawn an encounter if the threshold is reached."""
+        self._ensure_pool()
+        if self.redis is not None:
+            cached_result = self._note_chat_message_via_redis(chat_id)
+            if cached_result == "cooldown":
+                logger.info("chat_encounter_message_ignored", chat_id=chat_id, reason="redis_cooldown_not_ready")
+                return None
+            if cached_result == "active":
+                logger.info("chat_encounter_message_ignored", chat_id=chat_id, reason="redis_active_encounter_exists")
+                return None
+            if isinstance(cached_result, int) and cached_result < CHAT_ENCOUNTER_MESSAGE_THRESHOLD:
+                logger.info(
+                    "chat_encounter_counter_incremented",
+                    chat_id=chat_id,
+                    messages_since_cooldown=cached_result,
+                    threshold=CHAT_ENCOUNTER_MESSAGE_THRESHOLD,
+                    source="redis",
+                )
+                return None
+
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await self._ensure_chat_encounter_state(conn, chat_id)
+                state = await self._fetch_chat_encounter_state(conn, chat_id, for_update=True)
+                now = datetime.now(UTC)
+                logger.info(
+                    "chat_encounter_message_seen",
+                    chat_id=chat_id,
+                    message_thread_id=message_thread_id,
+                    active_encounter_id=state["active_encounter_id"],
+                    messages_since_cooldown=int(state["messages_since_cooldown"]),
+                    last_spawn_at=_normalize_timestamp(state["last_spawn_at"]).isoformat(),
+                    now=now.isoformat(),
+                )
+                if await self._expire_active_chat_encounter_if_due(conn, chat_id, now):
+                    state = await self._fetch_chat_encounter_state(conn, chat_id, for_update=True)
+                    logger.info(
+                        "chat_encounter_expired_during_message_check",
+                        chat_id=chat_id,
+                        active_encounter_id=state["active_encounter_id"],
+                    )
+                if state["active_encounter_id"] is not None:
+                    self._set_active_encounter_cache(chat_id, int(state["active_encounter_id"]))
+                    self._clear_encounter_counter_cache(chat_id)
+                    logger.info(
+                        "chat_encounter_message_ignored",
+                        chat_id=chat_id,
+                        reason="active_encounter_exists",
+                        active_encounter_id=state["active_encounter_id"],
+                    )
+                    return None
+                if not _chat_encounter_cooldown_ready(state["last_spawn_at"], now):
+                    remaining_seconds = max(
+                        0,
+                        CHAT_ENCOUNTER_COOLDOWN_SECONDS
+                        - int((now - _normalize_timestamp(state["last_spawn_at"])).total_seconds()),
+                    )
+                    self._set_encounter_cooldown_cache(chat_id, remaining_seconds)
+                    self._clear_encounter_counter_cache(chat_id)
+                    logger.info(
+                        "chat_encounter_message_ignored",
+                        chat_id=chat_id,
+                        reason="cooldown_not_ready",
+                        remaining_seconds=remaining_seconds,
+                    )
+                    return None
+
+                message_count = int(state["messages_since_cooldown"]) + 1
+                if message_count < CHAT_ENCOUNTER_MESSAGE_THRESHOLD:
+                    await conn.execute(
+                        """
+                        UPDATE chat_encounter_state
+                        SET messages_since_cooldown = $2,
+                            updated_at = $3
+                        WHERE chat_id = $1
+                        """,
+                        chat_id,
+                        message_count,
+                        now,
+                    )
+                    logger.info(
+                        "chat_encounter_counter_incremented",
+                        chat_id=chat_id,
+                        messages_since_cooldown=message_count,
+                        threshold=CHAT_ENCOUNTER_MESSAGE_THRESHOLD,
+                    )
+                    return None
+
+                logger.info(
+                    "chat_encounter_threshold_reached",
+                    chat_id=chat_id,
+                    messages_since_cooldown=message_count,
+                    threshold=CHAT_ENCOUNTER_MESSAGE_THRESHOLD,
+                )
+                return await self._spawn_chat_encounter(conn, chat_id, message_thread_id, now)
+
+    async def trigger_search_encounter(self, chat_id: int, message_thread_id: Optional[int]) -> Optional[ChatEncounter]:
+        """Spawn an encounter via /search if the chat cooldown is ready."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await self._ensure_chat_encounter_state(conn, chat_id)
+                state = await self._fetch_chat_encounter_state(conn, chat_id, for_update=True)
+                now = datetime.now(UTC)
+                if await self._expire_active_chat_encounter_if_due(conn, chat_id, now):
+                    state = await self._fetch_chat_encounter_state(conn, chat_id, for_update=True)
+                if state["active_encounter_id"] is not None:
+                    self._set_active_encounter_cache(chat_id, int(state["active_encounter_id"]))
+                    return None
+                if not _chat_encounter_cooldown_ready(state["last_spawn_at"], now):
+                    remaining_seconds = max(
+                        0,
+                        CHAT_ENCOUNTER_COOLDOWN_SECONDS
+                        - int((now - _normalize_timestamp(state["last_spawn_at"])).total_seconds()),
+                    )
+                    self._set_encounter_cooldown_cache(chat_id, remaining_seconds)
+                    return None
+
+                return await self._spawn_chat_encounter(conn, chat_id, message_thread_id, now)
+
+    async def attach_chat_encounter_message(self, encounter_id: int, encounter_message_id: int) -> None:
+        """Attach the sent Telegram message id to an encounter."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE chat_encounters
+                SET encounter_message_id = $2
+                WHERE id = $1
+                """,
+                encounter_id,
+                encounter_message_id,
+            )
+
+    async def cancel_chat_encounter(self, encounter_id: int) -> None:
+        """Cancel an encounter if message delivery failed."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    SELECT id, chat_id
+                    FROM chat_encounters
+                    WHERE id = $1 AND status = 'active'
+                    FOR UPDATE
+                    """,
+                    encounter_id,
+                )
+                if not row:
+                    return
+                await conn.execute(
+                    """
+                    UPDATE chat_encounters
+                    SET status = 'cancelled',
+                        resolved_at = $2
+                    WHERE id = $1
+                    """,
+                    encounter_id,
+                    datetime.now(UTC),
+                )
+                await conn.execute(
+                    """
+                    UPDATE chat_encounter_state
+                    SET active_encounter_id = NULL,
+                        updated_at = $2
+                    WHERE chat_id = $1 AND active_encounter_id = $3
+                    """,
+                    int(row["chat_id"]),
+                    datetime.now(UTC),
+                    encounter_id,
+                )
+                self._clear_active_encounter_cache(int(row["chat_id"]))
+
+    async def get_active_chat_encounter(self, chat_id: int) -> Optional[ChatEncounter]:
+        """Return the current active encounter for a chat, if any."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT ce.id, ce.chat_id, ce.message_thread_id, ce.encounter_message_id,
+                       ce.pokemon_id, ce.spawned_at, ce.expires_at, ce.status,
+                       ce.caught_by_user_id, ce.caught_user_pokemon_id, ce.caught_with_item_code,
+                       pc.name, pc.rarity, pc.type, pc.image_credit_id
+                FROM chat_encounters ce
+                JOIN pokemon_catalog pc ON pc.id = ce.pokemon_id
+                WHERE ce.chat_id = $1 AND ce.status = 'active'
+                ORDER BY ce.spawned_at DESC
+                LIMIT 1
+                """,
+                chat_id,
+            )
+        return _map_chat_encounter(row) if row else None
+
+    async def expire_chat_encounter(self, encounter_id: int) -> Optional[ChatEncounter]:
+        """Expire an active encounter and clear it from the chat state."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    SELECT ce.id, ce.chat_id, ce.message_thread_id, ce.encounter_message_id,
+                           ce.pokemon_id, ce.spawned_at, ce.expires_at, ce.status,
+                           ce.caught_by_user_id, ce.caught_user_pokemon_id, ce.caught_with_item_code,
+                           pc.name, pc.rarity, pc.type, pc.image_credit_id
+                    FROM chat_encounters ce
+                    JOIN pokemon_catalog pc ON pc.id = ce.pokemon_id
+                    WHERE ce.id = $1 AND ce.status = 'active'
+                    FOR UPDATE
+                    """,
+                    encounter_id,
+                )
+                if not row:
+                    return None
+
+                now = datetime.now(UTC)
+                await conn.execute(
+                    """
+                    UPDATE chat_encounters
+                    SET status = 'expired',
+                        resolved_at = $2
+                    WHERE id = $1
+                    """,
+                    encounter_id,
+                    now,
+                )
+                await conn.execute(
+                    """
+                    UPDATE chat_encounter_state
+                    SET active_encounter_id = NULL,
+                        messages_since_cooldown = 0,
+                        updated_at = $2
+                    WHERE chat_id = $1 AND active_encounter_id = $3
+                    """,
+                    int(row["chat_id"]),
+                    now,
+                    encounter_id,
+                )
+                self._clear_active_encounter_cache(int(row["chat_id"]))
+                return _map_chat_encounter(row)
+
+    async def attempt_chat_encounter(
+        self,
+        chat_id: int,
+        encounter_message_id: int,
+        telegram_id: int,
+        username: Optional[str],
+        catcher_label: str,
+        ball_code: str,
+    ) -> ChatEncounterAttemptResult:
+        """Attempt to catch the active encounter in a chat."""
+        self._ensure_pool()
+        if ball_code not in CHAT_ENCOUNTER_BALL_CATCH_CHANCES:
+            raise ShopError(f"Unsupported encounter ball: {ball_code}")
+
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await self._ensure_chat_encounter_state(conn, chat_id)
+                state = await self._fetch_chat_encounter_state(conn, chat_id, for_update=True)
+                if state["active_encounter_id"] is None:
+                    return ChatEncounterAttemptResult(status="missing", encounter=None)
+
+                encounter_row = await conn.fetchrow(
+                    """
+                    SELECT ce.id, ce.chat_id, ce.message_thread_id, ce.encounter_message_id,
+                           ce.pokemon_id, ce.spawned_at, ce.expires_at, ce.status,
+                           ce.caught_by_user_id, ce.caught_user_pokemon_id, ce.caught_with_item_code,
+                           pc.name, pc.rarity, pc.type, pc.image_credit_id
+                    FROM chat_encounters ce
+                    JOIN pokemon_catalog pc ON pc.id = ce.pokemon_id
+                    WHERE ce.id = $1
+                    FOR UPDATE
+                    """,
+                    int(state["active_encounter_id"]),
+                )
+                if not encounter_row or encounter_row["status"] != "active":
+                    return ChatEncounterAttemptResult(status="missing", encounter=None)
+
+                encounter = _map_chat_encounter(encounter_row)
+                if encounter.encounter_message_id != encounter_message_id:
+                    return ChatEncounterAttemptResult(status="stale", encounter=encounter)
+
+                now = datetime.now(UTC)
+                if encounter.expires_at <= now:
+                    await conn.execute(
+                        """
+                        UPDATE chat_encounters
+                        SET status = 'expired',
+                            resolved_at = $2
+                        WHERE id = $1
+                        """,
+                        encounter.encounter_id,
+                        now,
+                    )
+                    await conn.execute(
+                        """
+                        UPDATE chat_encounter_state
+                        SET active_encounter_id = NULL,
+                            messages_since_cooldown = 0,
+                            updated_at = $2
+                        WHERE chat_id = $1 AND active_encounter_id = $3
+                        """,
+                        chat_id,
+                        now,
+                        encounter.encounter_id,
+                    )
+                    self._clear_active_encounter_cache(chat_id)
+                    return ChatEncounterAttemptResult(status="expired", encounter=encounter)
+
+                user_id = await self._ensure_user(conn, telegram_id, username)
+                attempted = await conn.fetchval(
+                    """
+                    SELECT 1
+                    FROM chat_encounter_attempts
+                    WHERE encounter_id = $1 AND user_id = $2
+                    """,
+                    encounter.encounter_id,
+                    user_id,
+                )
+                if attempted:
+                    return ChatEncounterAttemptResult(
+                        status="already_attempted",
+                        encounter=encounter,
+                        ball_code=ball_code,
+                        already_attempted=True,
+                    )
+
+                ball_consumed = False
+                if ball_code in {ULTRABALL_CODE, MASTERBALL_CODE}:
+                    await self._ensure_user_balance(conn, user_id, POKEDOLLAR_CODE)
+                    item_row = await conn.fetchrow(
+                        """
+                        SELECT ui.quantity, i.id
+                        FROM user_items ui
+                        JOIN items i ON i.id = ui.item_id
+                        WHERE ui.user_id = $1 AND i.code = $2
+                        FOR UPDATE
+                        """,
+                        user_id,
+                        ball_code,
+                    )
+                    if not item_row or int(item_row["quantity"]) <= 0:
+                        return ChatEncounterAttemptResult(status="no_ball", encounter=encounter, ball_code=ball_code)
+                    await conn.execute(
+                        """
+                        UPDATE user_items
+                        SET quantity = quantity - 1
+                        WHERE user_id = $1 AND item_id = $2
+                        """,
+                        user_id,
+                        int(item_row["id"]),
+                    )
+                    ball_consumed = True
+
+                caught = _roll_chat_encounter_catch(ball_code)
+                await conn.execute(
+                    """
+                    INSERT INTO chat_encounter_attempts (encounter_id, user_id, ball_code, success)
+                    VALUES ($1, $2, $3, $4)
+                    """,
+                    encounter.encounter_id,
+                    user_id,
+                    ball_code,
+                    caught,
+                )
+
+                if not caught:
+                    return ChatEncounterAttemptResult(
+                        status="failed",
+                        encounter=encounter,
+                        caught=False,
+                        ball_code=ball_code,
+                        ball_consumed=ball_consumed,
+                    )
+
+                user_pokemon_id = await self._grant_pokemon_by_id(conn, user_id, encounter.pokemon_id)
+                await conn.execute(
+                    """
+                    UPDATE chat_encounters
+                    SET status = 'caught',
+                        resolved_at = $2,
+                        caught_by_user_id = $3,
+                        caught_user_pokemon_id = $4,
+                        caught_with_item_code = $5
+                    WHERE id = $1
+                    """,
+                    encounter.encounter_id,
+                    now,
+                    user_id,
+                    user_pokemon_id,
+                    ball_code,
+                )
+                await conn.execute(
+                    """
+                    UPDATE chat_encounter_state
+                    SET active_encounter_id = NULL,
+                        messages_since_cooldown = 0,
+                        updated_at = $2
+                    WHERE chat_id = $1 AND active_encounter_id = $3
+                    """,
+                    chat_id,
+                    now,
+                    encounter.encounter_id,
+                )
+                self._clear_active_encounter_cache(chat_id)
+                return ChatEncounterAttemptResult(
+                    status="caught",
+                    encounter=ChatEncounter(
+                        encounter_id=encounter.encounter_id,
+                        chat_id=encounter.chat_id,
+                        message_thread_id=encounter.message_thread_id,
+                        encounter_message_id=encounter.encounter_message_id,
+                        pokemon_id=encounter.pokemon_id,
+                        name=encounter.name,
+                        rarity=encounter.rarity,
+                        pokemon_type=encounter.pokemon_type,
+                        image_credit_id=encounter.image_credit_id,
+                        spawned_at=encounter.spawned_at,
+                        expires_at=encounter.expires_at,
+                        status="caught",
+                        caught_by_user_id=user_id,
+                        caught_user_pokemon_id=user_pokemon_id,
+                        caught_with_item_code=ball_code,
+                    ),
+                    caught=True,
+                    ball_code=ball_code,
+                    ball_consumed=ball_consumed,
+                    catcher_user_id=user_id,
+                    catcher_label=catcher_label,
+                )
+
+    async def get_chat_encounter(self, encounter_id: int) -> Optional[ChatEncounter]:
+        """Load one encounter by id."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT ce.id, ce.chat_id, ce.message_thread_id, ce.encounter_message_id,
+                       ce.pokemon_id, ce.spawned_at, ce.expires_at, ce.status,
+                       ce.caught_by_user_id, ce.caught_user_pokemon_id, ce.caught_with_item_code,
+                       pc.name, pc.rarity, pc.type, pc.image_credit_id
+                FROM chat_encounters ce
+                JOIN pokemon_catalog pc ON pc.id = ce.pokemon_id
+                WHERE ce.id = $1
+                """,
+                encounter_id,
+            )
+        return _map_chat_encounter(row) if row else None
+
+    async def get_user_pokemon_entry(self, user_pokemon_id: int) -> Optional[CollectionEntry]:
+        """Load one owned pokemon instance as a card-ready entry."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT
+                  pc.id AS pokemon_id,
+                  up.id AS sample_user_pokemon_id,
+                  pc.name,
+                  pc.rarity,
+                  pc.type,
+                  1::int AS quantity,
+                  pc.base_hp,
+                  pc.base_attack,
+                  pc.base_defense,
+                  pc.base_stamina,
+                  pc.image_credit_id
+                FROM user_pokemon up
+                JOIN pokemon_catalog pc ON pc.id = up.pokemon_id
+                WHERE up.id = $1
+                """,
+                user_pokemon_id,
+            )
+        if not row:
+            return None
+        return CollectionEntry(
+            pokemon_id=int(row["pokemon_id"]),
+            sample_user_pokemon_id=int(row["sample_user_pokemon_id"]),
+            name=str(row["name"]),
+            rarity=str(row["rarity"]),
+            pokemon_type=row["type"],
+            quantity=int(row["quantity"]),
+            base_hp=int(row["base_hp"]),
+            base_attack=int(row["base_attack"]),
+            base_defense=int(row["base_defense"]),
+            base_stamina=int(row["base_stamina"]),
+            image_credit_id=row["image_credit_id"],
+        )
 
     async def claim_daily_bonus(self, telegram_id: int, username: Optional[str]) -> BonusClaimResult:
         """Claim the accumulated daily bonus if it is ready."""
@@ -709,6 +1266,23 @@ class Database:
             raise ShopError(f"No pokemon found for rarity pool {rarities}")
         return row
 
+    async def _grant_pokemon_by_id(
+        self,
+        conn: asyncpg.Connection,
+        user_id: int,
+        pokemon_id: int,
+    ) -> int:
+        inserted = await conn.fetchrow(
+            """
+            INSERT INTO user_pokemon (owner_user_id, pokemon_id)
+            VALUES ($1, $2)
+            RETURNING id
+            """,
+            user_id,
+            pokemon_id,
+        )
+        return int(inserted["id"])
+
     async def _fetch_collection_entries(
         self, conn: asyncpg.Connection, user_id: int
     ) -> list[CollectionEntry]:
@@ -759,6 +1333,209 @@ class Database:
             )
             for row in rows
         ]
+
+    async def _ensure_chat_encounter_state(self, conn: asyncpg.Connection, chat_id: int) -> None:
+        await conn.execute(
+            """
+            INSERT INTO chat_encounter_state (chat_id)
+            VALUES ($1)
+            ON CONFLICT (chat_id) DO NOTHING
+            """,
+            chat_id,
+        )
+
+    async def _fetch_chat_encounter_state(
+        self,
+        conn: asyncpg.Connection,
+        chat_id: int,
+        *,
+        for_update: bool = False,
+    ) -> asyncpg.Record:
+        await self._ensure_chat_encounter_state(conn, chat_id)
+        lock_clause = " FOR UPDATE" if for_update else ""
+        row = await conn.fetchrow(
+            (
+                "SELECT chat_id, last_spawn_at, messages_since_cooldown, active_encounter_id "
+                "FROM chat_encounter_state WHERE chat_id = $1" + lock_clause
+            ),
+            chat_id,
+        )
+        if not row:
+            raise ShopError("Chat encounter state is missing")
+        return row
+
+    async def _spawn_chat_encounter(
+        self,
+        conn: asyncpg.Connection,
+        chat_id: int,
+        message_thread_id: Optional[int],
+        now: datetime,
+    ) -> ChatEncounter:
+        target_rarity = _weighted_rarity_choice(RARITY_PROBABILITIES)
+        pokemon_row = await self._select_random_pokemon(conn, target_rarity)
+        expires_at = now + timedelta(seconds=CHAT_ENCOUNTER_TIMEOUT_SECONDS)
+        encounter_row = await conn.fetchrow(
+            """
+            INSERT INTO chat_encounters (
+              chat_id,
+              message_thread_id,
+              pokemon_id,
+              status,
+              spawned_at,
+              expires_at
+            )
+            VALUES ($1, $2, $3, 'active', $4, $5)
+            RETURNING id, chat_id, message_thread_id, encounter_message_id,
+                      pokemon_id, spawned_at, expires_at, status,
+                      caught_by_user_id, caught_user_pokemon_id, caught_with_item_code
+            """,
+            chat_id,
+            message_thread_id,
+            int(pokemon_row["id"]),
+            now,
+            expires_at,
+        )
+        await conn.execute(
+            """
+            UPDATE chat_encounter_state
+            SET last_spawn_at = $2,
+                messages_since_cooldown = 0,
+                active_encounter_id = $3,
+                updated_at = $2
+            WHERE chat_id = $1
+            """,
+            chat_id,
+            now,
+            int(encounter_row["id"]),
+        )
+        self._set_encounter_cooldown_cache(chat_id, CHAT_ENCOUNTER_COOLDOWN_SECONDS)
+        self._set_active_encounter_cache(chat_id, int(encounter_row["id"]))
+        self._clear_encounter_counter_cache(chat_id)
+        merged_row = {
+            **dict(encounter_row),
+            "name": pokemon_row["name"],
+            "rarity": pokemon_row["rarity"],
+            "type": pokemon_row["type"],
+            "image_credit_id": pokemon_row["image_credit_id"],
+        }
+        logger.info(
+            "chat_encounter_spawned",
+            chat_id=chat_id,
+            encounter_id=int(encounter_row["id"]),
+            pokemon_id=int(pokemon_row["id"]),
+            rarity=str(pokemon_row["rarity"]),
+        )
+        return _map_chat_encounter(merged_row)
+
+    async def _expire_active_chat_encounter_if_due(
+        self,
+        conn: asyncpg.Connection,
+        chat_id: int,
+        now: datetime,
+    ) -> bool:
+        state = await self._fetch_chat_encounter_state(conn, chat_id, for_update=True)
+        active_encounter_id = state["active_encounter_id"]
+        if active_encounter_id is None:
+            return False
+        encounter_row = await conn.fetchrow(
+            """
+            SELECT id, expires_at, status
+            FROM chat_encounters
+            WHERE id = $1
+            FOR UPDATE
+            """,
+            int(active_encounter_id),
+        )
+        if not encounter_row or encounter_row["status"] != "active":
+            await conn.execute(
+                """
+                UPDATE chat_encounter_state
+                SET active_encounter_id = NULL,
+                    updated_at = $2
+                WHERE chat_id = $1
+                """,
+                chat_id,
+                now,
+            )
+            self._clear_active_encounter_cache(chat_id)
+            return True
+        if _normalize_timestamp(encounter_row["expires_at"]) > now:
+            return False
+        await conn.execute(
+            """
+            UPDATE chat_encounters
+            SET status = 'expired',
+                resolved_at = $2
+            WHERE id = $1
+            """,
+            int(active_encounter_id),
+            now,
+        )
+        await conn.execute(
+            """
+            UPDATE chat_encounter_state
+            SET active_encounter_id = NULL,
+                messages_since_cooldown = 0,
+                updated_at = $2
+            WHERE chat_id = $1
+            """,
+            chat_id,
+            now,
+        )
+        self._clear_active_encounter_cache(chat_id)
+        return True
+
+    def _note_chat_message_via_redis(self, chat_id: int) -> str | int | None:
+        if self.redis is None:
+            return None
+        try:
+            if self.redis.exists(_encounter_active_key(chat_id)):
+                return "active"
+            if self.redis.exists(_encounter_cooldown_key(chat_id)):
+                return "cooldown"
+            counter = self.redis.incr(_encounter_counter_key(chat_id))
+            if counter == 1:
+                self.redis.expire(_encounter_counter_key(chat_id), CHAT_ENCOUNTER_COUNTER_TTL_SECONDS)
+            return int(counter)
+        except RedisError as exc:
+            logger.warning("chat_encounter_redis_bypass", chat_id=chat_id, error=str(exc))
+            return None
+
+    def _set_encounter_cooldown_cache(self, chat_id: int, remaining_seconds: int) -> None:
+        if self.redis is None or remaining_seconds <= 0:
+            return
+        try:
+            self.redis.setex(_encounter_cooldown_key(chat_id), remaining_seconds, "1")
+        except RedisError as exc:
+            logger.warning("chat_encounter_redis_write_failed", chat_id=chat_id, key="cooldown", error=str(exc))
+
+    def _set_active_encounter_cache(self, chat_id: int, encounter_id: int) -> None:
+        if self.redis is None:
+            return
+        try:
+            self.redis.setex(
+                _encounter_active_key(chat_id),
+                CHAT_ENCOUNTER_TIMEOUT_SECONDS,
+                str(encounter_id),
+            )
+        except RedisError as exc:
+            logger.warning("chat_encounter_redis_write_failed", chat_id=chat_id, key="active", error=str(exc))
+
+    def _clear_active_encounter_cache(self, chat_id: int) -> None:
+        if self.redis is None:
+            return
+        try:
+            self.redis.delete(_encounter_active_key(chat_id))
+        except RedisError as exc:
+            logger.warning("chat_encounter_redis_write_failed", chat_id=chat_id, key="active", error=str(exc))
+
+    def _clear_encounter_counter_cache(self, chat_id: int) -> None:
+        if self.redis is None:
+            return
+        try:
+            self.redis.delete(_encounter_counter_key(chat_id))
+        except RedisError as exc:
+            logger.warning("chat_encounter_redis_write_failed", chat_id=chat_id, key="counter", error=str(exc))
 
 
 def _required_env(name: str) -> str:
@@ -824,6 +1601,52 @@ def _update_pity_counters(result_rarity: str, epic_counter: int, legendary_count
     if result_rarity == "Legendary":
         return epic_counter + 1, 0
     return epic_counter + 1, legendary_counter + 1
+
+
+def _chat_encounter_cooldown_ready(last_spawn_at: datetime, now: datetime) -> bool:
+    return (now - _normalize_timestamp(last_spawn_at)).total_seconds() >= CHAT_ENCOUNTER_COOLDOWN_SECONDS
+
+
+def _roll_chat_encounter_catch(ball_code: str) -> bool:
+    chance = CHAT_ENCOUNTER_BALL_CATCH_CHANCES[ball_code]
+    if chance >= 100.0:
+        return True
+    return random.uniform(0, 100) < chance
+
+
+def _encounter_cooldown_key(chat_id: int) -> str:
+    return f"encounter:cooldown:{chat_id}"
+
+
+def _encounter_counter_key(chat_id: int) -> str:
+    return f"encounter:count:{chat_id}"
+
+
+def _encounter_active_key(chat_id: int) -> str:
+    return f"encounter:active:{chat_id}"
+
+
+def _map_chat_encounter(row: asyncpg.Record | dict[str, object]) -> ChatEncounter:
+    data = dict(row)
+    return ChatEncounter(
+        encounter_id=int(data["id"]),
+        chat_id=int(data["chat_id"]),
+        message_thread_id=data.get("message_thread_id"),
+        encounter_message_id=data.get("encounter_message_id"),
+        pokemon_id=int(data["pokemon_id"]),
+        name=str(data["name"]),
+        rarity=str(data["rarity"]),
+        pokemon_type=data.get("type"),
+        image_credit_id=data.get("image_credit_id"),
+        spawned_at=_normalize_timestamp(data["spawned_at"]),
+        expires_at=_normalize_timestamp(data["expires_at"]),
+        status=str(data["status"]),
+        caught_by_user_id=(int(data["caught_by_user_id"]) if data.get("caught_by_user_id") is not None else None),
+        caught_user_pokemon_id=(
+            int(data["caught_user_pokemon_id"]) if data.get("caught_user_pokemon_id") is not None else None
+        ),
+        caught_with_item_code=data.get("caught_with_item_code"),
+    )
 
 
 def _normalize_collection_types(raw_type: Optional[str]) -> tuple[str, ...]:

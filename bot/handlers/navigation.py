@@ -112,7 +112,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 session_user_id=session.user_id,
                 actual_user_id=update.effective_user.id,
             )
-            await query.answer(ERROR_NOT_YOUR_BUTTON, show_alert=True)
+            await query.answer(ERROR_NOT_YOUR_BUTTON, show_alert=False)
             logger.info(
                 "callback_wrong_user_answer_done",
                 session_id=callback_data.session_id,

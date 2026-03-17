@@ -6,15 +6,17 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Response, status
 from telegram import Update
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
 from bot.db import Database
 from bot.utils.logging import setup_logging
+from bot.handlers.chat_activity import group_message_activity_handler
 from bot.handlers.commands import (
     collection_command,
     items_command,
     menu_command,
     pokemon_command,
+    search_command,
     section_command,
     shop_command,
     start_command,
@@ -33,6 +35,7 @@ from bot.handlers.sections.chat import chat_handler
 from bot.handlers.sections.support import support_handler
 from bot.handlers.sections.info import info_handler
 from bot.handlers.sections.back import back_to_menu_handler
+from bot.handlers.sections.chat_encounters import handle_encounter_callback
 from bot.navigation.session import session_store
 
 # Setup logging
@@ -59,6 +62,12 @@ if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN not set in .env")
 if not WEBHOOK_URL:
     raise ValueError("WEBHOOK_URL not set in .env")
+
+GROUP_ACTIVITY_FILTER = (
+    (filters.ChatType.GROUP | filters.ChatType.SUPERGROUP)
+    & filters.TEXT
+    & ~filters.COMMAND
+)
 
 # Global bot application
 bot_app: Application = None
@@ -94,6 +103,7 @@ async def setup_bot_commands(application: Application) -> None:
         BotCommand("profile", "Открыть профиль"),
         BotCommand("games", "Открыть мини-игры"),
         BotCommand("collection", "Открыть коллекцию"),
+        BotCommand("search", "Поиск покемона в чате"),
         BotCommand("updates", "Открыть обновления"),
         BotCommand("chat", "Открыть чат"),
         BotCommand("support", "Открыть поддержку"),
@@ -159,11 +169,19 @@ async def lifespan(app: FastAPI):
     bot_app.add_handler(CommandHandler("shop", shop_command))
     bot_app.add_handler(CommandHandler("pokemon", pokemon_command))
     bot_app.add_handler(CommandHandler("items", items_command))
+    bot_app.add_handler(CommandHandler("search", search_command))
     bot_app.add_handler(CommandHandler("collection", collection_command))
     bot_app.add_handler(CommandHandler(["market", "profile", "games", "updates", "chat", "support", "info"], section_command))
     
     # Register callback query handler
+    bot_app.add_handler(CallbackQueryHandler(handle_encounter_callback, pattern=r"^enc:"))
     bot_app.add_handler(CallbackQueryHandler(handle_callback_query))
+    bot_app.add_handler(
+        MessageHandler(
+            GROUP_ACTIVITY_FILTER,
+            group_message_activity_handler,
+        )
+    )
     
     logger.info("handlers_registered")
     

@@ -49,6 +49,14 @@ CREATE TABLE IF NOT EXISTS "user_shop_state" (
   "updated_at" timestamptz NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS "chat_encounter_state" (
+  "chat_id" bigint PRIMARY KEY,
+  "last_spawn_at" timestamptz NOT NULL DEFAULT TO_TIMESTAMP(0),
+  "messages_since_cooldown" int NOT NULL DEFAULT 0,
+  "active_encounter_id" bigint UNIQUE,
+  "updated_at" timestamptz NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS "image_credits" (
   "id" bigserial PRIMARY KEY,
   "storage_bucket" varchar(128) NOT NULL,
@@ -92,8 +100,41 @@ CREATE TABLE IF NOT EXISTS "market_listings" (
   "purchaser_user_id" bigint
 );
 
+CREATE TABLE IF NOT EXISTS "chat_encounters" (
+  "id" bigserial PRIMARY KEY,
+  "chat_id" bigint NOT NULL,
+  "message_thread_id" bigint,
+  "encounter_message_id" bigint,
+  "pokemon_id" int NOT NULL,
+  "status" varchar(16) NOT NULL DEFAULT 'active',
+  "spawned_at" timestamptz NOT NULL DEFAULT NOW(),
+  "expires_at" timestamptz NOT NULL,
+  "resolved_at" timestamptz,
+  "caught_by_user_id" bigint,
+  "caught_user_pokemon_id" bigint,
+  "caught_with_item_code" varchar(32)
+);
+
+ALTER TABLE "chat_encounters"
+  ADD COLUMN IF NOT EXISTS "caught_user_pokemon_id" bigint;
+
+CREATE TABLE IF NOT EXISTS "chat_encounter_attempts" (
+  "encounter_id" bigint NOT NULL,
+  "user_id" bigint NOT NULL,
+  "ball_code" varchar(32) NOT NULL,
+  "success" boolean NOT NULL DEFAULT false,
+  "attempted_at" timestamptz NOT NULL DEFAULT NOW(),
+  PRIMARY KEY ("encounter_id", "user_id")
+);
+
 CREATE UNIQUE INDEX IF NOT EXISTS image_credits_storage_bucket_object_key_idx
   ON "image_credits" ("storage_bucket", "object_key");
+
+CREATE INDEX IF NOT EXISTS chat_encounters_chat_id_status_idx
+  ON "chat_encounters" ("chat_id", "status");
+
+CREATE INDEX IF NOT EXISTS chat_encounters_expires_at_status_idx
+  ON "chat_encounters" ("expires_at", "status");
 
 COMMENT ON TABLE "user_settings" IS 'Настройки пользователя и аватар';
 
@@ -118,9 +159,93 @@ BEGIN
   IF NOT EXISTS (
     SELECT 1
     FROM pg_constraint
+    WHERE conname = 'chat_encounters_caught_user_pokemon_id_fkey'
+  ) THEN
+    ALTER TABLE "chat_encounters"
+      ADD FOREIGN KEY ("caught_user_pokemon_id")
+      REFERENCES "user_pokemon" ("id")
+      DEFERRABLE INITIALLY IMMEDIATE;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'chat_encounter_state_active_encounter_id_fkey'
+  ) THEN
+    ALTER TABLE "chat_encounter_state"
+      ADD FOREIGN KEY ("active_encounter_id")
+      REFERENCES "chat_encounters" ("id")
+      DEFERRABLE INITIALLY IMMEDIATE;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
     WHERE conname = 'user_shop_state_user_id_fkey'
   ) THEN
     ALTER TABLE "user_shop_state"
+      ADD FOREIGN KEY ("user_id")
+      REFERENCES "users" ("id")
+      DEFERRABLE INITIALLY IMMEDIATE;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'chat_encounters_pokemon_id_fkey'
+  ) THEN
+    ALTER TABLE "chat_encounters"
+      ADD FOREIGN KEY ("pokemon_id")
+      REFERENCES "pokemon_catalog" ("id")
+      DEFERRABLE INITIALLY IMMEDIATE;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'chat_encounters_caught_by_user_id_fkey'
+  ) THEN
+    ALTER TABLE "chat_encounters"
+      ADD FOREIGN KEY ("caught_by_user_id")
+      REFERENCES "users" ("id")
+      DEFERRABLE INITIALLY IMMEDIATE;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'chat_encounter_attempts_encounter_id_fkey'
+  ) THEN
+    ALTER TABLE "chat_encounter_attempts"
+      ADD FOREIGN KEY ("encounter_id")
+      REFERENCES "chat_encounters" ("id")
+      DEFERRABLE INITIALLY IMMEDIATE;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'chat_encounter_attempts_user_id_fkey'
+  ) THEN
+    ALTER TABLE "chat_encounter_attempts"
       ADD FOREIGN KEY ("user_id")
       REFERENCES "users" ("id")
       DEFERRABLE INITIALLY IMMEDIATE;

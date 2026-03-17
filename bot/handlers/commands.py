@@ -6,6 +6,7 @@ from telegram.error import TelegramError, BadRequest, Forbidden
 
 from bot.navigation.context import extract_context
 from bot.navigation.session import session_store
+from bot.handlers.sections.chat_encounters import maybe_spawn_encounter_from_search
 from bot.handlers.sections.collection import show_collection_screen
 from bot.handlers.sections.shop import show_shop_screen, SHOP_VIEW_ITEMS, SHOP_VIEW_POKEMON
 from bot.ui.menu import build_main_menu_keyboard
@@ -86,6 +87,12 @@ async def collection_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """Handle /collection command."""
     await _sync_user_with_db(update, context)
     await show_collection_screen(update, context)
+
+
+async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /search command for group encounter spawning."""
+    await _sync_user_with_db(update, context)
+    await maybe_spawn_encounter_from_search(update, context)
 
 
 async def section_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

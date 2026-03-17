@@ -4,18 +4,21 @@ import os
 import structlog
 from dotenv import load_dotenv
 from telegram import BotCommand
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
 from bot.db import Database
+from bot.handlers.chat_activity import group_message_activity_handler
 from bot.handlers.commands import (
     collection_command,
     items_command,
     menu_command,
     pokemon_command,
+    search_command,
     section_command,
     shop_command,
     start_command,
 )
+from bot.handlers.sections.chat_encounters import handle_encounter_callback
 from bot.handlers.navigation import handle_callback_query
 from bot.handlers.sections.back import back_to_menu_handler
 from bot.handlers.sections.chat import chat_handler
@@ -43,6 +46,12 @@ REDIS_ENABLED = os.getenv("REDIS_ENABLED", "false").lower() == "true"
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN not set in .env")
+
+GROUP_ACTIVITY_FILTER = (
+    (filters.ChatType.GROUP | filters.ChatType.SUPERGROUP)
+    & filters.TEXT
+    & ~filters.COMMAND
+)
 
 
 def register_routes() -> None:
@@ -86,6 +95,7 @@ async def post_init(application: Application) -> None:
         BotCommand("profile", "Открыть профиль"),
         BotCommand("games", "Открыть мини-игры"),
         BotCommand("collection", "Открыть коллекцию"),
+        BotCommand("search", "Поиск покемона в чате"),
         BotCommand("updates", "Открыть обновления"),
         BotCommand("chat", "Открыть чат"),
         BotCommand("support", "Открыть поддержку"),
@@ -117,9 +127,17 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("shop", shop_command))
     application.add_handler(CommandHandler("pokemon", pokemon_command))
     application.add_handler(CommandHandler("items", items_command))
+    application.add_handler(CommandHandler("search", search_command))
     application.add_handler(CommandHandler("collection", collection_command))
     application.add_handler(CommandHandler(["market", "profile", "games", "updates", "chat", "support", "info"], section_command))
+    application.add_handler(CallbackQueryHandler(handle_encounter_callback, pattern=r"^enc:"))
     application.add_handler(CallbackQueryHandler(handle_callback_query))
+    application.add_handler(
+        MessageHandler(
+            GROUP_ACTIVITY_FILTER,
+            group_message_activity_handler,
+        )
+    )
     return application
 
 
