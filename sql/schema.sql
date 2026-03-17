@@ -136,6 +136,9 @@ CREATE INDEX IF NOT EXISTS chat_encounters_chat_id_status_idx
 CREATE INDEX IF NOT EXISTS chat_encounters_expires_at_status_idx
   ON "chat_encounters" ("expires_at", "status");
 
+CREATE INDEX IF NOT EXISTS user_pokemon_owner_user_id_pokemon_id_idx
+  ON "user_pokemon" ("owner_user_id", "pokemon_id");
+
 COMMENT ON TABLE "user_settings" IS 'Настройки пользователя и аватар';
 
 COMMENT ON TABLE "pokemon_catalog" IS 'Каталог покемонов (справочник). Статические данные покемонов.';

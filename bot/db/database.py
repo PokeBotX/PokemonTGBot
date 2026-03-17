@@ -380,8 +380,7 @@ class Database:
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 user_id = await self._ensure_user(conn, telegram_id, username)
-                entries = await self._fetch_collection_entries(conn, user_id)
-        return _paginate_collection_entries(entries, requested_state)
+                return await self._fetch_collection_page(conn, user_id, requested_state)
 
     async def note_chat_message(self, chat_id: int, message_thread_id: Optional[int]) -> Optional[ChatEncounter]:
         """Record one group-chat message and spawn an encounter if the threshold is reached."""
@@ -1283,11 +1282,37 @@ class Database:
         )
         return int(inserted["id"])
 
-    async def _fetch_collection_entries(
-        self, conn: asyncpg.Connection, user_id: int
-    ) -> list[CollectionEntry]:
+    async def _fetch_collection_page(
+        self,
+        conn: asyncpg.Connection,
+        user_id: int,
+        filter_state: CollectionFilterState,
+    ) -> CollectionPage:
+        current_page = max(1, filter_state.page)
+        offset = (current_page - 1) * COLLECTION_PAGE_SIZE
+
+        where_sql, having_sql, params = _build_collection_filter_clauses(user_id, filter_state)
+        count_sql = f"""
+            SELECT COUNT(*)::int AS total_entries
+            FROM (
+              SELECT pc.id
+              FROM user_pokemon up
+              JOIN pokemon_catalog pc ON pc.id = up.pokemon_id
+              {where_sql}
+              GROUP BY pc.id
+              {having_sql}
+            ) filtered_species
+        """
+        total_entries = int(await conn.fetchval(count_sql, *params) or 0)
+        total_pages = max(1, (total_entries + COLLECTION_PAGE_SIZE - 1) // COLLECTION_PAGE_SIZE)
+        current_page = min(current_page, total_pages)
+        offset = (current_page - 1) * COLLECTION_PAGE_SIZE
+
+        data_params = [*params, COLLECTION_PAGE_SIZE, offset]
+        limit_index = len(params) + 1
+        offset_index = len(params) + 2
         rows = await conn.fetch(
-            """
+            f"""
             SELECT
               pc.id AS pokemon_id,
               MIN(up.id) AS sample_user_pokemon_id,
@@ -1302,7 +1327,7 @@ class Database:
               pc.image_credit_id
             FROM user_pokemon up
             JOIN pokemon_catalog pc ON pc.id = up.pokemon_id
-            WHERE up.owner_user_id = $1
+            {where_sql}
             GROUP BY
               pc.id,
               pc.name,
@@ -1313,11 +1338,14 @@ class Database:
               pc.base_defense,
               pc.base_stamina,
               pc.image_credit_id
+            {having_sql}
             ORDER BY pc.id ASC
+            LIMIT ${limit_index}
+            OFFSET ${offset_index}
             """,
-            user_id,
+            *data_params,
         )
-        return [
+        entries = [
             CollectionEntry(
                 pokemon_id=int(row["pokemon_id"]),
                 sample_user_pokemon_id=int(row["sample_user_pokemon_id"]),
@@ -1333,6 +1361,13 @@ class Database:
             )
             for row in rows
         ]
+        return CollectionPage(
+            entries=entries,
+            filter_state=filter_state.with_page(current_page),
+            total_entries=total_entries,
+            current_page=current_page,
+            total_pages=total_pages,
+        )
 
     async def _ensure_chat_encounter_state(self, conn: asyncpg.Connection, chat_id: int) -> None:
         await conn.execute(
@@ -1659,6 +1694,32 @@ def _normalize_collection_types(raw_type: Optional[str]) -> tuple[str, ...]:
             continue
         values.append(normalized)
     return tuple(dict.fromkeys(values))
+
+
+def _build_collection_filter_clauses(
+    user_id: int,
+    filter_state: CollectionFilterState,
+) -> tuple[str, str, list[object]]:
+    params: list[object] = [user_id]
+    where_conditions = ["up.owner_user_id = $1"]
+
+    if filter_state.rarities:
+        params.append(list(filter_state.rarities))
+        where_conditions.append(f"pc.rarity = ANY(${len(params)}::text[])")
+
+    for pokemon_type in filter_state.types:
+        params.append(pokemon_type.lower())
+        where_conditions.append(
+            f"EXISTS ("
+            f"SELECT 1 "
+            f"FROM unnest(string_to_array(COALESCE(lower(pc.type), ''), '/')) AS part "
+            f"WHERE btrim(part) = ${len(params)}"
+            f")"
+        )
+
+    where_sql = "WHERE " + " AND ".join(where_conditions)
+    having_sql = "HAVING COUNT(*) > 1" if filter_state.duplicates_only else ""
+    return where_sql, having_sql, params
 
 
 def _entry_matches_filter(entry: CollectionEntry, filter_state: CollectionFilterState) -> bool:
