@@ -341,7 +341,7 @@ async def _send_failed_attempt_message(
 ) -> None:
     ball_label = BALL_LABELS.get(ball_code or "", "покебол")
     await query.message.reply_text(
-        f"❌ {user_label} бросил {ball_label}, но <b>{encounter.name}</b> вырвался.",
+        f"❌ {user_label} бросил {ball_label}, но поймать покемона не удалось.",
         parse_mode="HTML",
         message_thread_id=getattr(query.message, "message_thread_id", None),
     )

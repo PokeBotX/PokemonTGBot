@@ -171,7 +171,9 @@ async def test_failed_encounter_attempt_sends_public_message() -> None:
     await handle_encounter_callback(update, context)
 
     assert message.reply_text.called
-    assert "вырвался" in message.reply_text.call_args.args[0].lower()
+    failure_text = message.reply_text.call_args.args[0]
+    assert "не удалось" in failure_text.lower()
+    assert _encounter().name not in failure_text
     query.answer.assert_awaited()
 
 
