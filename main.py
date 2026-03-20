@@ -181,7 +181,7 @@ async def lifespan(app: FastAPI):
     # Register callback query handler
     bot_app.add_handler(CallbackQueryHandler(handle_encounter_callback, pattern=r"^enc:"))
     bot_app.add_handler(CallbackQueryHandler(handle_callback_query))
-    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_profile_text_input))
+    bot_app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_profile_text_input))
     bot_app.add_handler(
         MessageHandler(
             GROUP_ACTIVITY_FILTER,

@@ -137,7 +137,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler(["market", "games", "updates", "chat", "support", "info"], section_command))
     application.add_handler(CallbackQueryHandler(handle_encounter_callback, pattern=r"^enc:"))
     application.add_handler(CallbackQueryHandler(handle_callback_query))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_profile_text_input))
+    application.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_profile_text_input))
     application.add_handler(
         MessageHandler(
             GROUP_ACTIVITY_FILTER,
