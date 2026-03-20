@@ -86,11 +86,11 @@ async def maybe_spawn_encounter_from_message(
     return await publish_encounter_message(update, context, encounter)
 
 
-async def maybe_spawn_encounter_from_search(
+async def maybe_spawn_encounter_from_find(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> Optional[Message]:
-    """Try to spawn an encounter via /search in a group chat."""
+    """Try to spawn an encounter via /find in a group chat."""
     if not update.effective_chat or update.effective_chat.type not in {"group", "supergroup"}:
         if update.effective_chat:
             await update.effective_chat.send_message("Эта команда работает только в чатах.")
@@ -100,7 +100,7 @@ async def maybe_spawn_encounter_from_search(
     if not db:
         return None
 
-    encounter = await db.trigger_search_encounter(
+    encounter = await db.trigger_find_encounter(
         update.effective_chat.id,
         getattr(update.effective_message, "message_thread_id", None),
     )

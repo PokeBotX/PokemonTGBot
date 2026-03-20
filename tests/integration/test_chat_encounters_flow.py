@@ -7,7 +7,7 @@ from telegram import Chat, Message, Update, User
 from telegram.ext import ContextTypes
 
 from bot.db.database import ChatEncounter, ChatEncounterAttemptResult, CollectionEntry
-from bot.handlers.commands import search_command
+from bot.handlers.commands import find_command
 from bot.handlers.sections.chat_encounters import handle_encounter_callback
 
 
@@ -58,7 +58,7 @@ def _caught_encounter() -> ChatEncounter:
 
 
 @pytest.mark.asyncio
-async def test_search_command_in_private_chat_rejects() -> None:
+async def test_find_command_in_private_chat_rejects() -> None:
     user = Mock(spec=User)
     user.id = 1
     user.username = "ash"
@@ -82,14 +82,14 @@ async def test_search_command_in_private_chat_rejects() -> None:
     context.application = Mock()
     context.application.bot_data = {}
 
-    await search_command(update, context)
+    await find_command(update, context)
 
     assert chat.send_message.called
     assert "только в чатах" in chat.send_message.call_args.args[0].lower()
 
 
 @pytest.mark.asyncio
-async def test_search_command_in_group_sends_encounter() -> None:
+async def test_find_command_in_group_sends_encounter() -> None:
     user = Mock(spec=User)
     user.id = 1
     user.username = "ash"
@@ -113,7 +113,7 @@ async def test_search_command_in_group_sends_encounter() -> None:
 
     db = AsyncMock()
     db.get_or_create_user = AsyncMock(return_value=1)
-    db.trigger_search_encounter = AsyncMock(return_value=_encounter())
+    db.trigger_find_encounter = AsyncMock(return_value=_encounter())
     db.attach_chat_encounter_message = AsyncMock()
     application = Mock()
     application.bot_data = {"db": db}
@@ -121,9 +121,9 @@ async def test_search_command_in_group_sends_encounter() -> None:
     context.application = application
     context.job_queue = None
 
-    await search_command(update, context)
+    await find_command(update, context)
 
-    assert db.trigger_search_encounter.called
+    assert db.trigger_find_encounter.called
     assert chat.send_photo.called or chat.send_message.called
     assert db.attach_chat_encounter_message.called
 

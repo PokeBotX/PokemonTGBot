@@ -6,8 +6,10 @@ from telegram.error import TelegramError, BadRequest, Forbidden
 
 from bot.navigation.context import extract_context
 from bot.navigation.session import session_store
-from bot.handlers.sections.chat_encounters import maybe_spawn_encounter_from_search
+from bot.db.database import ShopError
+from bot.handlers.sections.chat_encounters import maybe_spawn_encounter_from_find
 from bot.handlers.sections.collection import show_collection_screen
+from bot.handlers.sections.profile import _display_profile_owner, handle_pokemon_search_command, show_profile_screen
 from bot.handlers.sections.shop import show_shop_screen, SHOP_VIEW_ITEMS, SHOP_VIEW_POKEMON
 from bot.ui.menu import build_main_menu_keyboard
 from bot.ui.menu import build_back_button
@@ -17,7 +19,6 @@ logger = structlog.get_logger()
 
 PLACEHOLDER_COMMAND_SECTIONS = {
     "market": "market",
-    "profile": "profile",
     "games": "games",
     "updates": "updates",
     "chat": "chat",
@@ -89,10 +90,70 @@ async def collection_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await show_collection_screen(update, context)
 
 
-async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /search command for group encounter spawning."""
+async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /profile command."""
     await _sync_user_with_db(update, context)
-    await maybe_spawn_encounter_from_search(update, context)
+    application = getattr(context, "application", None)
+    db = application.bot_data.get("db") if application else None
+    if not db or not update.effective_user:
+        await show_profile_screen(update, context)
+        return
+
+    reply_to = getattr(update.effective_message, "reply_to_message", None)
+    command_text = update.effective_message.text or ""
+    argument = _extract_command_argument(command_text)
+
+    try:
+        if reply_to and getattr(reply_to, "from_user", None) and not getattr(reply_to.from_user, "is_bot", False):
+            target_user = reply_to.from_user
+            await db.get_or_create_user(target_user.id, target_user.username)
+            summary = await db.get_profile_summary_by_telegram_id(target_user.id)
+            await show_profile_screen(
+                update,
+                context,
+                summary=summary,
+                user_label=_display_profile_owner(summary),
+                allow_manage=(target_user.id == update.effective_user.id),
+            )
+            return
+
+        if argument:
+            summary = await db.get_profile_summary_by_username(argument)
+            await show_profile_screen(
+                update,
+                context,
+                summary=summary,
+                user_label=_display_profile_owner(summary),
+                allow_manage=(summary.telegram_id == update.effective_user.id),
+            )
+            return
+    except ShopError as exc:
+        logger.warning(
+            "profile_command_error",
+            error="profile_lookup",
+            error_message=str(exc),
+            requester_id=update.effective_user.id if update.effective_user else None,
+            argument=argument or None,
+        )
+        await update.effective_chat.send_message(
+            f"⚠️ {exc}",
+            message_thread_id=getattr(update.effective_message, "message_thread_id", None),
+        )
+        return
+
+    await show_profile_screen(update, context)
+
+
+async def find_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /find command for group encounter spawning."""
+    await _sync_user_with_db(update, context)
+    await maybe_spawn_encounter_from_find(update, context)
+
+
+async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /search command for pokemon-name lookup."""
+    await _sync_user_with_db(update, context)
+    await handle_pokemon_search_command(update, context)
 
 
 async def section_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -106,6 +167,15 @@ async def section_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not section_name:
         return
     await _show_placeholder_section(update, section_name)
+
+
+def _extract_command_argument(text: str) -> str:
+    if not isinstance(text, str):
+        return ""
+    parts = text.split(maxsplit=1)
+    if len(parts) < 2:
+        return ""
+    return parts[1].strip()
 
 
 async def _show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

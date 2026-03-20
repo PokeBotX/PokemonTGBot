@@ -13,8 +13,10 @@ from redis.exceptions import RedisError
 
 SESSION_TTL_SECONDS = 10 * 60
 CALLBACK_LOCK_TTL_SECONDS = 10
+PENDING_INPUT_TTL_SECONDS = 10 * 60
 SESSION_KEY_PREFIX = "menu_session:"
 CALLBACK_LOCK_KEY_PREFIX = "callback_lock:"
+PENDING_INPUT_KEY_PREFIX = "pending_input:"
 
 
 @dataclass
@@ -80,12 +82,58 @@ class MenuSession:
         return session
 
 
+@dataclass
+class PendingInput:
+    """Pending text-input action for a user."""
+
+    action: str
+    chat_id: int
+    user_id: int
+    source_message_id: Optional[int] = None
+    source_message_thread_id: Optional[int] = None
+    data: Dict[str, Any] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+    def is_expired(self) -> bool:
+        """Check whether the pending input has expired."""
+        return datetime.now(timezone.utc) > self.created_at + timedelta(seconds=PENDING_INPUT_TTL_SECONDS)
+
+    def to_json(self) -> str:
+        """Serialize pending input for Redis storage."""
+        return json.dumps(
+            {
+                "action": self.action,
+                "chat_id": self.chat_id,
+                "user_id": self.user_id,
+                "source_message_id": self.source_message_id,
+                "source_message_thread_id": self.source_message_thread_id,
+                "data": self.data,
+                "created_at": self.created_at.isoformat(),
+            }
+        )
+
+    @classmethod
+    def from_json(cls, payload: str) -> "PendingInput":
+        """Deserialize pending input from Redis payload."""
+        data = json.loads(payload)
+        return cls(
+            action=str(data["action"]),
+            chat_id=int(data["chat_id"]),
+            user_id=int(data["user_id"]),
+            source_message_id=data.get("source_message_id"),
+            source_message_thread_id=data.get("source_message_thread_id"),
+            data=data.get("data") or {},
+            created_at=datetime.fromisoformat(data["created_at"]),
+        )
+
+
 class SessionStore:
     """Session store with optional Redis backend and in-memory fallback."""
 
     def __init__(self) -> None:
         self._sessions: Dict[str, MenuSession] = {}
         self._callback_locks: Dict[str, datetime] = {}
+        self._pending_inputs: Dict[str, PendingInput] = {}
         self._redis: Optional[Redis] = None
 
     def configure_redis(self, redis_url: str) -> None:
@@ -198,10 +246,71 @@ class SessionStore:
         for cid in expired_locks:
             del self._callback_locks[cid]
 
+        expired_pending_inputs = [
+            key for key, pending in self._pending_inputs.items() if pending.is_expired()
+        ]
+        for key in expired_pending_inputs:
+            del self._pending_inputs[key]
+
+    def set_pending_input(
+        self,
+        *,
+        action: str,
+        chat_id: int,
+        user_id: int,
+        source_message_id: Optional[int] = None,
+        source_message_thread_id: Optional[int] = None,
+        data: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Store a pending text-input action for a user."""
+        pending = PendingInput(
+            action=action,
+            chat_id=chat_id,
+            user_id=user_id,
+            source_message_id=source_message_id,
+            source_message_thread_id=source_message_thread_id,
+            data=data or {},
+        )
+        key = self._pending_input_key(chat_id, user_id)
+        if self._redis is not None:
+            self._redis.setex(
+                f"{PENDING_INPUT_KEY_PREFIX}{key}",
+                PENDING_INPUT_TTL_SECONDS,
+                pending.to_json(),
+            )
+            return
+        self._pending_inputs[key] = pending
+
+    def get_pending_input(self, *, chat_id: int, user_id: int) -> Optional[PendingInput]:
+        """Return pending input for the given chat/user pair."""
+        key = self._pending_input_key(chat_id, user_id)
+        if self._redis is not None:
+            payload = self._redis.get(f"{PENDING_INPUT_KEY_PREFIX}{key}")
+            if not payload:
+                return None
+            return PendingInput.from_json(payload)
+        pending = self._pending_inputs.get(key)
+        if pending and pending.is_expired():
+            del self._pending_inputs[key]
+            return None
+        return pending
+
+    def clear_pending_input(self, *, chat_id: int, user_id: int) -> None:
+        """Clear pending input for the given chat/user pair."""
+        key = self._pending_input_key(chat_id, user_id)
+        if self._redis is not None:
+            self._redis.delete(f"{PENDING_INPUT_KEY_PREFIX}{key}")
+            return
+        self._pending_inputs.pop(key, None)
+
+    def _pending_input_key(self, chat_id: int, user_id: int) -> str:
+        return f"{chat_id}:{user_id}"
+
     def reset(self) -> None:
         """Reset in-memory state for tests."""
         self._sessions.clear()
         self._callback_locks.clear()
+        self._pending_inputs.clear()
         self.disable_redis()
 
 

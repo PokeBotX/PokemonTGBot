@@ -259,6 +259,117 @@ class CollectionPage:
 
 
 @dataclass(slots=True)
+class ProfileRarityProgress:
+    """Unique-pokemon progress within one rarity bucket."""
+
+    rarity: str
+    owned_unique: int
+    total_catalog: int
+    percent: int
+
+
+@dataclass(slots=True)
+class ProfileSummary:
+    """Read model for the profile root screen."""
+
+    user_id: int
+    telegram_id: int
+    tg_username: Optional[str]
+    nickname: Optional[str]
+    language: str
+    created_at: datetime
+    total_unique_owned: int
+    total_catalog: int
+    total_unique_percent: int
+    rarity_progress: tuple[ProfileRarityProgress, ...]
+    profile_pic_credit_id: Optional[int]
+    cover_pokemon_name: Optional[str]
+
+
+@dataclass(slots=True)
+class ProfileReferral:
+    """Referral data rendered on the profile screen."""
+
+    referral_code: str
+    referral_link: str
+
+
+@dataclass(slots=True)
+class ProfileCoverCandidate:
+    """Owned pokemon that can be used as a profile cover."""
+
+    pokemon_id: int
+    sample_user_pokemon_id: int
+    name: str
+    rarity: str
+    pokemon_type: Optional[str]
+    image_credit_id: int
+
+    def as_session_payload(self) -> dict[str, object]:
+        return {
+            "pokemon_id": self.pokemon_id,
+            "sample_user_pokemon_id": self.sample_user_pokemon_id,
+            "name": self.name,
+            "rarity": self.rarity,
+            "pokemon_type": self.pokemon_type,
+            "image_credit_id": self.image_credit_id,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, object]) -> "ProfileCoverCandidate":
+        return cls(
+            pokemon_id=int(payload["pokemon_id"]),
+            sample_user_pokemon_id=int(payload["sample_user_pokemon_id"]),
+            name=str(payload["name"]),
+            rarity=str(payload["rarity"]),
+            pokemon_type=payload.get("pokemon_type"),
+            image_credit_id=int(payload["image_credit_id"]),
+        )
+
+
+@dataclass(slots=True)
+class PokemonSearchEntry:
+    """Catalog pokemon search result."""
+
+    pokemon_id: int
+    name: str
+    rarity: str
+    pokemon_type: Optional[str]
+    base_hp: int
+    base_attack: int
+    base_defense: int
+    base_stamina: int
+    image_credit_id: Optional[int]
+
+    def as_session_payload(self) -> dict[str, object]:
+        return {
+            "pokemon_id": self.pokemon_id,
+            "name": self.name,
+            "rarity": self.rarity,
+            "pokemon_type": self.pokemon_type,
+            "base_hp": self.base_hp,
+            "base_attack": self.base_attack,
+            "base_defense": self.base_defense,
+            "base_stamina": self.base_stamina,
+            "image_credit_id": self.image_credit_id,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, object]) -> "PokemonSearchEntry":
+        return cls(
+            pokemon_id=int(payload["pokemon_id"]),
+            name=str(payload["name"]),
+            rarity=str(payload["rarity"]),
+            pokemon_type=payload.get("pokemon_type"),
+            base_hp=int(payload["base_hp"]),
+            base_attack=int(payload["base_attack"]),
+            base_defense=int(payload["base_defense"]),
+            base_stamina=int(payload["base_stamina"]),
+            image_credit_id=payload.get("image_credit_id"),
+        )
+
+
+@dataclass(slots=True)
 class ChatEncounter:
     """Active or resolved encounter record."""
 
@@ -382,6 +493,340 @@ class Database:
                 user_id = await self._ensure_user(conn, telegram_id, username)
                 return await self._fetch_collection_page(conn, user_id, requested_state)
 
+    async def get_profile_summary(self, telegram_id: int, username: Optional[str]) -> ProfileSummary:
+        """Load the profile summary for the current user."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                user_id = await self._ensure_user(conn, telegram_id, username)
+                return await self._fetch_profile_summary_by_user_id(conn, user_id)
+
+    async def get_profile_summary_by_telegram_id(self, telegram_id: int) -> ProfileSummary:
+        """Load an existing profile summary by Telegram user id without creating a new user."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                user_id = await conn.fetchval("SELECT id FROM users WHERE tg_user_id = $1", telegram_id)
+                if user_id is None:
+                    raise ShopError("Профиль этого пользователя ещё недоступен.")
+                return await self._fetch_profile_summary_by_user_id(conn, int(user_id))
+
+    async def get_profile_summary_by_username(self, username: str) -> ProfileSummary:
+        """Load an existing profile summary by stored Telegram username."""
+        normalized = username.strip().lstrip("@").lower()
+        if not normalized:
+            raise ShopError("Укажите username после /profile.")
+
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                user_id = await conn.fetchval(
+                    "SELECT id FROM users WHERE lower(tg_username) = $1",
+                    normalized,
+                )
+                if user_id is None:
+                    raise ShopError("Я пока не знаю этого пользователя. Он должен хотя бы раз воспользоваться ботом.")
+                return await self._fetch_profile_summary_by_user_id(conn, int(user_id))
+
+    async def get_profile_referral(self, telegram_id: int, username: Optional[str], bot_username: Optional[str]) -> ProfileReferral:
+        """Build the user's referral code and link."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await self._ensure_user(conn, telegram_id, username)
+
+        referral_code = f"ref_{telegram_id}"
+        referral_link = referral_code
+        if bot_username:
+            referral_link = f"https://t.me/{bot_username}?start={referral_code}"
+
+        logger.info("profile_referral_loaded", telegram_id=telegram_id, has_bot_username=bool(bot_username))
+        return ProfileReferral(referral_code=referral_code, referral_link=referral_link)
+
+    async def update_profile_language(self, telegram_id: int, username: Optional[str], language: str) -> str:
+        """Persist the user's profile language."""
+        normalized = language.strip().lower()
+        if normalized not in {"ru", "en"}:
+            raise ShopError(f"Unsupported profile language: {language}")
+
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                user_id = await self._ensure_user(conn, telegram_id, username)
+                await conn.execute(
+                    """
+                    UPDATE user_settings
+                    SET language = $2,
+                        updated_at = NOW()
+                    WHERE user_id = $1
+                    """,
+                    user_id,
+                    normalized,
+                )
+        logger.info("profile_language_updated", telegram_id=telegram_id, language=normalized)
+        return normalized
+
+    async def update_profile_nickname(self, telegram_id: int, username: Optional[str], nickname: str) -> str:
+        """Persist a custom profile nickname."""
+        normalized = nickname.strip()
+        if not normalized:
+            raise ShopError("Nickname cannot be empty")
+        if len(normalized) > 64:
+            raise ShopError("Nickname is too long")
+
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                user_id = await self._ensure_user(conn, telegram_id, username)
+                await conn.execute(
+                    """
+                    UPDATE users
+                    SET nickname = $2
+                    WHERE id = $1
+                    """,
+                    user_id,
+                    normalized,
+                )
+        logger.info("profile_nickname_updated", telegram_id=telegram_id)
+        return normalized
+
+    async def _fetch_profile_summary_by_user_id(self, conn: asyncpg.Connection, user_id: int) -> ProfileSummary:
+        summary_row = await conn.fetchrow(
+            """
+            WITH owned_unique AS (
+              SELECT COUNT(DISTINCT pokemon_id)::int AS total_unique_owned
+              FROM user_pokemon
+              WHERE owner_user_id = $1
+            ),
+            total_catalog AS (
+              SELECT COUNT(*)::int AS total_catalog
+              FROM pokemon_catalog
+            )
+            SELECT
+              u.id AS user_id,
+              u.tg_user_id,
+              u.tg_username,
+              u.nickname,
+              u.created_at,
+              us.language,
+              us.profile_pic_credit_id,
+              cover_pc.name AS cover_pokemon_name,
+              COALESCE(ou.total_unique_owned, 0) AS total_unique_owned,
+              tc.total_catalog
+            FROM users u
+            JOIN user_settings us ON us.user_id = u.id
+            CROSS JOIN total_catalog tc
+            LEFT JOIN owned_unique ou ON TRUE
+            LEFT JOIN pokemon_catalog cover_pc ON cover_pc.image_credit_id = us.profile_pic_credit_id
+            WHERE u.id = $1
+            """,
+            user_id,
+        )
+        if not summary_row:
+            raise ShopError("Unable to load profile summary")
+
+        rarity_rows = await conn.fetch(
+            """
+            SELECT
+              pc.rarity,
+              COUNT(*)::int AS total_catalog,
+              COUNT(DISTINCT up.pokemon_id)::int AS owned_unique
+            FROM pokemon_catalog pc
+            LEFT JOIN user_pokemon up
+              ON up.pokemon_id = pc.id
+             AND up.owner_user_id = $1
+            WHERE pc.rarity IS NOT NULL
+            GROUP BY pc.rarity
+            """,
+            user_id,
+        )
+
+        rarity_map = {
+            str(row["rarity"]): ProfileRarityProgress(
+                rarity=str(row["rarity"]),
+                owned_unique=int(row["owned_unique"]),
+                total_catalog=int(row["total_catalog"]),
+                percent=_calculate_percent(int(row["owned_unique"]), int(row["total_catalog"])),
+            )
+            for row in rarity_rows
+        }
+        rarity_progress = tuple(
+            rarity_map.get(
+                rarity,
+                ProfileRarityProgress(rarity=rarity, owned_unique=0, total_catalog=0, percent=0),
+            )
+            for rarity in RARITY_ORDER
+        )
+        total_unique_owned = int(summary_row["total_unique_owned"])
+        total_catalog = int(summary_row["total_catalog"])
+        return ProfileSummary(
+            user_id=int(summary_row["user_id"]),
+            telegram_id=int(summary_row["tg_user_id"]),
+            tg_username=summary_row["tg_username"],
+            nickname=summary_row["nickname"],
+            language=str(summary_row["language"]),
+            created_at=_normalize_timestamp(summary_row["created_at"]),
+            total_unique_owned=total_unique_owned,
+            total_catalog=total_catalog,
+            total_unique_percent=_calculate_percent(total_unique_owned, total_catalog),
+            rarity_progress=rarity_progress,
+            profile_pic_credit_id=summary_row["profile_pic_credit_id"],
+            cover_pokemon_name=summary_row["cover_pokemon_name"],
+        )
+
+    async def search_profile_cover_candidates(
+        self,
+        telegram_id: int,
+        username: Optional[str],
+        query: str,
+        *,
+        limit: int = 5,
+    ) -> list[ProfileCoverCandidate]:
+        """Search owned pokemon with images that can be used as profile covers."""
+        normalized = query.strip()
+        if not normalized:
+            return []
+
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                user_id = await self._ensure_user(conn, telegram_id, username)
+                rows = await conn.fetch(
+                    """
+                    SELECT
+                      pc.id AS pokemon_id,
+                      MIN(up.id)::bigint AS sample_user_pokemon_id,
+                      pc.name,
+                      pc.rarity,
+                      pc.type,
+                      pc.image_credit_id
+                    FROM user_pokemon up
+                    JOIN pokemon_catalog pc ON pc.id = up.pokemon_id
+                    WHERE up.owner_user_id = $1
+                      AND pc.image_credit_id IS NOT NULL
+                      AND pc.name ILIKE '%' || $2 || '%'
+                    GROUP BY pc.id, pc.name, pc.rarity, pc.type, pc.image_credit_id
+                    ORDER BY
+                      CASE WHEN lower(pc.name) = lower($2) THEN 0 ELSE 1 END,
+                      length(pc.name) ASC,
+                      pc.id ASC
+                    LIMIT $3
+                    """,
+                    user_id,
+                    normalized,
+                    limit,
+                )
+        logger.info(
+            "profile_cover_candidates_loaded",
+            telegram_id=telegram_id,
+            query=normalized,
+            count=len(rows),
+            limit=limit,
+        )
+        return [
+            ProfileCoverCandidate(
+                pokemon_id=int(row["pokemon_id"]),
+                sample_user_pokemon_id=int(row["sample_user_pokemon_id"]),
+                name=str(row["name"]),
+                rarity=str(row["rarity"]),
+                pokemon_type=row["type"],
+                image_credit_id=int(row["image_credit_id"]),
+            )
+            for row in rows
+        ]
+
+    async def update_profile_cover(
+        self,
+        telegram_id: int,
+        username: Optional[str],
+        *,
+        image_credit_id: int,
+    ) -> int:
+        """Persist a chosen profile cover image for the user."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                user_id = await self._ensure_user(conn, telegram_id, username)
+                exists = await conn.fetchval(
+                    """
+                    SELECT 1
+                    FROM user_pokemon up
+                    JOIN pokemon_catalog pc ON pc.id = up.pokemon_id
+                    WHERE up.owner_user_id = $1
+                      AND pc.image_credit_id = $2
+                    LIMIT 1
+                    """,
+                    user_id,
+                    image_credit_id,
+                )
+                if not exists:
+                    logger.warning(
+                        "profile_cover_rejected",
+                        telegram_id=telegram_id,
+                        image_credit_id=image_credit_id,
+                        reason="not_owned",
+                    )
+                    raise ShopError("Нельзя поставить обложку с покемоном, которого у вас нет.")
+                await conn.execute(
+                    """
+                    UPDATE user_settings
+                    SET profile_pic_credit_id = $2,
+                        updated_at = NOW()
+                    WHERE user_id = $1
+                    """,
+                    user_id,
+                    image_credit_id,
+                )
+        logger.info("profile_cover_updated", telegram_id=telegram_id, image_credit_id=image_credit_id)
+        return image_credit_id
+
+    async def search_pokemon_catalog(self, query: str, *, limit: int = 5) -> list[PokemonSearchEntry]:
+        """Search the global pokemon catalog by partial name with SQL-side limiting."""
+        normalized = query.strip()
+        if not normalized:
+            return []
+
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT
+                  id AS pokemon_id,
+                  name,
+                  rarity,
+                  type,
+                  base_hp,
+                  base_attack,
+                  base_defense,
+                  base_stamina,
+                  image_credit_id
+                FROM pokemon_catalog
+                WHERE name ILIKE '%' || $1 || '%'
+                ORDER BY
+                  CASE WHEN lower(name) = lower($1) THEN 0 ELSE 1 END,
+                  length(name) ASC,
+                  id ASC
+                LIMIT $2
+                """,
+                normalized,
+                limit,
+            )
+        logger.info("pokemon_catalog_search_loaded", query=normalized, count=len(rows), limit=limit)
+        return [
+            PokemonSearchEntry(
+                pokemon_id=int(row["pokemon_id"]),
+                name=str(row["name"]),
+                rarity=str(row["rarity"]),
+                pokemon_type=row["type"],
+                base_hp=int(row["base_hp"]),
+                base_attack=int(row["base_attack"]),
+                base_defense=int(row["base_defense"]),
+                base_stamina=int(row["base_stamina"]),
+                image_credit_id=row["image_credit_id"],
+            )
+            for row in rows
+        ]
+
     async def note_chat_message(self, chat_id: int, message_thread_id: Optional[int]) -> Optional[ChatEncounter]:
         """Record one group-chat message and spawn an encounter if the threshold is reached."""
         self._ensure_pool()
@@ -479,8 +924,8 @@ class Database:
                 )
                 return await self._spawn_chat_encounter(conn, chat_id, message_thread_id, now)
 
-    async def trigger_search_encounter(self, chat_id: int, message_thread_id: Optional[int]) -> Optional[ChatEncounter]:
-        """Spawn an encounter via /search if the chat cooldown is ready."""
+    async def trigger_find_encounter(self, chat_id: int, message_thread_id: Optional[int]) -> Optional[ChatEncounter]:
+        """Spawn an encounter via /find if the chat cooldown is ready."""
         self._ensure_pool()
         async with self.pool.acquire() as conn:
             async with conn.transaction():
@@ -1047,10 +1492,12 @@ class Database:
         row = await conn.fetchrow(
             """
             WITH upserted_user AS (
-                INSERT INTO users (tg_user_id, nickname)
-                VALUES ($1, $2)
+                INSERT INTO users (tg_user_id, tg_username, nickname)
+                VALUES ($1, $2, $2)
                 ON CONFLICT (tg_user_id)
-                DO UPDATE SET nickname = EXCLUDED.nickname
+                DO UPDATE SET
+                    tg_username = COALESCE(EXCLUDED.tg_username, users.tg_username),
+                    nickname = COALESCE(users.nickname, EXCLUDED.nickname)
                 RETURNING id
             ),
             ensured_settings AS (
@@ -1591,6 +2038,12 @@ def _bonus_remaining_seconds(last_claim_at: datetime, now: datetime) -> int:
     if elapsed_seconds >= SHOP_BONUS_CLAIM_INTERVAL_SECONDS:
         return 0
     return int(SHOP_BONUS_CLAIM_INTERVAL_SECONDS - elapsed_seconds)
+
+
+def _calculate_percent(value: int, total: int) -> int:
+    if total <= 0:
+        return 0
+    return int((value * 100) / total)
 
 
 def _normalize_timestamp(value: datetime) -> datetime:

@@ -4,11 +4,22 @@ from unittest.mock import AsyncMock, Mock
 from telegram import Update, Message, User, Chat, CallbackQuery
 from telegram.ext import ContextTypes
 
-from bot.handlers.commands import collection_command, menu_command, section_command, shop_command, start_command
+from bot.handlers.commands import collection_command, menu_command, profile_command, search_command, section_command, shop_command, start_command
+from bot.handlers.sections.profile import _display_profile_owner, handle_profile_text_input, profile_handler
 from bot.handlers.sections.shop import shop_handler
 from bot.handlers.sections.back import back_to_menu_handler
 from bot.navigation.session import session_store, MenuSession
-from bot.db.database import CollectionEntry, CollectionFilterState, CollectionPage, ShopView
+from bot.db.database import (
+    CollectionEntry,
+    CollectionFilterState,
+    CollectionPage,
+    PokemonSearchEntry,
+    ProfileCoverCandidate,
+    ProfileRarityProgress,
+    ProfileSummary,
+    ShopError,
+    ShopView,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -16,9 +27,11 @@ def clear_sessions():
     """Clear session store before each test."""
     session_store._sessions.clear()
     session_store._callback_locks.clear()
+    session_store._pending_inputs.clear()
     yield
     session_store._sessions.clear()
     session_store._callback_locks.clear()
+    session_store._pending_inputs.clear()
 
 
 @pytest.fixture
@@ -198,6 +211,402 @@ async def test_collection_command_sends_collection_section(mock_update):
     assert "Pikachu x2 | id: 25" in call_args.kwargs["text"]
     assert sent_message.edit_reply_markup.called
     assert len(session_store._sessions) == 1
+
+
+@pytest.mark.asyncio
+async def test_profile_command_sends_profile_section(mock_update):
+    """Test /profile command sends the profile screen."""
+    sent_message = Mock(spec=Message)
+    sent_message.message_id = 106
+    sent_message.edit_reply_markup = AsyncMock()
+    context_bot = Mock()
+    context_bot.send_photo = AsyncMock(return_value=sent_message)
+    context_bot.send_message = AsyncMock(return_value=sent_message)
+
+    db = AsyncMock()
+    db.get_profile_summary = AsyncMock(
+        return_value=ProfileSummary(
+            user_id=1,
+            telegram_id=12345,
+            tg_username="ash",
+            nickname="Ash",
+            language="ru",
+            created_at=__import__("datetime").datetime.now(__import__("datetime").UTC),
+            total_unique_owned=2,
+            total_catalog=1025,
+            total_unique_percent=0,
+            rarity_progress=(
+                ProfileRarityProgress("Legendary", 0, 50, 0),
+                ProfileRarityProgress("Epic", 1, 100, 1),
+                ProfileRarityProgress("Rare", 1, 250, 0),
+                ProfileRarityProgress("Common", 0, 625, 0),
+            ),
+            profile_pic_credit_id=None,
+            cover_pokemon_name=None,
+        )
+    )
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+    context.bot = context_bot
+
+    await profile_command(mock_update, context)
+
+    assert context_bot.send_photo.called or context_bot.send_message.called
+    if context_bot.send_photo.called:
+        call_args = context_bot.send_photo.call_args
+        rendered_text = call_args.kwargs["caption"]
+    else:
+        call_args = context_bot.send_message.call_args
+        rendered_text = call_args.kwargs["text"]
+    assert "ваш профиль" in rendered_text
+    assert "12345" in rendered_text
+    assert sent_message.edit_reply_markup.called
+    assert len(session_store._sessions) == 1
+
+
+@pytest.mark.asyncio
+async def test_profile_nickname_prompt_and_text_input_flow() -> None:
+    session = MenuSession(
+        session_id="profile-session",
+        chat_id=12345,
+        message_id=777,
+        user_id=12345,
+        message_thread_id=None,
+    )
+
+    query = AsyncMock(spec=CallbackQuery)
+    query.data = "menu:prn:profile-session"
+    query.edit_message_text = AsyncMock()
+
+    user = Mock(spec=User)
+    user.id = 12345
+    user.username = "ash"
+    user.first_name = "Ash"
+
+    update = Mock(spec=Update)
+    update.callback_query = query
+    update.effective_user = user
+
+    db = AsyncMock()
+    db.get_profile_summary = AsyncMock(
+        return_value=ProfileSummary(
+            user_id=1,
+            telegram_id=12345,
+            tg_username="ash",
+            nickname="Ash",
+            language="ru",
+            created_at=__import__("datetime").datetime.now(__import__("datetime").UTC),
+                total_unique_owned=2,
+                total_catalog=1025,
+                total_unique_percent=0,
+                rarity_progress=(),
+                profile_pic_credit_id=None,
+                cover_pokemon_name=None,
+            )
+        )
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+
+    await profile_handler(update, context, session)
+
+    pending = session_store.get_pending_input(chat_id=12345, user_id=12345)
+    assert pending is not None
+    assert pending.action == "profile_nickname"
+
+    chat = Mock(spec=Chat)
+    chat.id = 12345
+    chat.type = "private"
+    chat.send_message = AsyncMock()
+
+    message = Mock(spec=Message)
+    message.message_id = 778
+    message.chat = chat
+    message.message_thread_id = None
+    message.text = "New Ash"
+
+    text_update = Mock(spec=Update)
+    text_update.effective_chat = chat
+    text_update.effective_user = user
+    text_update.effective_message = message
+
+    context.bot = Mock()
+    context.bot.edit_message_caption = AsyncMock()
+    context.bot.edit_message_text = AsyncMock()
+    db.update_profile_nickname = AsyncMock(return_value="New Ash")
+
+    await handle_profile_text_input(text_update, context)
+
+    assert db.update_profile_nickname.called
+    assert context.bot.edit_message_caption.called or context.bot.edit_message_text.called
+    assert chat.send_message.called
+    assert session_store.get_pending_input(chat_id=12345, user_id=12345) is None
+
+
+@pytest.mark.asyncio
+async def test_profile_cover_search_single_match_updates_cover() -> None:
+    session_store.set_pending_input(
+        action="profile_cover",
+        chat_id=12345,
+        user_id=12345,
+        source_message_id=777,
+        source_message_thread_id=None,
+    )
+
+    user = Mock(spec=User)
+    user.id = 12345
+    user.username = "ash"
+    user.first_name = "Ash"
+
+    chat = Mock(spec=Chat)
+    chat.id = 12345
+    chat.type = "private"
+    chat.send_message = AsyncMock()
+
+    message = Mock(spec=Message)
+    message.message_id = 778
+    message.chat = chat
+    message.message_thread_id = None
+    message.text = "Pikachu"
+
+    update = Mock(spec=Update)
+    update.effective_chat = chat
+    update.effective_user = user
+    update.effective_message = message
+
+    db = AsyncMock()
+    db.search_profile_cover_candidates = AsyncMock(
+        return_value=[
+            ProfileCoverCandidate(
+                pokemon_id=25,
+                sample_user_pokemon_id=250,
+                name="Pikachu",
+                rarity="Rare",
+                pokemon_type="electric",
+                image_credit_id=55,
+            )
+        ]
+    )
+    db.update_profile_cover = AsyncMock(return_value=55)
+    db.get_profile_summary = AsyncMock(
+        return_value=ProfileSummary(
+            user_id=1,
+            telegram_id=12345,
+            tg_username="ash",
+            nickname="Ash",
+            language="ru",
+            created_at=__import__("datetime").datetime.now(__import__("datetime").UTC),
+                total_unique_owned=2,
+                total_catalog=1025,
+                total_unique_percent=0,
+                rarity_progress=(),
+                profile_pic_credit_id=55,
+                cover_pokemon_name=None,
+            )
+        )
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+    context.bot = Mock()
+    context.bot.edit_message_caption = AsyncMock()
+    context.bot.edit_message_text = AsyncMock()
+
+    await handle_profile_text_input(update, context)
+
+    assert db.search_profile_cover_candidates.called
+    assert db.update_profile_cover.called
+    assert context.bot.edit_message_caption.called or context.bot.edit_message_text.called
+    assert chat.send_message.called
+    assert session_store.get_pending_input(chat_id=12345, user_id=12345) is None
+
+
+@pytest.mark.asyncio
+async def test_search_command_single_result_sends_card(mock_update) -> None:
+    mock_update.message = Mock()
+    mock_update.message.text = "/search pikachu"
+    mock_update.effective_message = mock_update.message
+    mock_update.effective_message.message_id = 120
+    mock_update.effective_message.message_thread_id = None
+
+    db = AsyncMock()
+    db.get_or_create_user = AsyncMock(return_value=1)
+    db.search_pokemon_catalog = AsyncMock(
+        return_value=[
+            PokemonSearchEntry(
+                pokemon_id=25,
+                name="Pikachu",
+                rarity="Rare",
+                pokemon_type="electric",
+                base_hp=35,
+                base_attack=55,
+                base_defense=40,
+                base_stamina=90,
+                image_credit_id=None,
+            )
+        ]
+    )
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+    context.bot = Mock()
+    context.bot.send_photo = AsyncMock()
+    context.bot.send_message = AsyncMock()
+
+    await search_command(mock_update, context)
+
+    assert db.search_pokemon_catalog.called
+    assert context.bot.send_photo.called or context.bot.send_message.called
+
+
+@pytest.mark.asyncio
+async def test_profile_command_opens_replied_user_profile_read_only(mock_update) -> None:
+    replied_user = Mock(spec=User)
+    replied_user.id = 777
+    replied_user.username = "misty"
+    replied_user.is_bot = False
+
+    reply_message = Mock(spec=Message)
+    reply_message.from_user = replied_user
+
+    sent_message = Mock(spec=Message)
+    sent_message.message_id = 180
+    sent_message.edit_reply_markup = AsyncMock()
+    context_bot = Mock()
+    context_bot.send_photo = AsyncMock(return_value=sent_message)
+    context_bot.send_message = AsyncMock(return_value=sent_message)
+    mock_update.effective_message.reply_to_message = reply_message
+    mock_update.effective_message.text = "/profile"
+
+    db = AsyncMock()
+    db.get_or_create_user = AsyncMock(return_value=2)
+    db.get_profile_summary_by_telegram_id = AsyncMock(
+        return_value=ProfileSummary(
+            user_id=2,
+            telegram_id=777,
+            tg_username="misty",
+            nickname=None,
+            language="ru",
+            created_at=__import__("datetime").datetime.now(__import__("datetime").UTC),
+                total_unique_owned=4,
+                total_catalog=1025,
+                total_unique_percent=0,
+                rarity_progress=(),
+                profile_pic_credit_id=None,
+                cover_pokemon_name=None,
+            )
+        )
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+    context.bot = context_bot
+
+    await profile_command(mock_update, context)
+
+    call_args = context_bot.send_photo.call_args if context_bot.send_photo.called else context_bot.send_message.call_args
+    rendered_text = call_args.kwargs["caption"] if context_bot.send_photo.called else call_args.kwargs["text"]
+    assert "@misty" in rendered_text
+    assert sent_message.edit_reply_markup.called
+
+
+@pytest.mark.asyncio
+async def test_profile_command_opens_user_by_username_argument(mock_update) -> None:
+    sent_message = Mock(spec=Message)
+    sent_message.message_id = 181
+    sent_message.edit_reply_markup = AsyncMock()
+    context_bot = Mock()
+    context_bot.send_photo = AsyncMock(return_value=sent_message)
+    context_bot.send_message = AsyncMock(return_value=sent_message)
+    mock_update.effective_message.text = "/profile @misty"
+    mock_update.message = mock_update.effective_message
+
+    db = AsyncMock()
+    db.get_profile_summary_by_username = AsyncMock(
+        return_value=ProfileSummary(
+            user_id=2,
+            telegram_id=777,
+            tg_username="misty",
+            nickname=None,
+            language="ru",
+            created_at=__import__("datetime").datetime.now(__import__("datetime").UTC),
+                total_unique_owned=4,
+                total_catalog=1025,
+                total_unique_percent=0,
+                rarity_progress=(),
+                profile_pic_credit_id=None,
+                cover_pokemon_name=None,
+            )
+        )
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+    context.bot = context_bot
+
+    await profile_command(mock_update, context)
+
+    call_args = context_bot.send_photo.call_args if context_bot.send_photo.called else context_bot.send_message.call_args
+    rendered_text = call_args.kwargs["caption"] if context_bot.send_photo.called else call_args.kwargs["text"]
+    assert "@misty" in rendered_text
+    assert sent_message.edit_reply_markup.called
+
+
+@pytest.mark.asyncio
+async def test_profile_command_unknown_username_sends_warning(mock_update) -> None:
+    mock_update.effective_message.text = "/profile @unknown_user"
+    mock_update.message = mock_update.effective_message
+    mock_update.effective_chat.send_message = AsyncMock()
+
+    db = AsyncMock()
+    db.get_profile_summary_by_username = AsyncMock(side_effect=ShopError("Я пока не знаю этого пользователя."))
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+    context.bot = Mock()
+
+    await profile_command(mock_update, context)
+
+    assert mock_update.effective_chat.send_message.called
+    call_args = mock_update.effective_chat.send_message.call_args
+    sent_text = call_args.args[0] if call_args.args else call_args.kwargs["text"]
+    assert "Я пока не знаю этого пользователя." in sent_text
+
+
+@pytest.mark.asyncio
+async def test_search_command_multiple_results_sends_list(mock_update) -> None:
+    sent_message = Mock(spec=Message)
+    sent_message.message_id = 130
+    sent_message.edit_reply_markup = AsyncMock()
+    mock_update.effective_chat.send_message = AsyncMock(return_value=sent_message)
+    mock_update.message = Mock()
+    mock_update.message.text = "/search char"
+    mock_update.effective_message = mock_update.message
+    mock_update.effective_message.message_id = 121
+    mock_update.effective_message.message_thread_id = None
+
+    db = AsyncMock()
+    db.get_or_create_user = AsyncMock(return_value=1)
+    db.search_pokemon_catalog = AsyncMock(
+        return_value=[
+            PokemonSearchEntry(4, "Charmander", "Rare", "fire", 39, 52, 43, 65, None),
+            PokemonSearchEntry(5, "Charmeleon", "Rare", "fire", 58, 64, 58, 80, None),
+        ]
+    )
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+
+    await search_command(mock_update, context)
+
+    assert mock_update.effective_chat.send_message.called
+    assert sent_message.edit_reply_markup.called
 
 
 @pytest.mark.asyncio

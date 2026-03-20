@@ -29,7 +29,7 @@ def build_main_menu_keyboard(session_id: str) -> InlineKeyboardMarkup:
             InlineKeyboardButton("📢 Обновления", callback_data=f"menu:updates:{session_id}"),
         ],
         [
-            InlineKeyboardButton("💬 Чат", callback_data=f"menu:chat:{session_id}"),
+            InlineKeyboardButton("💬 Чат", url="https://t.me/+TQ8-KkXpZa02MDY6"),
             InlineKeyboardButton("🆘 Поддержка", callback_data=f"menu:support:{session_id}"),
             InlineKeyboardButton("ℹ️ Информация", callback_data=f"menu:info:{session_id}"),
         ],

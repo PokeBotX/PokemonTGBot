@@ -13,9 +13,11 @@ from bot.utils.logging import setup_logging
 from bot.handlers.chat_activity import group_message_activity_handler
 from bot.handlers.commands import (
     collection_command,
+    find_command,
     items_command,
     menu_command,
     pokemon_command,
+    profile_command,
     search_command,
     section_command,
     shop_command,
@@ -27,7 +29,7 @@ from bot.navigation.router import navigation_router
 # Import section handlers
 from bot.handlers.sections.shop import register_shop_routes
 from bot.handlers.sections.market import market_handler
-from bot.handlers.sections.profile import profile_handler
+from bot.handlers.sections.profile import handle_profile_text_input, register_profile_routes
 from bot.handlers.sections.games import games_handler
 from bot.handlers.sections.collection import register_collection_routes
 from bot.handlers.sections.updates import updates_handler
@@ -78,8 +80,8 @@ def register_routes() -> None:
     """Register all section handlers with navigation router."""
     register_shop_routes(navigation_router)
     register_collection_routes(navigation_router)
+    register_profile_routes(navigation_router)
     navigation_router.register("market", market_handler)
-    navigation_router.register("profile", profile_handler)
     navigation_router.register("games", games_handler)
     navigation_router.register("updates", updates_handler)
     navigation_router.register("chat", chat_handler)
@@ -103,7 +105,8 @@ async def setup_bot_commands(application: Application) -> None:
         BotCommand("profile", "Открыть профиль"),
         BotCommand("games", "Открыть мини-игры"),
         BotCommand("collection", "Открыть коллекцию"),
-        BotCommand("search", "Поиск покемона в чате"),
+        BotCommand("find", "Поиск покемона в чате"),
+        BotCommand("search", "Поиск покемона по имени"),
         BotCommand("updates", "Открыть обновления"),
         BotCommand("chat", "Открыть чат"),
         BotCommand("support", "Открыть поддержку"),
@@ -169,13 +172,16 @@ async def lifespan(app: FastAPI):
     bot_app.add_handler(CommandHandler("shop", shop_command))
     bot_app.add_handler(CommandHandler("pokemon", pokemon_command))
     bot_app.add_handler(CommandHandler("items", items_command))
+    bot_app.add_handler(CommandHandler("find", find_command))
     bot_app.add_handler(CommandHandler("search", search_command))
     bot_app.add_handler(CommandHandler("collection", collection_command))
-    bot_app.add_handler(CommandHandler(["market", "profile", "games", "updates", "chat", "support", "info"], section_command))
+    bot_app.add_handler(CommandHandler("profile", profile_command))
+    bot_app.add_handler(CommandHandler(["market", "games", "updates", "chat", "support", "info"], section_command))
     
     # Register callback query handler
     bot_app.add_handler(CallbackQueryHandler(handle_encounter_callback, pattern=r"^enc:"))
     bot_app.add_handler(CallbackQueryHandler(handle_callback_query))
+    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_profile_text_input))
     bot_app.add_handler(
         MessageHandler(
             GROUP_ACTIVITY_FILTER,

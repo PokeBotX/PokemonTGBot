@@ -1,10 +1,14 @@
 CREATE TABLE IF NOT EXISTS "users" (
   "id" bigserial PRIMARY KEY,
   "tg_user_id" bigint UNIQUE NOT NULL,
+  "tg_username" varchar(64),
   "nickname" varchar(64),
   "vip_level" int NOT NULL DEFAULT 0,
   "created_at" timestamp NOT NULL DEFAULT (now())
 );
+
+ALTER TABLE "users"
+  ADD COLUMN IF NOT EXISTS "tg_username" varchar(64);
 
 CREATE TABLE IF NOT EXISTS "user_settings" (
   "user_id" bigint PRIMARY KEY,
