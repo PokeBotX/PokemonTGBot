@@ -41,6 +41,27 @@ SPIN_PRICE = 500
 ULTRABALL_PRICE = 200
 MASTERBALL_PRICE = 1000
 COLLECTION_PAGE_SIZE = 12
+MARKET_PAGE_SIZE = 10
+MARKET_MAX_ACTIVE_LISTINGS = 2
+MARKET_MAX_ACTIVE_BUY_REQUESTS = 5
+MARKET_LISTING_LIFETIME_DAYS = 5
+MARKET_LISTING_COMMISSION_RATE = 0.01
+MARKET_MAINTENANCE_INTERVAL_SECONDS = 60 * 60
+MARKET_LISTING_STATUS_ACTIVE = "active"
+MARKET_LISTING_STATUS_SOLD = "sold"
+MARKET_LISTING_STATUS_REMOVED = "removed"
+MARKET_LISTING_STATUS_EXPIRED = "expired"
+MARKET_REQUEST_STATUS_ACTIVE = "active"
+MARKET_REQUEST_STATUS_FULFILLED = "fulfilled"
+MARKET_REQUEST_STATUS_CANCELED = "canceled"
+MARKET_SORT_NEWEST = "newest"
+MARKET_SORT_CHEAPEST = "cheapest"
+POKEMON_RELEASE_REWARDS = {
+    "Common": 32,
+    "Rare": 100,
+    "Epic": 325,
+    "Legendary": 1000,
+}
 EPIC_PITY_THRESHOLD = 15
 LEGENDARY_PITY_THRESHOLD = 40
 RARITY_PROBABILITIES = {
@@ -149,7 +170,7 @@ class SpinResult:
     rewards: list[PokemonReward]
     spent_amount: int
     shop_view: ShopView
-
+ 
 
 @dataclass(slots=True)
 class CollectionFilterState:
@@ -206,6 +227,7 @@ class CollectionEntry:
     base_defense: int
     base_stamina: int
     image_credit_id: Optional[int]
+    is_locked: bool = False
 
     def as_session_payload(self) -> dict[str, object]:
         """Serialize entry for session storage."""
@@ -221,6 +243,7 @@ class CollectionEntry:
             "base_defense": self.base_defense,
             "base_stamina": self.base_stamina,
             "image_credit_id": self.image_credit_id,
+            "is_locked": self.is_locked,
         }
 
     @classmethod
@@ -238,6 +261,7 @@ class CollectionEntry:
             base_defense=int(payload["base_defense"]),
             base_stamina=int(payload["base_stamina"]),
             image_credit_id=payload.get("image_credit_id"),
+            is_locked=bool(payload.get("is_locked", False)),
         )
 
 
@@ -367,6 +391,146 @@ class PokemonSearchEntry:
             base_stamina=int(payload["base_stamina"]),
             image_credit_id=payload.get("image_credit_id"),
         )
+
+
+@dataclass(slots=True)
+class MarketBrowseState:
+    """Current browse filters for the market buy screen."""
+
+    rarities: tuple[str, ...] = ()
+    affordable_only: bool = False
+    sort_mode: str = MARKET_SORT_NEWEST
+    page: int = 1
+
+    def with_page(self, page: int) -> "MarketBrowseState":
+        return MarketBrowseState(
+            rarities=self.rarities,
+            affordable_only=self.affordable_only,
+            sort_mode=self.sort_mode,
+            page=page,
+        )
+
+    def to_session_payload(self) -> dict[str, object]:
+        return {
+            "rarities": list(self.rarities),
+            "affordable_only": self.affordable_only,
+            "sort_mode": self.sort_mode,
+            "page": self.page,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: Optional[dict[str, object]]) -> "MarketBrowseState":
+        if not payload:
+            return cls()
+        sort_mode = str(payload.get("sort_mode") or MARKET_SORT_NEWEST)
+        if sort_mode not in {MARKET_SORT_NEWEST, MARKET_SORT_CHEAPEST}:
+            sort_mode = MARKET_SORT_NEWEST
+        return cls(
+            rarities=tuple(str(value) for value in payload.get("rarities", []) if value),
+            affordable_only=bool(payload.get("affordable_only", False)),
+            sort_mode=sort_mode,
+            page=max(1, int(payload.get("page", 1))),
+        )
+
+
+@dataclass(slots=True)
+class MarketListingSummary:
+    """Compact sale listing data for browsing and management."""
+
+    listing_id: int
+    seller_user_id: int
+    seller_label: Optional[str]
+    user_pokemon_id: int
+    pokemon_id: int
+    name: str
+    rarity: str
+    pokemon_type: Optional[str]
+    price: int
+    status: str
+    listed_at: datetime
+    expires_at: datetime
+    days_remaining: int
+    image_credit_id: Optional[int]
+
+
+@dataclass(slots=True)
+class MarketBuyRequestSummary:
+    """Compact buy-request data for browsing and management."""
+
+    request_id: int
+    requester_user_id: int
+    requester_label: Optional[str]
+    pokemon_id: int
+    name: str
+    rarity: str
+    pokemon_type: Optional[str]
+    price: int
+    reserved_amount: int
+    status: str
+    created_at: datetime
+    image_credit_id: Optional[int]
+    matching_user_pokemon_id: Optional[int] = None
+
+
+@dataclass(slots=True)
+class MarketBrowsePage:
+    """Paginated market listings for the buy screen."""
+
+    entries: list[MarketListingSummary]
+    filter_state: MarketBrowseState
+    total_entries: int
+    current_page: int
+    total_pages: int
+    current_balance: int
+
+    def has_previous(self) -> bool:
+        return self.current_page > 1
+
+    def has_next(self) -> bool:
+        return self.current_page < self.total_pages
+
+
+@dataclass(slots=True)
+class MarketPurchaseResult:
+    """Outcome of buying an active sale listing."""
+
+    listing: MarketListingSummary
+    buyer_user_id: int
+    seller_user_id: int
+    price: int
+
+
+@dataclass(slots=True)
+class MarketRequestFulfillmentResult:
+    """Outcome of fulfilling a buy request with an owned pokemon."""
+
+    request: MarketBuyRequestSummary
+    seller_user_id: int
+    buyer_user_id: int
+    transferred_user_pokemon_id: int
+    price: int
+
+
+@dataclass(slots=True)
+class PokemonReleaseResult:
+    """Outcome of releasing one owned pokemon for pokecoin."""
+
+    user_pokemon_id: int
+    pokemon_id: int
+    name: str
+    rarity: str
+    reward_amount: int
+
+
+@dataclass(slots=True)
+class PokemonLockResult:
+    """Lock toggle result for one owned pokemon instance."""
+
+    user_pokemon_id: int
+    pokemon_id: int
+    name: str
+    rarity: str
+    is_locked: bool
 
 
 @dataclass(slots=True)
@@ -597,6 +761,7 @@ class Database:
               SELECT COUNT(DISTINCT pokemon_id)::int AS total_unique_owned
               FROM user_pokemon
               WHERE owner_user_id = $1
+                AND released_at IS NULL
             ),
             total_catalog AS (
               SELECT COUNT(*)::int AS total_catalog
@@ -635,6 +800,7 @@ class Database:
             LEFT JOIN user_pokemon up
               ON up.pokemon_id = pc.id
              AND up.owner_user_id = $1
+             AND up.released_at IS NULL
             WHERE pc.rarity IS NOT NULL
             GROUP BY pc.rarity
             """,
@@ -703,6 +869,7 @@ class Database:
                     FROM user_pokemon up
                     JOIN pokemon_catalog pc ON pc.id = up.pokemon_id
                     WHERE up.owner_user_id = $1
+                      AND up.released_at IS NULL
                       AND pc.image_credit_id IS NOT NULL
                       AND pc.name ILIKE '%' || $2 || '%'
                     GROUP BY pc.id, pc.name, pc.rarity, pc.type, pc.image_credit_id
@@ -753,6 +920,7 @@ class Database:
                     FROM user_pokemon up
                     JOIN pokemon_catalog pc ON pc.id = up.pokemon_id
                     WHERE up.owner_user_id = $1
+                      AND up.released_at IS NULL
                       AND pc.image_credit_id = $2
                     LIMIT 1
                     """,
@@ -826,6 +994,796 @@ class Database:
             )
             for row in rows
         ]
+
+    async def get_pokemon_catalog_entry(self, pokemon_id: int) -> Optional[PokemonSearchEntry]:
+        """Load one pokemon catalog entry by species id."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT
+                  id AS pokemon_id,
+                  name,
+                  rarity,
+                  type,
+                  base_hp,
+                  base_attack,
+                  base_defense,
+                  base_stamina,
+                  image_credit_id
+                FROM pokemon_catalog
+                WHERE id = $1
+                """,
+                pokemon_id,
+            )
+        if not row:
+            return None
+        return PokemonSearchEntry(
+            pokemon_id=int(row["pokemon_id"]),
+            name=str(row["name"]),
+            rarity=str(row["rarity"]),
+            pokemon_type=row["type"],
+            base_hp=int(row["base_hp"]),
+            base_attack=int(row["base_attack"]),
+            base_defense=int(row["base_defense"]),
+            base_stamina=int(row["base_stamina"]),
+            image_credit_id=row["image_credit_id"],
+        )
+
+    async def get_market_listings_page(
+        self,
+        telegram_id: int,
+        username: Optional[str],
+        filter_state: Optional[MarketBrowseState] = None,
+    ) -> MarketBrowsePage:
+        """Load a paginated list of active sale listings visible to the user."""
+        self._ensure_pool()
+        requested_state = filter_state or MarketBrowseState()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                user_id = await self._ensure_user(conn, telegram_id, username)
+                return await self._fetch_market_listings_page(conn, user_id, requested_state)
+
+    async def get_my_market_listings(self, telegram_id: int, username: Optional[str]) -> list[MarketListingSummary]:
+        """Load active listings created by the current user."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                user_id = await self._ensure_user(conn, telegram_id, username)
+                rows = await conn.fetch(
+                    """
+                    SELECT
+                      ml.id AS listing_id,
+                      ml.seller_user_id,
+                      u.nickname AS seller_nickname,
+                      u.tg_username AS seller_username,
+                      ml.pokemon_instance_id AS user_pokemon_id,
+                      pc.id AS pokemon_id,
+                      pc.name,
+                      pc.rarity,
+                      pc.type,
+                      pc.image_credit_id,
+                      ml.price,
+                      ml.status,
+                      ml.listed_at,
+                      ml.expires_at
+                    FROM market_listings ml
+                    JOIN user_pokemon up ON up.id = ml.pokemon_instance_id
+                    JOIN pokemon_catalog pc ON pc.id = up.pokemon_id
+                    JOIN users u ON u.id = ml.seller_user_id
+                    WHERE ml.seller_user_id = $1
+                      AND ml.status = $2
+                    ORDER BY ml.listed_at DESC, ml.id DESC
+                    """,
+                    user_id,
+                    MARKET_LISTING_STATUS_ACTIVE,
+                )
+        return [_map_market_listing_summary(row) for row in rows]
+
+    async def get_my_market_buy_requests(
+        self,
+        telegram_id: int,
+        username: Optional[str],
+    ) -> list[MarketBuyRequestSummary]:
+        """Load active buy requests created by the current user."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                user_id = await self._ensure_user(conn, telegram_id, username)
+                rows = await conn.fetch(
+                    """
+                    SELECT
+                      mbr.id AS request_id,
+                      mbr.requester_user_id,
+                      u.nickname AS requester_nickname,
+                      u.tg_username AS requester_username,
+                      mbr.pokemon_id,
+                      pc.name,
+                      pc.rarity,
+                      pc.type,
+                      pc.image_credit_id,
+                      mbr.price,
+                      mbr.reserved_amount,
+                      mbr.status,
+                      mbr.created_at,
+                      NULL::bigint AS matching_user_pokemon_id
+                    FROM market_buy_requests mbr
+                    JOIN pokemon_catalog pc ON pc.id = mbr.pokemon_id
+                    JOIN users u ON u.id = mbr.requester_user_id
+                    WHERE mbr.requester_user_id = $1
+                      AND mbr.status = $2
+                    ORDER BY mbr.created_at DESC, mbr.id DESC
+                    """,
+                    user_id,
+                    MARKET_REQUEST_STATUS_ACTIVE,
+                )
+        return [_map_market_buy_request_summary(row) for row in rows]
+
+    async def get_sellable_market_buy_requests(
+        self,
+        telegram_id: int,
+        username: Optional[str],
+    ) -> list[MarketBuyRequestSummary]:
+        """Load only foreign buy requests that the current user can fulfill."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                user_id = await self._ensure_user(conn, telegram_id, username)
+                rows = await conn.fetch(
+                    """
+                    SELECT
+                      mbr.id AS request_id,
+                      mbr.requester_user_id,
+                      u.nickname AS requester_nickname,
+                      u.tg_username AS requester_username,
+                      mbr.pokemon_id,
+                      pc.name,
+                      pc.rarity,
+                      pc.type,
+                      pc.image_credit_id,
+                      mbr.price,
+                      mbr.reserved_amount,
+                      mbr.status,
+                      mbr.created_at,
+                      (
+                        SELECT MIN(up.id)
+                        FROM user_pokemon up
+                        WHERE up.owner_user_id = $1
+                          AND up.pokemon_id = mbr.pokemon_id
+                          AND up.is_locked = FALSE
+                          AND up.released_at IS NULL
+                          AND NOT EXISTS (
+                            SELECT 1
+                            FROM market_listings ml
+                            WHERE ml.pokemon_instance_id = up.id
+                              AND ml.status = $2
+                          )
+                      ) AS matching_user_pokemon_id
+                    FROM market_buy_requests mbr
+                    JOIN pokemon_catalog pc ON pc.id = mbr.pokemon_id
+                    JOIN users u ON u.id = mbr.requester_user_id
+                    WHERE mbr.requester_user_id <> $1
+                      AND mbr.status = $3
+                      AND EXISTS (
+                        SELECT 1
+                        FROM user_pokemon up
+                        WHERE up.owner_user_id = $1
+                          AND up.pokemon_id = mbr.pokemon_id
+                          AND up.is_locked = FALSE
+                          AND up.released_at IS NULL
+                          AND NOT EXISTS (
+                            SELECT 1
+                            FROM market_listings ml
+                            WHERE ml.pokemon_instance_id = up.id
+                              AND ml.status = $2
+                          )
+                      )
+                    ORDER BY mbr.created_at DESC, mbr.id DESC
+                    """,
+                    user_id,
+                    MARKET_LISTING_STATUS_ACTIVE,
+                    MARKET_REQUEST_STATUS_ACTIVE,
+                )
+        return [_map_market_buy_request_summary(row) for row in rows]
+
+    async def create_market_listing(
+        self,
+        telegram_id: int,
+        username: Optional[str],
+        *,
+        user_pokemon_id: int,
+        price: int,
+    ) -> MarketListingSummary:
+        """Create an active sale listing and charge the initial commission."""
+        if price <= 0:
+            raise ShopError("Цена лота должна быть больше нуля.")
+
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                seller_user_id = await self._ensure_user(conn, telegram_id, username)
+                active_count = int(
+                    await conn.fetchval(
+                        """
+                        SELECT COUNT(*)::int
+                        FROM market_listings
+                        WHERE seller_user_id = $1
+                          AND status = $2
+                        """,
+                        seller_user_id,
+                        MARKET_LISTING_STATUS_ACTIVE,
+                    )
+                    or 0
+                )
+                if active_count >= MARKET_MAX_ACTIVE_LISTINGS:
+                    raise ShopError("У вас уже заняты все 2 слота продажи.")
+
+                pokemon_row = await conn.fetchrow(
+                    """
+                    SELECT up.id, up.owner_user_id, up.is_locked, up.released_at, pc.id AS pokemon_id
+                    FROM user_pokemon up
+                    JOIN pokemon_catalog pc ON pc.id = up.pokemon_id
+                    WHERE up.id = $1
+                    FOR UPDATE
+                    """,
+                    user_pokemon_id,
+                )
+                if not pokemon_row or int(pokemon_row["owner_user_id"]) != seller_user_id:
+                    raise ShopError("Нельзя выставить чужого покемона.")
+                if pokemon_row["released_at"] is not None:
+                    raise ShopError("Нельзя выставить отпущенного покемона.")
+                if bool(pokemon_row["is_locked"]):
+                    raise ShopError("Нельзя выставить заблокированного покемона.")
+
+                existing_listing = await conn.fetchval(
+                    """
+                    SELECT 1
+                    FROM market_listings
+                    WHERE pokemon_instance_id = $1
+                      AND status = $2
+                    LIMIT 1
+                    """,
+                    user_pokemon_id,
+                    MARKET_LISTING_STATUS_ACTIVE,
+                )
+                if existing_listing:
+                    raise ShopError("Этот покемон уже выставлен на рынок.")
+
+                commission_amount = _calculate_market_daily_commission(price)
+                await self._ensure_user_balance(conn, seller_user_id, POKECOIN_CODE)
+                balance = await self._get_balance_for_update(conn, seller_user_id, POKECOIN_CODE)
+                if balance < commission_amount:
+                    raise InsufficientFundsError("Недостаточно pokecoin для стартовой комиссии.")
+
+                now = datetime.now(UTC)
+                await self._adjust_balance(conn, seller_user_id, POKECOIN_CODE, -commission_amount)
+                inserted = await conn.fetchrow(
+                    """
+                    INSERT INTO market_listings (
+                      seller_user_id,
+                      pokemon_instance_id,
+                      currency_id,
+                      price,
+                      status,
+                      listed_at,
+                      initial_commission_paid,
+                      daily_commission_amount,
+                      last_commission_at,
+                      next_commission_at,
+                      expires_at
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $6, $8, $9)
+                    RETURNING id
+                    """,
+                    seller_user_id,
+                    user_pokemon_id,
+                    await self._get_currency_id(conn, POKECOIN_CODE),
+                    price,
+                    MARKET_LISTING_STATUS_ACTIVE,
+                    now,
+                    commission_amount,
+                    now + timedelta(days=1),
+                    now + timedelta(days=MARKET_LISTING_LIFETIME_DAYS),
+                )
+                listing = await self._fetch_market_listing_summary(conn, int(inserted["id"]))
+
+        logger.info(
+            "market_listing_created",
+            seller_user_id=listing.seller_user_id,
+            listing_id=listing.listing_id,
+            user_pokemon_id=listing.user_pokemon_id,
+            price=listing.price,
+            commission_amount=commission_amount,
+        )
+        return listing
+
+    async def remove_market_listing(
+        self,
+        telegram_id: int,
+        username: Optional[str],
+        *,
+        listing_id: int,
+        reason: str = "manual",
+    ) -> MarketListingSummary:
+        """Remove one of the user's active sale listings."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                seller_user_id = await self._ensure_user(conn, telegram_id, username)
+                listing_row = await conn.fetchrow(
+                    """
+                    SELECT id, seller_user_id, status
+                    FROM market_listings
+                    WHERE id = $1
+                    FOR UPDATE
+                    """,
+                    listing_id,
+                )
+                if not listing_row:
+                    raise ShopError("Лот не найден.")
+                if int(listing_row["seller_user_id"]) != seller_user_id:
+                    raise ShopError("Нельзя снять чужой лот.")
+                if str(listing_row["status"]) != MARKET_LISTING_STATUS_ACTIVE:
+                    raise ShopError("Этот лот уже не активен.")
+
+                await conn.execute(
+                    """
+                    UPDATE market_listings
+                    SET status = $2,
+                        removed_at = NOW(),
+                        removal_reason = $3
+                    WHERE id = $1
+                    """,
+                    listing_id,
+                    MARKET_LISTING_STATUS_REMOVED,
+                    reason,
+                )
+                listing = await self._fetch_market_listing_summary(conn, listing_id)
+
+        logger.info(
+            "market_listing_removed",
+            seller_user_id=listing.seller_user_id,
+            listing_id=listing.listing_id,
+            reason=reason,
+        )
+        return listing
+
+    async def purchase_market_listing(
+        self,
+        telegram_id: int,
+        username: Optional[str],
+        *,
+        listing_id: int,
+    ) -> MarketPurchaseResult:
+        """Buy one active listing atomically."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                buyer_user_id = await self._ensure_user(conn, telegram_id, username)
+                listing_row = await conn.fetchrow(
+                    """
+                    SELECT
+                      ml.id,
+                      ml.seller_user_id,
+                      ml.pokemon_instance_id,
+                      ml.price,
+                      ml.status
+                    FROM market_listings ml
+                    WHERE ml.id = $1
+                    FOR UPDATE
+                    """,
+                    listing_id,
+                )
+                if not listing_row:
+                    raise ShopError("Лот не найден.")
+                if str(listing_row["status"]) != MARKET_LISTING_STATUS_ACTIVE:
+                    raise ShopError("Лот уже недоступен.")
+
+                seller_user_id = int(listing_row["seller_user_id"])
+                if seller_user_id == buyer_user_id:
+                    raise ShopError("Нельзя купить свой собственный лот.")
+
+                await self._ensure_user_balance(conn, buyer_user_id, POKECOIN_CODE)
+                await self._ensure_user_balance(conn, seller_user_id, POKECOIN_CODE)
+                balance = await self._get_balance_for_update(conn, buyer_user_id, POKECOIN_CODE)
+                price = int(listing_row["price"])
+                if balance < price:
+                    raise InsufficientFundsError("Недостаточно pokecoin для покупки.")
+
+                await self._adjust_balance(conn, buyer_user_id, POKECOIN_CODE, -price)
+                await self._adjust_balance(conn, seller_user_id, POKECOIN_CODE, price)
+                await conn.execute(
+                    """
+                    UPDATE user_pokemon
+                    SET owner_user_id = $2
+                    WHERE id = $1
+                    """,
+                    int(listing_row["pokemon_instance_id"]),
+                    buyer_user_id,
+                )
+                await conn.execute(
+                    """
+                    UPDATE market_listings
+                    SET status = $2,
+                        purchaser_user_id = $3,
+                        completed_at = NOW()
+                    WHERE id = $1
+                    """,
+                    listing_id,
+                    MARKET_LISTING_STATUS_SOLD,
+                    buyer_user_id,
+                )
+                listing = await self._fetch_market_listing_summary(conn, listing_id)
+
+        logger.info(
+            "market_purchase_completed",
+            listing_id=listing.listing_id,
+            buyer_user_id=buyer_user_id,
+            seller_user_id=seller_user_id,
+            price=price,
+        )
+        return MarketPurchaseResult(
+            listing=listing,
+            buyer_user_id=buyer_user_id,
+            seller_user_id=seller_user_id,
+            price=price,
+        )
+
+    async def create_market_buy_request(
+        self,
+        telegram_id: int,
+        username: Optional[str],
+        *,
+        pokemon_id: int,
+        price: int,
+    ) -> MarketBuyRequestSummary:
+        """Create a concrete-species buy request with immediate fund reservation."""
+        if price <= 0:
+            raise ShopError("Цена заявки должна быть больше нуля.")
+
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                requester_user_id = await self._ensure_user(conn, telegram_id, username)
+                active_count = int(
+                    await conn.fetchval(
+                        """
+                        SELECT COUNT(*)::int
+                        FROM market_buy_requests
+                        WHERE requester_user_id = $1
+                          AND status = $2
+                        """,
+                        requester_user_id,
+                        MARKET_REQUEST_STATUS_ACTIVE,
+                    )
+                    or 0
+                )
+                if active_count >= MARKET_MAX_ACTIVE_BUY_REQUESTS:
+                    raise ShopError("У вас уже заняты все 5 слотов заявок.")
+
+                pokemon_exists = await conn.fetchval("SELECT 1 FROM pokemon_catalog WHERE id = $1", pokemon_id)
+                if not pokemon_exists:
+                    raise ShopError("Покемон для заявки не найден.")
+
+                await self._ensure_user_balance(conn, requester_user_id, POKECOIN_CODE)
+                balance = await self._get_balance_for_update(conn, requester_user_id, POKECOIN_CODE)
+                if balance < price:
+                    raise InsufficientFundsError("Недостаточно pokecoin для заявки.")
+
+                await self._adjust_balance(conn, requester_user_id, POKECOIN_CODE, -price)
+                inserted = await conn.fetchrow(
+                    """
+                    INSERT INTO market_buy_requests (
+                      requester_user_id,
+                      pokemon_id,
+                      currency_id,
+                      price,
+                      reserved_amount,
+                      status
+                    )
+                    VALUES ($1, $2, $3, $4, $4, $5)
+                    RETURNING id
+                    """,
+                    requester_user_id,
+                    pokemon_id,
+                    await self._get_currency_id(conn, POKECOIN_CODE),
+                    price,
+                    MARKET_REQUEST_STATUS_ACTIVE,
+                )
+                request = await self._fetch_market_buy_request_summary(conn, int(inserted["id"]))
+
+        logger.info(
+            "market_buy_request_created",
+            request_id=request.request_id,
+            requester_user_id=request.requester_user_id,
+            pokemon_id=request.pokemon_id,
+            price=request.price,
+        )
+        return request
+
+    async def cancel_market_buy_request(
+        self,
+        telegram_id: int,
+        username: Optional[str],
+        *,
+        request_id: int,
+        reason: str = "manual",
+    ) -> MarketBuyRequestSummary:
+        """Cancel one of the user's active buy requests and return reserved funds."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                requester_user_id = await self._ensure_user(conn, telegram_id, username)
+                request_row = await conn.fetchrow(
+                    """
+                    SELECT id, requester_user_id, status, reserved_amount
+                    FROM market_buy_requests
+                    WHERE id = $1
+                    FOR UPDATE
+                    """,
+                    request_id,
+                )
+                if not request_row:
+                    raise ShopError("Заявка не найдена.")
+                if int(request_row["requester_user_id"]) != requester_user_id:
+                    raise ShopError("Нельзя отменить чужую заявку.")
+                if str(request_row["status"]) != MARKET_REQUEST_STATUS_ACTIVE:
+                    raise ShopError("Эта заявка уже не активна.")
+
+                await self._adjust_balance(conn, requester_user_id, POKECOIN_CODE, int(request_row["reserved_amount"]))
+                await conn.execute(
+                    """
+                    UPDATE market_buy_requests
+                    SET status = $2,
+                        canceled_at = NOW(),
+                        updated_at = NOW(),
+                        cancel_reason = $3
+                    WHERE id = $1
+                    """,
+                    request_id,
+                    MARKET_REQUEST_STATUS_CANCELED,
+                    reason,
+                )
+                request = await self._fetch_market_buy_request_summary(conn, request_id)
+
+        logger.info(
+            "market_buy_request_canceled",
+            request_id=request.request_id,
+            requester_user_id=request.requester_user_id,
+            reason=reason,
+        )
+        return request
+
+    async def fulfill_market_buy_request(
+        self,
+        telegram_id: int,
+        username: Optional[str],
+        *,
+        request_id: int,
+        user_pokemon_id: int,
+    ) -> MarketRequestFulfillmentResult:
+        """Fulfill a foreign active buy request with one owned unlocked pokemon."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                seller_user_id = await self._ensure_user(conn, telegram_id, username)
+                request_row = await conn.fetchrow(
+                    """
+                    SELECT id, requester_user_id, pokemon_id, reserved_amount, status, price
+                    FROM market_buy_requests
+                    WHERE id = $1
+                    FOR UPDATE
+                    """,
+                    request_id,
+                )
+                if not request_row:
+                    raise ShopError("Заявка не найдена.")
+                if str(request_row["status"]) != MARKET_REQUEST_STATUS_ACTIVE:
+                    raise ShopError("Заявка уже недоступна.")
+
+                buyer_user_id = int(request_row["requester_user_id"])
+                if buyer_user_id == seller_user_id:
+                    raise ShopError("Нельзя закрыть свою собственную заявку.")
+
+                pokemon_row = await conn.fetchrow(
+                    """
+                    SELECT id, owner_user_id, pokemon_id, is_locked, released_at
+                    FROM user_pokemon
+                    WHERE id = $1
+                    FOR UPDATE
+                    """,
+                    user_pokemon_id,
+                )
+                if not pokemon_row or int(pokemon_row["owner_user_id"]) != seller_user_id:
+                    raise ShopError("Нельзя продать чужого покемона.")
+                if pokemon_row["released_at"] is not None:
+                    raise ShopError("Нельзя продать отпущенного покемона.")
+                if bool(pokemon_row["is_locked"]):
+                    raise ShopError("Нельзя продать заблокированного покемона.")
+                if int(pokemon_row["pokemon_id"]) != int(request_row["pokemon_id"]):
+                    raise ShopError("Этот покемон не подходит под заявку.")
+
+                active_listing = await conn.fetchval(
+                    """
+                    SELECT 1
+                    FROM market_listings
+                    WHERE pokemon_instance_id = $1
+                      AND status = $2
+                    LIMIT 1
+                    """,
+                    user_pokemon_id,
+                    MARKET_LISTING_STATUS_ACTIVE,
+                )
+                if active_listing:
+                    raise ShopError("Этот покемон уже выставлен на рынок.")
+
+                await self._ensure_user_balance(conn, seller_user_id, POKECOIN_CODE)
+                await self._adjust_balance(conn, seller_user_id, POKECOIN_CODE, int(request_row["reserved_amount"]))
+                await conn.execute(
+                    """
+                    UPDATE user_pokemon
+                    SET owner_user_id = $2
+                    WHERE id = $1
+                    """,
+                    user_pokemon_id,
+                    buyer_user_id,
+                )
+                await conn.execute(
+                    """
+                    UPDATE market_buy_requests
+                    SET status = $2,
+                        fulfilled_at = NOW(),
+                        updated_at = NOW(),
+                        fulfilled_by_user_id = $3,
+                        fulfilled_user_pokemon_id = $4
+                    WHERE id = $1
+                    """,
+                    request_id,
+                    MARKET_REQUEST_STATUS_FULFILLED,
+                    seller_user_id,
+                    user_pokemon_id,
+                )
+                request = await self._fetch_market_buy_request_summary(conn, request_id)
+
+        logger.info(
+            "market_buy_request_fulfilled",
+            request_id=request.request_id,
+            buyer_user_id=buyer_user_id,
+            seller_user_id=seller_user_id,
+            user_pokemon_id=user_pokemon_id,
+            price=int(request_row["price"]),
+        )
+        return MarketRequestFulfillmentResult(
+            request=request,
+            seller_user_id=seller_user_id,
+            buyer_user_id=buyer_user_id,
+            transferred_user_pokemon_id=user_pokemon_id,
+            price=int(request_row["price"]),
+        )
+
+    async def process_market_listing_maintenance(
+        self,
+        *,
+        now: Optional[datetime] = None,
+    ) -> dict[str, int]:
+        """Charge due commissions and deactivate overdue active listings."""
+        self._ensure_pool()
+        current_time = _normalize_timestamp(now) if now is not None else datetime.now(UTC)
+        stats = {
+            "charged_listings": 0,
+            "charged_cycles": 0,
+            "expired_listings": 0,
+            "removed_unpaid_listings": 0,
+        }
+
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                rows = await conn.fetch(
+                    """
+                    SELECT
+                      id,
+                      seller_user_id,
+                      daily_commission_amount,
+                      next_commission_at,
+                      expires_at
+                    FROM market_listings
+                    WHERE status = $1
+                      AND (
+                        expires_at <= $2
+                        OR next_commission_at <= $2
+                      )
+                    ORDER BY listed_at ASC, id ASC
+                    FOR UPDATE
+                    """,
+                    MARKET_LISTING_STATUS_ACTIVE,
+                    current_time,
+                )
+
+                for row in rows:
+                    listing_id = int(row["id"])
+                    seller_user_id = int(row["seller_user_id"])
+                    expires_at = _normalize_timestamp(row["expires_at"])
+                    next_commission_at = _normalize_timestamp(row["next_commission_at"])
+                    commission_amount = int(row["daily_commission_amount"])
+
+                    if expires_at <= current_time:
+                        await conn.execute(
+                            """
+                            UPDATE market_listings
+                            SET status = $2,
+                                removed_at = NOW(),
+                                removal_reason = $3
+                            WHERE id = $1
+                            """,
+                            listing_id,
+                            MARKET_LISTING_STATUS_EXPIRED,
+                            "expired",
+                        )
+                        stats["expired_listings"] += 1
+                        logger.info("market_listing_expired", listing_id=listing_id, seller_user_id=seller_user_id)
+                        continue
+
+                    due_cycles = _market_due_commission_cycles(
+                        next_commission_at=next_commission_at,
+                        expires_at=expires_at,
+                        now=current_time,
+                    )
+                    if due_cycles <= 0:
+                        continue
+
+                    await self._ensure_user_balance(conn, seller_user_id, POKECOIN_CODE)
+                    balance = await self._get_balance_for_update(conn, seller_user_id, POKECOIN_CODE)
+                    total_due = commission_amount * due_cycles
+                    if balance < total_due:
+                        await conn.execute(
+                            """
+                            UPDATE market_listings
+                            SET status = $2,
+                                removed_at = NOW(),
+                                removal_reason = $3
+                            WHERE id = $1
+                            """,
+                            listing_id,
+                            MARKET_LISTING_STATUS_REMOVED,
+                            "commission_unpaid",
+                        )
+                        stats["removed_unpaid_listings"] += 1
+                        logger.info(
+                            "market_listing_removed_for_unpaid_commission",
+                            listing_id=listing_id,
+                            seller_user_id=seller_user_id,
+                            due_cycles=due_cycles,
+                            total_due=total_due,
+                            balance=balance,
+                        )
+                        continue
+
+                    await self._adjust_balance(conn, seller_user_id, POKECOIN_CODE, -total_due)
+                    new_next_commission_at = next_commission_at + timedelta(days=due_cycles)
+                    last_commission_at = new_next_commission_at - timedelta(days=1)
+                    await conn.execute(
+                        """
+                        UPDATE market_listings
+                        SET last_commission_at = $2,
+                            next_commission_at = $3
+                        WHERE id = $1
+                        """,
+                        listing_id,
+                        last_commission_at,
+                        new_next_commission_at,
+                    )
+                    stats["charged_listings"] += 1
+                    stats["charged_cycles"] += due_cycles
+                    logger.info(
+                        "market_listing_commission_charged",
+                        listing_id=listing_id,
+                        seller_user_id=seller_user_id,
+                        due_cycles=due_cycles,
+                        total_due=total_due,
+                        next_commission_at=new_next_commission_at.isoformat(),
+                    )
+
+        return stats
 
     async def note_chat_message(self, chat_id: int, message_thread_id: Optional[int]) -> Optional[ChatEncounter]:
         """Record one group-chat message and spawn an encounter if the threshold is reached."""
@@ -1293,10 +2251,12 @@ class Database:
                   pc.base_attack,
                   pc.base_defense,
                   pc.base_stamina,
-                  pc.image_credit_id
+                  pc.image_credit_id,
+                  up.is_locked
                 FROM user_pokemon up
                 JOIN pokemon_catalog pc ON pc.id = up.pokemon_id
                 WHERE up.id = $1
+                  AND up.released_at IS NULL
                 """,
                 user_pokemon_id,
             )
@@ -1314,6 +2274,154 @@ class Database:
             base_defense=int(row["base_defense"]),
             base_stamina=int(row["base_stamina"]),
             image_credit_id=row["image_credit_id"],
+            is_locked=bool(row["is_locked"]),
+        )
+
+    async def toggle_user_pokemon_lock(
+        self,
+        telegram_id: int,
+        username: Optional[str],
+        *,
+        user_pokemon_id: int,
+    ) -> PokemonLockResult:
+        """Toggle lock state for one owned pokemon instance."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                user_id = await self._ensure_user(conn, telegram_id, username)
+                row = await conn.fetchrow(
+                    """
+                    SELECT
+                      up.id,
+                      up.owner_user_id,
+                      up.is_locked,
+                      up.released_at,
+                      pc.id AS pokemon_id,
+                      pc.name,
+                      pc.rarity
+                    FROM user_pokemon up
+                    JOIN pokemon_catalog pc ON pc.id = up.pokemon_id
+                    WHERE up.id = $1
+                    FOR UPDATE
+                    """,
+                    user_pokemon_id,
+                )
+                if not row or int(row["owner_user_id"]) != user_id:
+                    raise ShopError("Нельзя изменить статус чужого покемона.")
+                if row["released_at"] is not None:
+                    raise ShopError("Нельзя изменить статус отпущенного покемона.")
+
+                current_locked = bool(row["is_locked"])
+                if not current_locked:
+                    active_listing = await conn.fetchval(
+                        """
+                        SELECT 1
+                        FROM market_listings
+                        WHERE pokemon_instance_id = $1
+                          AND status = $2
+                        LIMIT 1
+                        """,
+                        user_pokemon_id,
+                        MARKET_LISTING_STATUS_ACTIVE,
+                    )
+                    if active_listing:
+                        raise ShopError("Сначала снимите покемона с рынка.")
+
+                next_locked = not current_locked
+                await conn.execute(
+                    """
+                    UPDATE user_pokemon
+                    SET is_locked = $2
+                    WHERE id = $1
+                    """,
+                    user_pokemon_id,
+                    next_locked,
+                )
+        return PokemonLockResult(
+            user_pokemon_id=int(row["id"]),
+            pokemon_id=int(row["pokemon_id"]),
+            name=str(row["name"]),
+            rarity=str(row["rarity"]),
+            is_locked=next_locked,
+        )
+
+    async def release_user_pokemon(
+        self,
+        telegram_id: int,
+        username: Optional[str],
+        *,
+        user_pokemon_id: int,
+    ) -> PokemonReleaseResult:
+        """Release one owned unlocked pokemon and grant pokecoin by rarity."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                user_id = await self._ensure_user(conn, telegram_id, username)
+                row = await conn.fetchrow(
+                    """
+                    SELECT
+                      up.id,
+                      up.owner_user_id,
+                      up.is_locked,
+                      up.released_at,
+                      pc.id AS pokemon_id,
+                      pc.name,
+                      pc.rarity
+                    FROM user_pokemon up
+                    JOIN pokemon_catalog pc ON pc.id = up.pokemon_id
+                    WHERE up.id = $1
+                    FOR UPDATE
+                    """,
+                    user_pokemon_id,
+                )
+                if not row or int(row["owner_user_id"]) != user_id:
+                    raise ShopError("Нельзя отпустить чужого покемона.")
+                if row["released_at"] is not None:
+                    raise ShopError("Этот покемон уже отпущен.")
+                if bool(row["is_locked"]):
+                    raise ShopError("Нельзя отпустить заблокированного покемона.")
+
+                active_listing = await conn.fetchval(
+                    """
+                    SELECT 1
+                    FROM market_listings
+                    WHERE pokemon_instance_id = $1
+                      AND status = $2
+                    LIMIT 1
+                    """,
+                    user_pokemon_id,
+                    MARKET_LISTING_STATUS_ACTIVE,
+                )
+                if active_listing:
+                    raise ShopError("Сначала снимите покемона с рынка.")
+
+                rarity = str(row["rarity"])
+                reward_amount = _pokemon_release_reward(rarity)
+                await self._ensure_user_balance(conn, user_id, POKECOIN_CODE)
+                await self._adjust_balance(conn, user_id, POKECOIN_CODE, reward_amount)
+                await conn.execute(
+                    """
+                    UPDATE user_pokemon
+                    SET released_at = NOW()
+                    WHERE id = $1
+                    """,
+                    user_pokemon_id,
+                )
+
+        logger.info(
+            "pokemon_released",
+            telegram_id=telegram_id,
+            user_pokemon_id=user_pokemon_id,
+            pokemon_id=int(row["pokemon_id"]),
+            rarity=rarity,
+            reward_amount=reward_amount,
+        )
+        return PokemonReleaseResult(
+            user_pokemon_id=user_pokemon_id,
+            pokemon_id=int(row["pokemon_id"]),
+            name=str(row["name"]),
+            rarity=rarity,
+            reward_amount=reward_amount,
         )
 
     async def claim_daily_bonus(self, telegram_id: int, username: Optional[str]) -> BonusClaimResult:
@@ -1640,6 +2748,23 @@ class Database:
             JOIN currencies c ON c.id = ub.currency_id
             WHERE ub.user_id = $1 AND c.code = $2
             FOR UPDATE
+            """,
+            user_id,
+            currency_code,
+        )
+        if not row:
+            return 0
+        return int(row["amount"])
+
+    async def _get_balance(
+        self, conn: asyncpg.Connection, user_id: int, currency_code: str
+    ) -> int:
+        row = await conn.fetchrow(
+            """
+            SELECT ub.amount
+            FROM user_balances ub
+            JOIN currencies c ON c.id = ub.currency_id
+            WHERE ub.user_id = $1 AND c.code = $2
             """,
             user_id,
             currency_code,
@@ -1983,6 +3108,162 @@ class Database:
             logger.warning("chat_encounter_redis_bypass", chat_id=chat_id, error=str(exc))
             return None
 
+    async def _fetch_market_listings_page(
+        self,
+        conn: asyncpg.Connection,
+        user_id: int,
+        filter_state: MarketBrowseState,
+    ) -> MarketBrowsePage:
+        current_page = max(1, filter_state.page)
+        offset = (current_page - 1) * MARKET_PAGE_SIZE
+        where_sql, params = await self._build_market_listing_filter_sql(conn, user_id, filter_state)
+
+        total_entries = int(
+            await conn.fetchval(
+                f"""
+                SELECT COUNT(*)::int
+                FROM market_listings ml
+                JOIN user_pokemon up ON up.id = ml.pokemon_instance_id
+                JOIN pokemon_catalog pc ON pc.id = up.pokemon_id
+                {where_sql}
+                """,
+                *params,
+            )
+            or 0
+        )
+        total_pages = max(1, (total_entries + MARKET_PAGE_SIZE - 1) // MARKET_PAGE_SIZE)
+        current_page = min(current_page, total_pages)
+        offset = (current_page - 1) * MARKET_PAGE_SIZE
+        sort_sql = _market_sort_sql(filter_state.sort_mode)
+
+        rows = await conn.fetch(
+            f"""
+            SELECT
+              ml.id AS listing_id,
+              ml.seller_user_id,
+              u.nickname AS seller_nickname,
+              u.tg_username AS seller_username,
+              ml.pokemon_instance_id AS user_pokemon_id,
+              pc.id AS pokemon_id,
+              pc.name,
+              pc.rarity,
+              pc.type,
+              pc.image_credit_id,
+              ml.price,
+              ml.status,
+              ml.listed_at,
+              ml.expires_at
+            FROM market_listings ml
+            JOIN user_pokemon up ON up.id = ml.pokemon_instance_id
+            JOIN pokemon_catalog pc ON pc.id = up.pokemon_id
+            JOIN users u ON u.id = ml.seller_user_id
+            {where_sql}
+            ORDER BY {sort_sql}
+            LIMIT ${len(params) + 1}
+            OFFSET ${len(params) + 2}
+            """,
+            *params,
+            MARKET_PAGE_SIZE,
+            offset,
+        )
+        balance = await self._get_balance(conn, user_id, POKECOIN_CODE)
+        return MarketBrowsePage(
+            entries=[_map_market_listing_summary(row) for row in rows],
+            filter_state=filter_state.with_page(current_page),
+            total_entries=total_entries,
+            current_page=current_page,
+            total_pages=total_pages,
+            current_balance=balance,
+        )
+
+    async def _build_market_listing_filter_sql(
+        self,
+        conn: asyncpg.Connection,
+        user_id: int,
+        filter_state: MarketBrowseState,
+    ) -> tuple[str, list[object]]:
+        await self._ensure_user_balance(conn, user_id, POKECOIN_CODE)
+        params: list[object] = [MARKET_LISTING_STATUS_ACTIVE, user_id]
+        conditions = ["ml.status = $1", "ml.seller_user_id <> $2"]
+
+        if filter_state.rarities:
+            params.append(list(filter_state.rarities))
+            conditions.append(f"pc.rarity = ANY(${len(params)}::text[])")
+
+        if filter_state.affordable_only:
+            balance = await self._get_balance(conn, user_id, POKECOIN_CODE)
+            params.append(balance)
+            conditions.append(f"ml.price <= ${len(params)}")
+
+        return "WHERE " + " AND ".join(conditions), params
+
+    async def _fetch_market_listing_summary(
+        self,
+        conn: asyncpg.Connection,
+        listing_id: int,
+    ) -> MarketListingSummary:
+        row = await conn.fetchrow(
+            """
+            SELECT
+              ml.id AS listing_id,
+              ml.seller_user_id,
+              u.nickname AS seller_nickname,
+              u.tg_username AS seller_username,
+              ml.pokemon_instance_id AS user_pokemon_id,
+              pc.id AS pokemon_id,
+              pc.name,
+              pc.rarity,
+              pc.type,
+              pc.image_credit_id,
+              ml.price,
+              ml.status,
+              ml.listed_at,
+              ml.expires_at
+            FROM market_listings ml
+            JOIN user_pokemon up ON up.id = ml.pokemon_instance_id
+            JOIN pokemon_catalog pc ON pc.id = up.pokemon_id
+            JOIN users u ON u.id = ml.seller_user_id
+            WHERE ml.id = $1
+            """,
+            listing_id,
+        )
+        if not row:
+            raise ShopError("Лот не найден.")
+        return _map_market_listing_summary(row)
+
+    async def _fetch_market_buy_request_summary(
+        self,
+        conn: asyncpg.Connection,
+        request_id: int,
+    ) -> MarketBuyRequestSummary:
+        row = await conn.fetchrow(
+            """
+            SELECT
+              mbr.id AS request_id,
+              mbr.requester_user_id,
+              u.nickname AS requester_nickname,
+              u.tg_username AS requester_username,
+              mbr.pokemon_id,
+              pc.name,
+              pc.rarity,
+              pc.type,
+              pc.image_credit_id,
+              mbr.price,
+              mbr.reserved_amount,
+              mbr.status,
+              mbr.created_at,
+              NULL::bigint AS matching_user_pokemon_id
+            FROM market_buy_requests mbr
+            JOIN pokemon_catalog pc ON pc.id = mbr.pokemon_id
+            JOIN users u ON u.id = mbr.requester_user_id
+            WHERE mbr.id = $1
+            """,
+            request_id,
+        )
+        if not row:
+            raise ShopError("Заявка не найдена.")
+        return _map_market_buy_request_summary(row)
+
     def _set_encounter_cooldown_cache(self, chat_id: int, remaining_seconds: int) -> None:
         if self.redis is None or remaining_seconds <= 0:
             return
@@ -2114,6 +3395,97 @@ def _encounter_active_key(chat_id: int) -> str:
     return f"encounter:active:{chat_id}"
 
 
+def _calculate_market_daily_commission(price: int) -> int:
+    if price <= 0:
+        return 0
+    return max(1, int(price * MARKET_LISTING_COMMISSION_RATE))
+
+
+def _pokemon_release_reward(rarity: str) -> int:
+    return POKEMON_RELEASE_REWARDS.get(rarity, 32)
+
+
+def _market_due_commission_cycles(
+    *,
+    next_commission_at: datetime,
+    expires_at: datetime,
+    now: datetime,
+) -> int:
+    due_at = _normalize_timestamp(next_commission_at)
+    expires = _normalize_timestamp(expires_at)
+    current_time = _normalize_timestamp(now)
+    cycles = 0
+    while due_at <= current_time and due_at < expires:
+        cycles += 1
+        due_at += timedelta(days=1)
+    return cycles
+
+
+def _market_sort_sql(sort_mode: str) -> str:
+    if sort_mode == MARKET_SORT_CHEAPEST:
+        return "ml.price ASC, ml.listed_at DESC, ml.id DESC"
+    return "ml.listed_at DESC, ml.id DESC"
+
+
+def _resolve_market_user_label(nickname: Optional[str], username: Optional[str]) -> Optional[str]:
+    if nickname:
+        return str(nickname)
+    if username:
+        return f"@{username}"
+    return None
+
+
+def _market_days_remaining(expires_at: Optional[datetime]) -> int:
+    if expires_at is None:
+        return 0
+    remaining_seconds = max(0.0, (_normalize_timestamp(expires_at) - datetime.now(UTC)).total_seconds())
+    if remaining_seconds <= 0:
+        return 0
+    return max(1, int((remaining_seconds + 86399) // 86400))
+
+
+def _map_market_listing_summary(row: asyncpg.Record | dict[str, object]) -> MarketListingSummary:
+    data = dict(row)
+    expires_at = _normalize_timestamp(data["expires_at"]) if data.get("expires_at") is not None else datetime.now(UTC)
+    return MarketListingSummary(
+        listing_id=int(data["listing_id"]),
+        seller_user_id=int(data["seller_user_id"]),
+        seller_label=_resolve_market_user_label(data.get("seller_nickname"), data.get("seller_username")),
+        user_pokemon_id=int(data["user_pokemon_id"]),
+        pokemon_id=int(data["pokemon_id"]),
+        name=str(data["name"]),
+        rarity=str(data["rarity"]),
+        pokemon_type=data.get("type"),
+        price=int(data["price"]),
+        status=str(data["status"]),
+        listed_at=_normalize_timestamp(data["listed_at"]),
+        expires_at=expires_at,
+        days_remaining=_market_days_remaining(expires_at),
+        image_credit_id=data.get("image_credit_id"),
+    )
+
+
+def _map_market_buy_request_summary(row: asyncpg.Record | dict[str, object]) -> MarketBuyRequestSummary:
+    data = dict(row)
+    return MarketBuyRequestSummary(
+        request_id=int(data["request_id"]),
+        requester_user_id=int(data["requester_user_id"]),
+        requester_label=_resolve_market_user_label(data.get("requester_nickname"), data.get("requester_username")),
+        pokemon_id=int(data["pokemon_id"]),
+        name=str(data["name"]),
+        rarity=str(data["rarity"]),
+        pokemon_type=data.get("type"),
+        price=int(data["price"]),
+        reserved_amount=int(data["reserved_amount"]),
+        status=str(data["status"]),
+        created_at=_normalize_timestamp(data["created_at"]),
+        image_credit_id=data.get("image_credit_id"),
+        matching_user_pokemon_id=(
+            int(data["matching_user_pokemon_id"]) if data.get("matching_user_pokemon_id") is not None else None
+        ),
+    )
+
+
 def _map_chat_encounter(row: asyncpg.Record | dict[str, object]) -> ChatEncounter:
     data = dict(row)
     return ChatEncounter(
@@ -2154,7 +3526,7 @@ def _build_collection_filter_clauses(
     filter_state: CollectionFilterState,
 ) -> tuple[str, str, list[object]]:
     params: list[object] = [user_id]
-    where_conditions = ["up.owner_user_id = $1"]
+    where_conditions = ["up.owner_user_id = $1", "up.released_at IS NULL"]
 
     if filter_state.rarities:
         params.append(list(filter_state.rarities))

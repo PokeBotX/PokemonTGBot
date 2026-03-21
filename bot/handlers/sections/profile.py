@@ -12,6 +12,7 @@ from telegram.error import BadRequest, TelegramError
 from telegram.ext import ContextTypes
 
 from bot.db.database import Database, PokemonSearchEntry, ProfileCoverCandidate, ProfileReferral, ProfileSummary, ShopError
+from bot.handlers.sections.market import build_market_entry_payload, resolve_market_card_action
 from bot.navigation.context import extract_context
 from bot.navigation.router import NavigationRouter, parse_callback_data
 from bot.navigation.session import MenuSession, PendingInput, session_store
@@ -572,22 +573,42 @@ async def _send_pokemon_search_card(
     entry: PokemonSearchEntry,
     user_label: Optional[str] = None,
 ) -> Message:
+    # Keep profile search card local for now until profile UI is revisited.
     caption = _render_pokemon_search_card_caption(entry, user_label)
     if FALLBACK_IMAGE_PATH.exists():
         with FALLBACK_IMAGE_PATH.open("rb") as image_file:
-            return await context.bot.send_photo(
+            message = await context.bot.send_photo(
                 chat_id=session.chat_id,
                 message_thread_id=session.message_thread_id,
                 photo=image_file,
                 caption=caption,
                 parse_mode="HTML",
             )
-    return await context.bot.send_message(
+    else:
+        message = await context.bot.send_message(
+            chat_id=session.chat_id,
+            message_thread_id=session.message_thread_id,
+            text=caption,
+            parse_mode="HTML",
+        )
+
+    detail_session_id = session_store.create_session(
         chat_id=session.chat_id,
+        message_id=message.message_id,
+        user_id=session.user_id,
         message_thread_id=session.message_thread_id,
-        text=caption,
-        parse_mode="HTML",
+        data=build_market_entry_payload(
+            action=resolve_market_card_action(False),
+            pokemon_id=entry.pokemon_id,
+            pokemon_name=entry.name,
+        ),
     )
+    await message.edit_reply_markup(
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🏪 Рынок", callback_data=f"menu:mce:{detail_session_id}")]]
+        )
+    )
+    return message
 
 
 async def _send_profile_message(

@@ -7,8 +7,10 @@ from telegram import BotCommand
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
 from bot.db import Database
+from bot.db.database import MARKET_MAINTENANCE_INTERVAL_SECONDS
 from bot.handlers.chat_activity import group_message_activity_handler
 from bot.handlers.commands import (
+    buyprice_command,
     collection_command,
     find_command,
     items_command,
@@ -17,6 +19,7 @@ from bot.handlers.commands import (
     profile_command,
     search_command,
     section_command,
+    sellprice_command,
     shop_command,
     start_command,
 )
@@ -27,7 +30,7 @@ from bot.handlers.sections.chat import chat_handler
 from bot.handlers.sections.collection import register_collection_routes
 from bot.handlers.sections.games import games_handler
 from bot.handlers.sections.info import info_handler
-from bot.handlers.sections.market import market_handler
+from bot.handlers.sections.market import register_market_routes
 from bot.handlers.sections.profile import handle_profile_text_input, register_profile_routes
 from bot.handlers.sections.shop import register_shop_routes
 from bot.handlers.sections.support import support_handler
@@ -61,7 +64,7 @@ def register_routes() -> None:
     register_shop_routes(navigation_router)
     register_collection_routes(navigation_router)
     register_profile_routes(navigation_router)
-    navigation_router.register("market", market_handler)
+    register_market_routes(navigation_router)
     navigation_router.register("games", games_handler)
     navigation_router.register("updates", updates_handler)
     navigation_router.register("chat", chat_handler)
@@ -69,6 +72,19 @@ def register_routes() -> None:
     navigation_router.register("info", info_handler)
     navigation_router.register("back", back_to_menu_handler)
     logger.info("routes_registered", routes=navigation_router.list_routes())
+
+
+async def run_market_maintenance_job(context) -> None:
+    """Charge due commissions and expire market listings in the background."""
+    application = getattr(context, "application", None)
+    bot_data = getattr(application, "bot_data", {}) if application else {}
+    market_db = bot_data.get("db") if isinstance(bot_data, dict) else None
+    if not market_db:
+        return
+
+    stats = await market_db.process_market_listing_maintenance()
+    if any(stats.values()):
+        logger.info("market_maintenance_cycle", **stats)
 
 
 async def post_init(application: Application) -> None:
@@ -85,7 +101,17 @@ async def post_init(application: Application) -> None:
         if DB_INIT_SCHEMA:
             await db.init_schema(DB_SCHEMA_PATH)
         application.bot_data["db"] = db
+        maintenance_stats = await db.process_market_listing_maintenance()
+        if any(maintenance_stats.values()):
+            logger.info("market_maintenance_cycle", **maintenance_stats)
         logger.info("db_ready", schema_init=DB_INIT_SCHEMA)
+        if application.job_queue:
+            application.job_queue.run_repeating(
+                run_market_maintenance_job,
+                interval=MARKET_MAINTENANCE_INTERVAL_SECONDS,
+                first=MARKET_MAINTENANCE_INTERVAL_SECONDS,
+                name="market-maintenance",
+            )
 
     await application.bot.delete_webhook(drop_pending_updates=True)
     await application.bot.set_my_commands([
@@ -99,6 +125,8 @@ async def post_init(application: Application) -> None:
         BotCommand("collection", "Открыть коллекцию"),
         BotCommand("find", "Поиск покемона в чате"),
         BotCommand("search", "Поиск покемона по имени"),
+        BotCommand("sellprice", "Указать цену продажи"),
+        BotCommand("buyprice", "Указать цену заявки"),
         BotCommand("updates", "Открыть обновления"),
         BotCommand("chat", "Открыть чат"),
         BotCommand("support", "Открыть поддержку"),
@@ -132,6 +160,8 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("items", items_command))
     application.add_handler(CommandHandler("find", find_command))
     application.add_handler(CommandHandler("search", search_command))
+    application.add_handler(CommandHandler("sellprice", sellprice_command))
+    application.add_handler(CommandHandler("buyprice", buyprice_command))
     application.add_handler(CommandHandler("collection", collection_command))
     application.add_handler(CommandHandler("profile", profile_command))
     application.add_handler(CommandHandler(["market", "games", "updates", "chat", "support", "info"], section_command))

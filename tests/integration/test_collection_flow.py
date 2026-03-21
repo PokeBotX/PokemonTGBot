@@ -1,5 +1,6 @@
 """Integration tests for collection flow."""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -115,6 +116,8 @@ async def test_collection_handler_opens_filter_screen() -> None:
 
     query = AsyncMock(spec=CallbackQuery)
     query.data = f"menu:cfs:{session.session_id}"
+    query.message = Mock(spec=Message)
+    query.message.photo = []
     query.edit_message_text = AsyncMock()
 
     user = Mock(spec=User)
@@ -164,6 +167,8 @@ async def test_collection_handler_toggles_duplicate_filter_and_rerenders() -> No
 
     query = AsyncMock(spec=CallbackQuery)
     query.data = f"menu:cfd:{session.session_id}"
+    query.message = Mock(spec=Message)
+    query.message.photo = []
     query.edit_message_text = AsyncMock()
 
     user = Mock(spec=User)
@@ -254,3 +259,235 @@ async def test_collection_detail_button_sends_separate_card_message() -> None:
     await collection_handler(update, context, session)
 
     assert bot.send_photo.called or bot.send_message.called
+
+
+@pytest.mark.asyncio
+async def test_collection_release_flow_renders_confirmation_and_result() -> None:
+    session = MenuSession(
+        session_id="collection-release-session",
+        chat_id=12345,
+        message_id=220,
+        user_id=12345,
+        message_thread_id=None,
+        data={
+            "release_user_pokemon_id": 250,
+            "release_pokemon_name": "Pikachu",
+            "release_rarity": "Rare",
+        },
+    )
+
+    user = Mock(spec=User)
+    user.id = 12345
+    user.username = "ash"
+
+    query = AsyncMock(spec=CallbackQuery)
+    query.data = f"menu:pkr:{session.session_id}"
+    query.message = Mock(spec=Message)
+    query.message.photo = []
+    query.edit_message_text = AsyncMock()
+    query.answer = AsyncMock()
+
+    update = Mock(spec=Update)
+    update.callback_query = query
+    update.effective_user = user
+
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = Mock()
+    context.application.bot_data = {"db": AsyncMock()}
+
+    await collection_handler(update, context, session)
+
+    assert query.edit_message_text.called
+    confirmation_text = query.edit_message_text.call_args.kwargs["text"]
+    assert "Отпустить покемона" in confirmation_text
+    assert "🪙 <b>100</b>" in confirmation_text
+
+    reply_markup = query.edit_message_text.call_args.kwargs["reply_markup"]
+    confirm_callback = reply_markup.inline_keyboard[0][0].callback_data
+    confirm_session_id = confirm_callback.split(":")[-1]
+    confirm_session = session_store._sessions[confirm_session_id]
+    assert confirm_session.data["release_user_pokemon_id"] == 250
+    assert confirm_session.data["release_pokemon_name"] == "Pikachu"
+    assert confirm_session.data["release_rarity"] == "Rare"
+
+    confirm_query = AsyncMock(spec=CallbackQuery)
+    confirm_query.data = confirm_callback
+    confirm_query.message = Mock(spec=Message)
+    confirm_query.message.photo = []
+    confirm_query.edit_message_text = AsyncMock()
+    confirm_query.answer = AsyncMock()
+
+    confirm_update = Mock(spec=Update)
+    confirm_update.callback_query = confirm_query
+    confirm_update.effective_user = user
+
+    db = AsyncMock()
+    db.release_user_pokemon = AsyncMock(
+        return_value=SimpleNamespace(
+            name="Pikachu",
+            rarity="Rare",
+            reward_amount=100,
+        )
+    )
+    confirm_context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    confirm_context.application = Mock()
+    confirm_context.application.bot_data = {"db": db}
+
+    await collection_handler(confirm_update, confirm_context, confirm_session)
+
+    assert db.release_user_pokemon.called
+    assert confirm_query.edit_message_text.called
+    released_text = confirm_query.edit_message_text.call_args.kwargs["text"]
+    assert "Покемон отпущен" in released_text
+    assert "🪙 <b>100</b>" in released_text
+
+
+@pytest.mark.asyncio
+async def test_collection_extra_actions_prompt_renders_lock_and_cover_buttons() -> None:
+    session = MenuSession(
+        session_id="collection-extra-session",
+        chat_id=12345,
+        message_id=230,
+        user_id=12345,
+        message_thread_id=None,
+        data={
+            "release_user_pokemon_id": 250,
+            "release_pokemon_name": "Pikachu",
+            "release_rarity": "Rare",
+        },
+    )
+
+    user = Mock(spec=User)
+    user.id = 12345
+    user.username = "ash"
+
+    query = AsyncMock(spec=CallbackQuery)
+    query.data = f"menu:pkm:{session.session_id}"
+    query.message = Mock(spec=Message)
+    query.message.photo = []
+    query.edit_message_text = AsyncMock()
+    query.answer = AsyncMock()
+
+    update = Mock(spec=Update)
+    update.callback_query = query
+    update.effective_user = user
+
+    db = AsyncMock()
+    db.get_user_pokemon_entry = AsyncMock(return_value=_entry(25, "Pikachu", "Rare", "electric", 1))
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = Mock()
+    context.application.bot_data = {"db": db}
+
+    await collection_handler(update, context, session)
+
+    assert query.edit_message_text.called
+    text = query.edit_message_text.call_args.kwargs["text"]
+    assert "Дополнительно" in text
+    reply_markup = query.edit_message_text.call_args.kwargs["reply_markup"]
+    labels = [button.text for row in reply_markup.inline_keyboard for button in row]
+    assert "🔒 Залочить" in labels
+    assert "🖼 На обложку" in labels
+
+
+@pytest.mark.asyncio
+async def test_collection_extra_actions_lock_toggle_updates_menu() -> None:
+    session = MenuSession(
+        session_id="collection-lock-session",
+        chat_id=12345,
+        message_id=231,
+        user_id=12345,
+        message_thread_id=None,
+        data={
+            "release_user_pokemon_id": 250,
+            "release_pokemon_name": "Pikachu",
+            "release_rarity": "Rare",
+        },
+    )
+
+    user = Mock(spec=User)
+    user.id = 12345
+    user.username = "ash"
+
+    query = AsyncMock(spec=CallbackQuery)
+    query.data = f"menu:pkl:{session.session_id}"
+    query.message = Mock(spec=Message)
+    query.message.photo = []
+    query.edit_message_text = AsyncMock()
+    query.answer = AsyncMock()
+
+    update = Mock(spec=Update)
+    update.callback_query = query
+    update.effective_user = user
+
+    db = AsyncMock()
+    db.toggle_user_pokemon_lock = AsyncMock(
+        return_value=SimpleNamespace(
+            user_pokemon_id=250,
+            pokemon_id=25,
+            name="Pikachu",
+            rarity="Rare",
+            is_locked=True,
+        )
+    )
+    locked_entry = _entry(25, "Pikachu", "Rare", "electric", 1)
+    locked_entry.is_locked = True
+    db.get_user_pokemon_entry = AsyncMock(return_value=locked_entry)
+
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = Mock()
+    context.application.bot_data = {"db": db}
+
+    await collection_handler(update, context, session)
+
+    assert db.toggle_user_pokemon_lock.called
+    assert query.edit_message_text.called
+    text = query.edit_message_text.call_args.kwargs["text"]
+    assert "Покемон залочен" in text
+
+
+@pytest.mark.asyncio
+async def test_collection_extra_actions_set_cover_updates_profile_cover() -> None:
+    session = MenuSession(
+        session_id="collection-cover-session",
+        chat_id=12345,
+        message_id=232,
+        user_id=12345,
+        message_thread_id=None,
+        data={
+            "release_user_pokemon_id": 250,
+            "release_pokemon_name": "Pikachu",
+            "release_rarity": "Rare",
+        },
+    )
+
+    user = Mock(spec=User)
+    user.id = 12345
+    user.username = "ash"
+
+    query = AsyncMock(spec=CallbackQuery)
+    query.data = f"menu:pkv:{session.session_id}"
+    query.message = Mock(spec=Message)
+    query.message.photo = []
+    query.edit_message_text = AsyncMock()
+    query.answer = AsyncMock()
+
+    update = Mock(spec=Update)
+    update.callback_query = query
+    update.effective_user = user
+
+    db = AsyncMock()
+    cover_entry = _entry(25, "Pikachu", "Rare", "electric", 1)
+    cover_entry.image_credit_id = 55
+    db.get_user_pokemon_entry = AsyncMock(return_value=cover_entry)
+    db.update_profile_cover = AsyncMock(return_value=55)
+
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = Mock()
+    context.application.bot_data = {"db": db}
+
+    await collection_handler(update, context, session)
+
+    assert db.update_profile_cover.called
+    assert query.edit_message_text.called
+    text = query.edit_message_text.call_args.kwargs["text"]
+    assert "Обложка обновлена" in text

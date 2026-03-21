@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Optional
 
 import structlog
@@ -15,17 +14,26 @@ from bot.db.database import (
     CollectionFilterState,
     CollectionPage,
     Database,
+    POKEMON_RELEASE_REWARDS,
 )
 from bot.navigation.context import extract_context
 from bot.navigation.router import NavigationRouter, parse_callback_data
 from bot.navigation.session import MenuSession, session_store
+from bot.handlers.sections.market import build_market_entry_payload, resolve_market_card_action
 from bot.ui.menu import build_back_button
+from bot.ui.pokemon_cards import (
+    EXTRA_CARD_SECTION,
+    PokemonCardData,
+    build_pokemon_card_keyboard,
+    RELEASE_CARD_SECTION,
+    render_pokemon_card_caption,
+    send_pokemon_card,
+)
 
 logger = structlog.get_logger()
 
 COLLECTION_VIEW_MAIN = "main"
 COLLECTION_VIEW_FILTERS = "filters"
-FALLBACK_IMAGE_PATH = Path("image.png")
 COLLECTION_RARITY_OPTIONS = ("Legendary", "Epic", "Rare", "Common")
 COLLECTION_RARITY_CODES = {
     "Legendary": "L",
@@ -77,6 +85,12 @@ COLLECTION_TYPE_CODES = {
 COLLECTION_TYPE_CODES_REVERSE = {value: key for key, value in COLLECTION_TYPE_CODES.items()}
 COLLECTION_ROUTE_SECTIONS = [
     "collection",
+    EXTRA_CARD_SECTION,
+    RELEASE_CARD_SECTION,
+    "pkb",
+    "pkl",
+    "pkv",
+    "pkrc",
     "cfs",
     "cfb",
     "cfx",
@@ -171,6 +185,30 @@ async def collection_handler(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
     try:
         logger.info("collection_handler_start", section=section, user_id=session.user_id, session_id=session.session_id)
+        if section == RELEASE_CARD_SECTION:
+            await _handle_release_prompt(update, context, session)
+            return
+
+        if section == EXTRA_CARD_SECTION:
+            await _handle_extra_actions_prompt(update, context, session)
+            return
+
+        if section == "pkb":
+            await _handle_card_return(update, context, session)
+            return
+
+        if section == "pkl":
+            await _handle_lock_toggle(update, context, session)
+            return
+
+        if section == "pkv":
+            await _handle_set_cover(update, context, session)
+            return
+
+        if section == "pkrc":
+            await _handle_release_confirm(update, context, session)
+            return
+
         if section.startswith("cd"):
             await _handle_collection_detail(update, context, session, section)
             return
@@ -514,11 +552,19 @@ async def _edit_collection_message(
     text: str,
     reply_markup: InlineKeyboardMarkup,
 ) -> None:
-    await query.edit_message_text(
-        text=text,
-        parse_mode="HTML",
-        reply_markup=reply_markup,
-    )
+    message = getattr(query, "message", None)
+    if getattr(message, "photo", None):
+        await query.edit_message_caption(
+            caption=text,
+            parse_mode="HTML",
+            reply_markup=reply_markup,
+        )
+    else:
+        await query.edit_message_text(
+            text=text,
+            parse_mode="HTML",
+            reply_markup=reply_markup,
+        )
 
 
 async def _handle_collection_detail(
@@ -542,45 +588,308 @@ async def _send_collection_card(
     entry: CollectionEntry,
     user_label: Optional[str] = None,
 ) -> Message:
-    caption = _render_collection_card_caption(entry, user_label)
-    if FALLBACK_IMAGE_PATH.exists():
-        logger.info("collection_send_photo_start", user_id=session.user_id, pokemon_id=entry.pokemon_id)
-        with FALLBACK_IMAGE_PATH.open("rb") as image_file:
-            message = await context.bot.send_photo(
-                chat_id=session.chat_id,
-                message_thread_id=session.message_thread_id,
-                photo=image_file,
-                caption=caption,
-                parse_mode="HTML",
-            )
-        logger.info("collection_send_photo_done", user_id=session.user_id, pokemon_id=entry.pokemon_id)
-    else:
-        logger.info("collection_send_message_start", user_id=session.user_id, pokemon_id=entry.pokemon_id)
-        message = await context.bot.send_message(
-            chat_id=session.chat_id,
-            message_thread_id=session.message_thread_id,
-            text=caption,
-            parse_mode="HTML",
+    logger.info("collection_send_card_start", user_id=session.user_id, pokemon_id=entry.pokemon_id)
+    message = await send_pokemon_card(
+        context,
+        chat_id=session.chat_id,
+        message_thread_id=session.message_thread_id,
+        card=PokemonCardData(
+            pokemon_id=entry.pokemon_id,
+            name=entry.name,
+            rarity=entry.rarity,
+            pokemon_type=entry.pokemon_type,
+            quantity=entry.quantity,
+            base_hp=entry.base_hp,
+            base_attack=entry.base_attack,
+            base_defense=entry.base_defense,
+            base_stamina=entry.base_stamina,
+            trainer_label=user_label,
+            user_pokemon_id=entry.sample_user_pokemon_id,
+        ),
+    )
+    detail_session_id = session_store.create_session(
+        chat_id=session.chat_id,
+        message_id=message.message_id,
+        user_id=session.user_id,
+        message_thread_id=session.message_thread_id,
+        data=build_market_entry_payload(
+            action=resolve_market_card_action(True),
+            pokemon_id=entry.pokemon_id,
+            pokemon_name=entry.name,
+            user_pokemon_id=entry.sample_user_pokemon_id,
         )
-        logger.info("collection_send_message_done", user_id=session.user_id, pokemon_id=entry.pokemon_id)
+        | {
+            "release_user_pokemon_id": entry.sample_user_pokemon_id,
+            "release_pokemon_name": entry.name,
+            "release_rarity": entry.rarity,
+        },
+    )
+    await message.edit_reply_markup(
+        reply_markup=build_pokemon_card_keyboard(
+            detail_session_id,
+            include_market_button=True,
+            include_release_button=True,
+            include_extra_button=True,
+        )
+    )
+    logger.info("collection_send_card_done", user_id=session.user_id, pokemon_id=entry.pokemon_id)
     return message
 
 
-def _render_collection_card_caption(entry: CollectionEntry, user_label: Optional[str] = None) -> str:
-    return "\n".join(
-        line
-        for line in [
-            f"📘 <b>{entry.name}</b>",
-            (f"Тренер: <b>{user_label}</b>" if user_label else ""),
-            f"Редкость: <b>{entry.rarity}</b>",
-            f"Тип: <b>{entry.pokemon_type or 'unknown'}</b>",
-            f"Количество: <b>{entry.quantity}</b>",
-            f"HP: <b>{entry.base_hp}</b>",
-            f"ATK: <b>{entry.base_attack}</b>",
-            f"DEF: <b>{entry.base_defense}</b>",
-            f"SPD: <b>{entry.base_stamina}</b>",
-            f"ID покемона: <b>{entry.pokemon_id}</b>",
-            f"ID экземпляра: <b>{entry.sample_user_pokemon_id}</b>",
+async def _handle_release_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE, session: MenuSession) -> None:
+    query = update.callback_query
+    user_pokemon_id = session.data.get("release_user_pokemon_id")
+    pokemon_name = str(session.data.get("release_pokemon_name") or "покемон")
+    rarity = str(session.data.get("release_rarity") or "Common")
+    if user_pokemon_id is None:
+        raise ValueError("Release payload is missing")
+
+    reward = POKEMON_RELEASE_REWARDS.get(rarity, 32)
+    next_session_id = _create_session(session, dict(session.data))
+    await _edit_collection_message(
+        query,
+        session,
+        "\n".join(
+            [
+                "🕊 <b>Отпустить покемона?</b>",
+                "",
+                f"Покемон: <b>{pokemon_name}</b>",
+                f"Экземпляр: <code>{int(user_pokemon_id)}</code>",
+                f"Награда: 🪙 <b>{reward}</b>",
+            ]
+        ),
+        InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("✅ Отпустить", callback_data=f"menu:pkrc:{next_session_id}")],
+                [InlineKeyboardButton("❌ Отмена", callback_data=f"menu:back:{next_session_id}")],
+            ]
+        ),
+    )
+
+
+async def _handle_extra_actions_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE, session: MenuSession) -> None:
+    query = update.callback_query
+    db = _get_db(context)
+    if not db:
+        await query.answer("Коллекция временно недоступна.", show_alert=False)
+        return
+
+    entry = await _load_owned_card_entry(update, context, session)
+    if not entry:
+        await query.answer("Карточка больше недоступна.", show_alert=False)
+        return
+
+    next_session_id = _create_session(session, dict(session.data))
+    await _edit_collection_message(
+        query,
+        session,
+        _render_extra_actions_text(entry),
+        _build_extra_actions_keyboard(next_session_id, entry.is_locked),
+    )
+
+
+async def _handle_card_return(update: Update, context: ContextTypes.DEFAULT_TYPE, session: MenuSession) -> None:
+    query = update.callback_query
+    entry = await _load_owned_card_entry(update, context, session)
+    if not entry:
+        await query.answer("Карточка больше недоступна.", show_alert=False)
+        return
+    await _edit_collection_card_message(query, session, entry)
+
+
+async def _handle_lock_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE, session: MenuSession) -> None:
+    query = update.callback_query
+    db = _get_db(context)
+    if not db:
+        await query.answer("Коллекция временно недоступна.", show_alert=False)
+        return
+
+    user_pokemon_id = session.data.get("release_user_pokemon_id")
+    if user_pokemon_id is None:
+        await query.answer("Карточка больше недоступна.", show_alert=False)
+        return
+
+    try:
+        result = await db.toggle_user_pokemon_lock(
+            session.user_id,
+            update.effective_user.username if update.effective_user else None,
+            user_pokemon_id=int(user_pokemon_id),
+        )
+    except Exception as exc:
+        error_message = str(exc) or "Не удалось изменить статус покемона."
+        await query.answer(error_message, show_alert=False)
+        return
+
+    entry = await _load_owned_card_entry(update, context, session)
+    if not entry:
+        await query.answer("Статус изменён, но карточка больше недоступна.", show_alert=False)
+        return
+
+    next_session_id = _create_session(session, dict(session.data))
+    status_text = "🔒 Покемон залочен." if result.is_locked else "🔓 Покемон разблокирован."
+    await _edit_collection_message(
+        query,
+        session,
+        _render_extra_actions_text(entry, status_text=status_text),
+        _build_extra_actions_keyboard(next_session_id, result.is_locked),
+    )
+    await query.answer(status_text, show_alert=False)
+
+
+async def _handle_set_cover(update: Update, context: ContextTypes.DEFAULT_TYPE, session: MenuSession) -> None:
+    query = update.callback_query
+    db = _get_db(context)
+    if not db:
+        await query.answer("Профиль временно недоступен.", show_alert=False)
+        return
+
+    entry = await _load_owned_card_entry(update, context, session)
+    if not entry:
+        await query.answer("Карточка больше недоступна.", show_alert=False)
+        return
+    if entry.image_credit_id is None:
+        await query.answer("У этого покемона нет картинки для обложки.", show_alert=False)
+        return
+
+    try:
+        await db.update_profile_cover(
+            session.user_id,
+            update.effective_user.username if update.effective_user else None,
+            image_credit_id=int(entry.image_credit_id),
+        )
+    except Exception as exc:
+        error_message = str(exc) or "Не удалось обновить обложку."
+        await query.answer(error_message, show_alert=False)
+        return
+
+    next_session_id = _create_session(session, dict(session.data))
+    status_text = f"🖼 Обложка обновлена: <b>{entry.name}</b>."
+    await _edit_collection_message(
+        query,
+        session,
+        _render_extra_actions_text(entry, status_text=status_text),
+        _build_extra_actions_keyboard(next_session_id, entry.is_locked),
+    )
+    await query.answer("Обложка обновлена.", show_alert=False)
+
+
+async def _handle_release_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE, session: MenuSession) -> None:
+    query = update.callback_query
+    db = _get_db(context)
+    if not db:
+        await query.answer("Коллекция временно недоступна.", show_alert=False)
+        return
+
+    user_pokemon_id = session.data.get("release_user_pokemon_id")
+    if user_pokemon_id is None:
+        raise ValueError("Release confirmation payload is missing")
+
+    result = await db.release_user_pokemon(
+        session.user_id,
+        update.effective_user.username if update.effective_user else None,
+        user_pokemon_id=int(user_pokemon_id),
+    )
+    next_session_id = _create_session(session)
+    await _edit_collection_message(
+        query,
+        session,
+        "\n".join(
+            [
+                "✅ <b>Покемон отпущен</b>",
+                "",
+                f"Покемон: <b>{result.name}</b>",
+                f"Редкость: <b>{result.rarity}</b>",
+                f"Получено: 🪙 <b>{result.reward_amount}</b>",
+            ]
+        ),
+        build_back_button(next_session_id),
+    )
+    await query.answer("Покемон отпущен.", show_alert=False)
+
+
+async def _load_owned_card_entry(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    session: MenuSession,
+) -> Optional[CollectionEntry]:
+    db = _get_db(context)
+    if not db:
+        return None
+    user_pokemon_id = session.data.get("release_user_pokemon_id")
+    if user_pokemon_id is None:
+        return None
+    entry = await db.get_user_pokemon_entry(int(user_pokemon_id))
+    if not entry:
+        return None
+    return entry
+
+
+async def _edit_collection_card_message(query, session: MenuSession, entry: CollectionEntry) -> None:
+    next_session_id = _create_session(
+        session,
+        build_market_entry_payload(
+            action=resolve_market_card_action(True),
+            pokemon_id=entry.pokemon_id,
+            pokemon_name=entry.name,
+            user_pokemon_id=entry.sample_user_pokemon_id,
+        )
+        | {
+            "release_user_pokemon_id": entry.sample_user_pokemon_id,
+            "release_pokemon_name": entry.name,
+            "release_rarity": entry.rarity,
+        },
+    )
+    await _edit_collection_message(
+        query,
+        session,
+        _render_collection_card_caption(entry),
+        build_pokemon_card_keyboard(
+            next_session_id,
+            include_market_button=True,
+            include_release_button=True,
+            include_extra_button=True,
+        ),
+    )
+
+
+def _render_extra_actions_text(entry: CollectionEntry, *, status_text: Optional[str] = None) -> str:
+    lock_line = "🔒 Статус: <b>залочен</b>" if entry.is_locked else "🔓 Статус: <b>не залочен</b>"
+    lines = [
+        "⚙️ <b>Дополнительно</b>",
+        "",
+        f"Покемон: <b>{entry.name}</b>",
+        f"Экземпляр: <code>{entry.sample_user_pokemon_id}</code>",
+        lock_line,
+    ]
+    if status_text:
+        lines.extend(["", status_text])
+    return "\n".join(lines)
+
+
+def _build_extra_actions_keyboard(session_id: str, is_locked: bool) -> InlineKeyboardMarkup:
+    lock_label = "🔓 Разлочить" if is_locked else "🔒 Залочить"
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton(lock_label, callback_data=f"menu:pkl:{session_id}")],
+            [InlineKeyboardButton("🖼 На обложку", callback_data=f"menu:pkv:{session_id}")],
+            [InlineKeyboardButton("🔙 К карточке", callback_data=f"menu:pkb:{session_id}")],
         ]
-        if line
+    )
+
+
+def _render_collection_card_caption(entry: CollectionEntry, user_label: Optional[str] = None) -> str:
+    return render_pokemon_card_caption(
+        PokemonCardData(
+            pokemon_id=entry.pokemon_id,
+            name=entry.name,
+            rarity=entry.rarity,
+            pokemon_type=entry.pokemon_type,
+            quantity=entry.quantity,
+            base_hp=entry.base_hp,
+            base_attack=entry.base_attack,
+            base_defense=entry.base_defense,
+            base_stamina=entry.base_stamina,
+            trainer_label=user_label,
+            user_pokemon_id=entry.sample_user_pokemon_id,
+        )
     )

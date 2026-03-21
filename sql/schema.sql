@@ -89,8 +89,12 @@ CREATE TABLE IF NOT EXISTS "user_pokemon" (
   "owner_user_id" bigint NOT NULL,
   "pokemon_id" int NOT NULL,
   "obtained_at" timestamp NOT NULL DEFAULT (now()),
-  "is_locked" boolean NOT NULL DEFAULT false
+  "is_locked" boolean NOT NULL DEFAULT false,
+  "released_at" timestamptz
 );
+
+ALTER TABLE "user_pokemon"
+  ADD COLUMN IF NOT EXISTS "released_at" timestamptz;
 
 CREATE TABLE IF NOT EXISTS "market_listings" (
   "id" bigserial PRIMARY KEY,
@@ -102,6 +106,34 @@ CREATE TABLE IF NOT EXISTS "market_listings" (
   "start_date" timestamp NOT NULL DEFAULT (now()),
   "end_date" timestamp,
   "purchaser_user_id" bigint
+);
+
+ALTER TABLE "market_listings"
+  ADD COLUMN IF NOT EXISTS "listed_at" timestamptz NOT NULL DEFAULT NOW(),
+  ADD COLUMN IF NOT EXISTS "completed_at" timestamptz,
+  ADD COLUMN IF NOT EXISTS "removed_at" timestamptz,
+  ADD COLUMN IF NOT EXISTS "removal_reason" varchar(32),
+  ADD COLUMN IF NOT EXISTS "initial_commission_paid" bigint NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS "daily_commission_amount" bigint NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS "next_commission_at" timestamptz,
+  ADD COLUMN IF NOT EXISTS "expires_at" timestamptz,
+  ADD COLUMN IF NOT EXISTS "last_commission_at" timestamptz;
+
+CREATE TABLE IF NOT EXISTS "market_buy_requests" (
+  "id" bigserial PRIMARY KEY,
+  "requester_user_id" bigint NOT NULL,
+  "pokemon_id" int NOT NULL,
+  "currency_id" smallint NOT NULL,
+  "price" bigint NOT NULL,
+  "reserved_amount" bigint NOT NULL DEFAULT 0,
+  "status" varchar(16) NOT NULL DEFAULT 'active',
+  "created_at" timestamptz NOT NULL DEFAULT NOW(),
+  "updated_at" timestamptz NOT NULL DEFAULT NOW(),
+  "fulfilled_at" timestamptz,
+  "canceled_at" timestamptz,
+  "fulfilled_by_user_id" bigint,
+  "fulfilled_user_pokemon_id" bigint,
+  "cancel_reason" varchar(32)
 );
 
 CREATE TABLE IF NOT EXISTS "chat_encounters" (
@@ -143,6 +175,27 @@ CREATE INDEX IF NOT EXISTS chat_encounters_expires_at_status_idx
 CREATE INDEX IF NOT EXISTS user_pokemon_owner_user_id_pokemon_id_idx
   ON "user_pokemon" ("owner_user_id", "pokemon_id");
 
+CREATE INDEX IF NOT EXISTS market_listings_active_browse_idx
+  ON "market_listings" ("status", "listed_at" DESC, "price" ASC);
+
+CREATE INDEX IF NOT EXISTS market_listings_seller_status_idx
+  ON "market_listings" ("seller_user_id", "status");
+
+CREATE INDEX IF NOT EXISTS market_listings_next_commission_idx
+  ON "market_listings" ("status", "next_commission_at");
+
+CREATE INDEX IF NOT EXISTS market_listings_expires_at_idx
+  ON "market_listings" ("status", "expires_at");
+
+CREATE INDEX IF NOT EXISTS market_buy_requests_requester_status_idx
+  ON "market_buy_requests" ("requester_user_id", "status");
+
+CREATE INDEX IF NOT EXISTS market_buy_requests_active_browse_idx
+  ON "market_buy_requests" ("status", "created_at" DESC, "price" DESC);
+
+CREATE INDEX IF NOT EXISTS market_buy_requests_pokemon_status_idx
+  ON "market_buy_requests" ("pokemon_id", "status");
+
 COMMENT ON TABLE "user_settings" IS 'Настройки пользователя и аватар';
 
 COMMENT ON TABLE "pokemon_catalog" IS 'Каталог покемонов (справочник). Статические данные покемонов.';
@@ -157,6 +210,76 @@ BEGIN
     ALTER TABLE "user_settings"
       ADD FOREIGN KEY ("user_id")
       REFERENCES "users" ("id")
+      DEFERRABLE INITIALLY IMMEDIATE;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'market_buy_requests_requester_user_id_fkey'
+  ) THEN
+    ALTER TABLE "market_buy_requests"
+      ADD FOREIGN KEY ("requester_user_id")
+      REFERENCES "users" ("id")
+      DEFERRABLE INITIALLY IMMEDIATE;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'market_buy_requests_pokemon_id_fkey'
+  ) THEN
+    ALTER TABLE "market_buy_requests"
+      ADD FOREIGN KEY ("pokemon_id")
+      REFERENCES "pokemon_catalog" ("id")
+      DEFERRABLE INITIALLY IMMEDIATE;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'market_buy_requests_currency_id_fkey'
+  ) THEN
+    ALTER TABLE "market_buy_requests"
+      ADD FOREIGN KEY ("currency_id")
+      REFERENCES "currencies" ("id")
+      DEFERRABLE INITIALLY IMMEDIATE;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'market_buy_requests_fulfilled_by_user_id_fkey'
+  ) THEN
+    ALTER TABLE "market_buy_requests"
+      ADD FOREIGN KEY ("fulfilled_by_user_id")
+      REFERENCES "users" ("id")
+      DEFERRABLE INITIALLY IMMEDIATE;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'market_buy_requests_fulfilled_user_pokemon_id_fkey'
+  ) THEN
+    ALTER TABLE "market_buy_requests"
+      ADD FOREIGN KEY ("fulfilled_user_pokemon_id")
+      REFERENCES "user_pokemon" ("id")
       DEFERRABLE INITIALLY IMMEDIATE;
   END IF;
 END $$;

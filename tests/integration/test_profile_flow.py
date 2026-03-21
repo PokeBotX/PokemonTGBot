@@ -251,3 +251,50 @@ async def test_search_command_multiple_results_sends_choice_list() -> None:
 
     assert chat.send_message.called
     assert sent_message.edit_reply_markup.called
+
+
+@pytest.mark.asyncio
+async def test_search_command_single_result_sends_card_with_market_button() -> None:
+    user = Mock(spec=User)
+    user.id = 12345
+    user.first_name = "Ash"
+    user.username = "ash"
+
+    chat = Mock(spec=Chat)
+    chat.id = 12345
+    chat.type = "private"
+
+    sent_message = Mock(spec=Message)
+    sent_message.message_id = 140
+    sent_message.edit_reply_markup = AsyncMock()
+
+    message = Mock(spec=Message)
+    message.message_id = 122
+    message.chat = chat
+    message.message_thread_id = None
+    message.text = "/search mew"
+
+    update = Mock(spec=Update)
+    update.effective_chat = chat
+    update.effective_user = user
+    update.effective_message = message
+
+    db = AsyncMock()
+    db.search_pokemon_catalog = AsyncMock(
+        return_value=[
+            PokemonSearchEntry(151, "Mew", "Legendary", "psychic", 100, 100, 100, 100, None),
+        ]
+    )
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+    context.bot = Mock()
+    context.bot.send_photo = AsyncMock(return_value=sent_message)
+    context.bot.send_message = AsyncMock(return_value=sent_message)
+
+    await search_command(update, context)
+
+    assert sent_message.edit_reply_markup.called
+    reply_markup = sent_message.edit_reply_markup.call_args.kwargs["reply_markup"]
+    assert reply_markup.inline_keyboard[0][0].callback_data.startswith("menu:mce:")

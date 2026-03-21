@@ -9,9 +9,11 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
 from bot.db import Database
+from bot.db.database import MARKET_MAINTENANCE_INTERVAL_SECONDS
 from bot.utils.logging import setup_logging
 from bot.handlers.chat_activity import group_message_activity_handler
 from bot.handlers.commands import (
+    buyprice_command,
     collection_command,
     find_command,
     items_command,
@@ -20,6 +22,7 @@ from bot.handlers.commands import (
     profile_command,
     search_command,
     section_command,
+    sellprice_command,
     shop_command,
     start_command,
 )
@@ -28,7 +31,7 @@ from bot.navigation.router import navigation_router
 
 # Import section handlers
 from bot.handlers.sections.shop import register_shop_routes
-from bot.handlers.sections.market import market_handler
+from bot.handlers.sections.market import register_market_routes
 from bot.handlers.sections.profile import handle_profile_text_input, register_profile_routes
 from bot.handlers.sections.games import games_handler
 from bot.handlers.sections.collection import register_collection_routes
@@ -76,12 +79,25 @@ bot_app: Application = None
 db: Database = None
 
 
+async def run_market_maintenance_job(context) -> None:
+    """Charge due commissions and expire market listings in the background."""
+    application = getattr(context, "application", None)
+    bot_data = getattr(application, "bot_data", {}) if application else {}
+    market_db = bot_data.get("db") if isinstance(bot_data, dict) else None
+    if not market_db:
+        return
+
+    stats = await market_db.process_market_listing_maintenance()
+    if any(stats.values()):
+        logger.info("market_maintenance_cycle", **stats)
+
+
 def register_routes() -> None:
     """Register all section handlers with navigation router."""
     register_shop_routes(navigation_router)
     register_collection_routes(navigation_router)
     register_profile_routes(navigation_router)
-    navigation_router.register("market", market_handler)
+    register_market_routes(navigation_router)
     navigation_router.register("games", games_handler)
     navigation_router.register("updates", updates_handler)
     navigation_router.register("chat", chat_handler)
@@ -107,6 +123,8 @@ async def setup_bot_commands(application: Application) -> None:
         BotCommand("collection", "Открыть коллекцию"),
         BotCommand("find", "Поиск покемона в чате"),
         BotCommand("search", "Поиск покемона по имени"),
+        BotCommand("sellprice", "Указать цену продажи"),
+        BotCommand("buyprice", "Указать цену заявки"),
         BotCommand("updates", "Открыть обновления"),
         BotCommand("chat", "Открыть чат"),
         BotCommand("support", "Открыть поддержку"),
@@ -174,6 +192,8 @@ async def lifespan(app: FastAPI):
     bot_app.add_handler(CommandHandler("items", items_command))
     bot_app.add_handler(CommandHandler("find", find_command))
     bot_app.add_handler(CommandHandler("search", search_command))
+    bot_app.add_handler(CommandHandler("sellprice", sellprice_command))
+    bot_app.add_handler(CommandHandler("buyprice", buyprice_command))
     bot_app.add_handler(CommandHandler("collection", collection_command))
     bot_app.add_handler(CommandHandler("profile", profile_command))
     bot_app.add_handler(CommandHandler(["market", "games", "updates", "chat", "support", "info"], section_command))
@@ -208,7 +228,17 @@ async def lifespan(app: FastAPI):
         if DB_INIT_SCHEMA:
             await db.init_schema(DB_SCHEMA_PATH)
         bot_app.bot_data["db"] = db
+        maintenance_stats = await db.process_market_listing_maintenance()
+        if any(maintenance_stats.values()):
+            logger.info("market_maintenance_cycle", **maintenance_stats)
         logger.info("db_ready", schema_init=DB_INIT_SCHEMA)
+        if bot_app.job_queue:
+            bot_app.job_queue.run_repeating(
+                run_market_maintenance_job,
+                interval=MARKET_MAINTENANCE_INTERVAL_SECONDS,
+                first=MARKET_MAINTENANCE_INTERVAL_SECONDS,
+                name="market-maintenance",
+            )
     
     # Set up bot commands
     await setup_bot_commands(bot_app)

@@ -13,6 +13,9 @@ from bot.db.database import (
     CollectionEntry,
     CollectionFilterState,
     CollectionPage,
+    MarketBrowsePage,
+    MarketBrowseState,
+    MarketListingSummary,
     PokemonSearchEntry,
     ProfileCoverCandidate,
     ProfileRarityProgress,
@@ -143,8 +146,8 @@ async def test_shop_command_sends_shop_message(mock_update):
 
 
 @pytest.mark.asyncio
-async def test_market_command_sends_placeholder_section(mock_update):
-    """Test /market command sends the market placeholder."""
+async def test_market_command_sends_market_root(mock_update):
+    """Test /market command sends the real market root screen."""
     sent_message = Mock(spec=Message)
     sent_message.message_id = 104
     sent_message.edit_reply_markup = AsyncMock()
@@ -152,8 +155,9 @@ async def test_market_command_sends_placeholder_section(mock_update):
     mock_update.message = Mock()
     mock_update.message.text = "/market"
 
+    db = AsyncMock()
     application = Mock()
-    application.bot_data = {}
+    application.bot_data = {"db": db}
     context = Mock(spec=ContextTypes.DEFAULT_TYPE)
     context.application = application
 
@@ -161,9 +165,80 @@ async def test_market_command_sends_placeholder_section(mock_update):
 
     assert mock_update.effective_chat.send_message.called
     call_args = mock_update.effective_chat.send_message.call_args
-    assert "Рынок" in call_args.kwargs["text"]
+    assert "рынок открыт" in call_args.kwargs["text"]
+    assert "pokecoin" in call_args.kwargs["text"]
     assert sent_message.edit_reply_markup.called
     assert len(session_store._sessions) == 1
+
+
+@pytest.mark.asyncio
+async def test_market_command_can_open_buy_browse_screen() -> None:
+    from bot.handlers.sections.market import show_market_screen, MARKET_VIEW_BUY
+
+    user = Mock(spec=User)
+    user.id = 12345
+    user.username = "ash"
+    user.first_name = "Ash"
+
+    chat = Mock(spec=Chat)
+    chat.id = 12345
+    chat.type = "private"
+    chat.send_message = AsyncMock()
+
+    sent_message = Mock(spec=Message)
+    sent_message.message_id = 190
+    sent_message.edit_reply_markup = AsyncMock()
+    chat.send_message = AsyncMock(return_value=sent_message)
+
+    message = Mock(spec=Message)
+    message.message_id = 191
+    message.chat = chat
+    message.message_thread_id = None
+
+    update = Mock(spec=Update)
+    update.effective_chat = chat
+    update.effective_user = user
+    update.effective_message = message
+
+    db = AsyncMock()
+    db.get_market_listings_page = AsyncMock(
+        return_value=MarketBrowsePage(
+            entries=[
+                MarketListingSummary(
+                    listing_id=1,
+                    seller_user_id=777,
+                    seller_label="@misty",
+                    user_pokemon_id=250,
+                    pokemon_id=25,
+                    name="Pikachu",
+                    rarity="Rare",
+                    pokemon_type="electric",
+                    price=500,
+                    status="active",
+                    listed_at=__import__("datetime").datetime.now(__import__("datetime").UTC),
+                    expires_at=__import__("datetime").datetime.now(__import__("datetime").UTC),
+                    days_remaining=5,
+                    image_credit_id=None,
+                )
+            ],
+            filter_state=MarketBrowseState(),
+            total_entries=1,
+            current_page=1,
+            total_pages=1,
+            current_balance=900,
+        )
+    )
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+
+    await show_market_screen(update, context, screen=MARKET_VIEW_BUY)
+
+    call_args = chat.send_message.call_args
+    assert "активные лоты" in call_args.kwargs["text"]
+    assert "Pikachu" in call_args.kwargs["text"]
+    assert sent_message.edit_reply_markup.called
 
 
 @pytest.mark.asyncio

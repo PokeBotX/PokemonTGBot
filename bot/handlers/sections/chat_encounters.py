@@ -24,9 +24,16 @@ from bot.db.database import (
     ChatEncounterAttemptResult,
     Database,
 )
+from bot.handlers.sections.market import build_market_entry_payload, resolve_market_card_action
+from bot.navigation.session import session_store
+from bot.ui.pokemon_cards import (
+    PokemonCardData,
+    build_pokemon_card_keyboard,
+    render_pokemon_card_caption,
+    send_pokemon_card,
+)
 
 logger = structlog.get_logger()
-
 FALLBACK_IMAGE_PATH = Path("image.png")
 ENCOUNTER_CALLBACK_PREFIX = "enc"
 ENCOUNTER_VIEW_CARD_ACTION = "card"
@@ -375,7 +382,12 @@ async def _handle_view_card(
         await query.answer("Карточка не найдена.", show_alert=False)
         return
 
-    await _send_encounter_card(context, query.message, entry)
+    await _send_encounter_card(
+        context,
+        query.message,
+        entry,
+        viewer_user_id=query.from_user.id if getattr(query, "from_user", None) else None,
+    )
     await query.answer("Карточка открыта.", show_alert=False)
 
 
@@ -383,38 +395,66 @@ async def _send_encounter_card(
     context: ContextTypes.DEFAULT_TYPE,
     source_message: Message,
     entry: CollectionEntry,
+    viewer_user_id: Optional[int] = None,
 ) -> Message:
-    caption = _render_encounter_card_caption(entry)
-    if FALLBACK_IMAGE_PATH.exists():
-        with FALLBACK_IMAGE_PATH.open("rb") as image_file:
-            return await context.bot.send_photo(
-                chat_id=source_message.chat.id,
-                message_thread_id=getattr(source_message, "message_thread_id", None),
-                photo=image_file,
-                caption=caption,
-                parse_mode="HTML",
-            )
-    return await context.bot.send_message(
+    message = await send_pokemon_card(
+        context,
         chat_id=source_message.chat.id,
         message_thread_id=getattr(source_message, "message_thread_id", None),
-        text=caption,
-        parse_mode="HTML",
+        card=PokemonCardData(
+            pokemon_id=entry.pokemon_id,
+            name=entry.name,
+            rarity=entry.rarity,
+            pokemon_type=entry.pokemon_type,
+            base_hp=entry.base_hp,
+            base_attack=entry.base_attack,
+            base_defense=entry.base_defense,
+            base_stamina=entry.base_stamina,
+            user_pokemon_id=entry.sample_user_pokemon_id,
+        ),
     )
+    if viewer_user_id is not None:
+        session_id = session_store.create_session(
+            chat_id=source_message.chat.id,
+            message_id=message.message_id,
+            user_id=viewer_user_id,
+            message_thread_id=getattr(source_message, "message_thread_id", None),
+            data=build_market_entry_payload(
+                action=resolve_market_card_action(True),
+                pokemon_id=entry.pokemon_id,
+                pokemon_name=entry.name,
+                user_pokemon_id=entry.sample_user_pokemon_id,
+            )
+            | {
+                "release_user_pokemon_id": entry.sample_user_pokemon_id,
+                "release_pokemon_name": entry.name,
+                "release_rarity": entry.rarity,
+            },
+        )
+        await message.edit_reply_markup(
+            reply_markup=build_pokemon_card_keyboard(
+                session_id,
+                include_market_button=True,
+                include_release_button=True,
+                include_extra_button=True,
+            )
+        )
+    return message
 
 
 def _render_encounter_card_caption(entry: CollectionEntry) -> str:
-    return "\n".join(
-        [
-            f"📘 <b>{entry.name}</b>",
-            f"Редкость: <b>{entry.rarity}</b>",
-            f"Тип: <b>{entry.pokemon_type or 'unknown'}</b>",
-            f"HP: <b>{entry.base_hp}</b>",
-            f"ATK: <b>{entry.base_attack}</b>",
-            f"DEF: <b>{entry.base_defense}</b>",
-            f"SPD: <b>{entry.base_stamina}</b>",
-            f"ID покемона: <b>{entry.pokemon_id}</b>",
-            f"ID экземпляра: <b>{entry.sample_user_pokemon_id}</b>",
-        ]
+    return render_pokemon_card_caption(
+        PokemonCardData(
+            pokemon_id=entry.pokemon_id,
+            name=entry.name,
+            rarity=entry.rarity,
+            pokemon_type=entry.pokemon_type,
+            base_hp=entry.base_hp,
+            base_attack=entry.base_attack,
+            base_defense=entry.base_defense,
+            base_stamina=entry.base_stamina,
+            user_pokemon_id=entry.sample_user_pokemon_id,
+        )
     )
 
 

@@ -9,6 +9,12 @@ from bot.navigation.session import session_store
 from bot.db.database import ShopError
 from bot.handlers.sections.chat_encounters import maybe_spawn_encounter_from_find
 from bot.handlers.sections.collection import show_collection_screen
+from bot.handlers.sections.market import (
+    MARKET_PENDING_ACTION_BUY_PRICE,
+    MARKET_PENDING_ACTION_SELL_PRICE,
+    handle_market_price_command,
+    show_market_screen,
+)
 from bot.handlers.sections.profile import _display_profile_owner, handle_pokemon_search_command, show_profile_screen
 from bot.handlers.sections.shop import show_shop_screen, SHOP_VIEW_ITEMS, SHOP_VIEW_POKEMON
 from bot.ui.menu import build_main_menu_keyboard
@@ -156,6 +162,18 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await handle_pokemon_search_command(update, context)
 
 
+async def sellprice_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /sellprice command for market sale input."""
+    await _sync_user_with_db(update, context)
+    await handle_market_price_command(update, context, action=MARKET_PENDING_ACTION_SELL_PRICE)
+
+
+async def buyprice_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /buyprice command for market buy-request input."""
+    await _sync_user_with_db(update, context)
+    await handle_market_price_command(update, context, action=MARKET_PENDING_ACTION_BUY_PRICE)
+
+
 async def section_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle direct placeholder section commands like /market and /profile."""
     await _sync_user_with_db(update, context)
@@ -163,6 +181,9 @@ async def section_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     section = update.message.text.split()[0].lstrip("/").split("@", maxsplit=1)[0]
+    if section == "market":
+        await show_market_screen(update, context)
+        return
     section_name = PLACEHOLDER_COMMAND_SECTIONS.get(section)
     if not section_name:
         return
