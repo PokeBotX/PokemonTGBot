@@ -29,6 +29,7 @@ from bot.navigation.router import NavigationRouter, parse_callback_data
 from bot.navigation.context import extract_context
 from bot.navigation.session import MenuSession, session_store
 from bot.ui.menu import build_back_button
+from bot.ui.pokemon_cards import send_captioned_image
 
 logger = structlog.get_logger()
 
@@ -460,26 +461,16 @@ async def _send_reward_card(
     context: ContextTypes.DEFAULT_TYPE, session: MenuSession, reward: PokemonReward, shop_view: Optional[ShopView] = None, user_label: Optional[str] = None
 ) -> Message:
     caption = _render_reward_caption(reward, user_label)
-    if FALLBACK_IMAGE_PATH.exists():
-        logger.info("shop_send_photo_start", user_id=session.user_id, reward_name=reward.name)
-        with FALLBACK_IMAGE_PATH.open("rb") as image_file:
-            message = await context.bot.send_photo(
-                chat_id=session.chat_id,
-                message_thread_id=session.message_thread_id,
-                photo=image_file,
-                caption=caption,
-                parse_mode="HTML",
-            )
-        logger.info("shop_send_photo_done", user_id=session.user_id, reward_name=reward.name)
-    else:
-        logger.info("shop_send_message_start", user_id=session.user_id, reward_name=reward.name)
-        message = await context.bot.send_message(
-            chat_id=session.chat_id,
-            message_thread_id=session.message_thread_id,
-            text=caption,
-            parse_mode="HTML",
-        )
-        logger.info("shop_send_message_done", user_id=session.user_id, reward_name=reward.name)
+    logger.info("shop_reward_send_start", user_id=session.user_id, reward_name=reward.name, image_credit_id=reward.image_credit_id)
+    message = await send_captioned_image(
+        context,
+        chat_id=session.chat_id,
+        message_thread_id=session.message_thread_id,
+        caption=caption,
+        image_credit_id=reward.image_credit_id,
+        image_path=FALLBACK_IMAGE_PATH,
+    )
+    logger.info("shop_reward_send_done", user_id=session.user_id, reward_name=reward.name, image_credit_id=reward.image_credit_id)
 
     if shop_view is not None:
         reward_session_id = session_store.create_session(

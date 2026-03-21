@@ -30,6 +30,7 @@ from bot.ui.pokemon_cards import (
     PokemonCardData,
     build_pokemon_card_keyboard,
     render_pokemon_card_caption,
+    send_captioned_image,
     send_pokemon_card,
 )
 
@@ -130,20 +131,15 @@ async def publish_encounter_message(
     caption = CHAT_ENCOUNTER_TEXT
     keyboard = build_encounter_keyboard(encounter.encounter_id)
     try:
-        if FALLBACK_IMAGE_PATH.exists():
-            with FALLBACK_IMAGE_PATH.open("rb") as image_file:
-                sent_message = await update.effective_chat.send_photo(
-                    photo=image_file,
-                    caption=caption,
-                    reply_markup=keyboard,
-                    message_thread_id=encounter.message_thread_id,
-                )
-        else:
-            sent_message = await update.effective_chat.send_message(
-                text=caption,
-                reply_markup=keyboard,
-                message_thread_id=encounter.message_thread_id,
-            )
+        sent_message = await send_captioned_image(
+            context,
+            chat_id=update.effective_chat.id,
+            message_thread_id=encounter.message_thread_id,
+            caption=caption,
+            reply_markup=keyboard,
+            image_credit_id=encounter.image_credit_id,
+            image_path=FALLBACK_IMAGE_PATH,
+        )
         await db.attach_chat_encounter_message(encounter.encounter_id, sent_message.message_id)
         job_queue = getattr(context, "job_queue", None)
         if job_queue:
@@ -387,6 +383,7 @@ async def _handle_view_card(
         query.message,
         entry,
         viewer_user_id=query.from_user.id if getattr(query, "from_user", None) else None,
+        owner_user_id=encounter.caught_by_user_id,
     )
     await query.answer("Карточка открыта.", show_alert=False)
 
@@ -396,6 +393,7 @@ async def _send_encounter_card(
     source_message: Message,
     entry: CollectionEntry,
     viewer_user_id: Optional[int] = None,
+    owner_user_id: Optional[int] = None,
 ) -> Message:
     message = await send_pokemon_card(
         context,
@@ -411,32 +409,38 @@ async def _send_encounter_card(
             base_defense=entry.base_defense,
             base_stamina=entry.base_stamina,
             user_pokemon_id=entry.sample_user_pokemon_id,
+            image_credit_id=entry.image_credit_id,
         ),
     )
     if viewer_user_id is not None:
+        viewer_is_owner = owner_user_id is not None and viewer_user_id == owner_user_id
         session_id = session_store.create_session(
             chat_id=source_message.chat.id,
             message_id=message.message_id,
             user_id=viewer_user_id,
             message_thread_id=getattr(source_message, "message_thread_id", None),
             data=build_market_entry_payload(
-                action=resolve_market_card_action(True),
+                action=resolve_market_card_action(viewer_is_owner),
                 pokemon_id=entry.pokemon_id,
                 pokemon_name=entry.name,
-                user_pokemon_id=entry.sample_user_pokemon_id,
+                user_pokemon_id=entry.sample_user_pokemon_id if viewer_is_owner else None,
             )
-            | {
-                "release_user_pokemon_id": entry.sample_user_pokemon_id,
-                "release_pokemon_name": entry.name,
-                "release_rarity": entry.rarity,
-            },
+            | (
+                {
+                    "release_user_pokemon_id": entry.sample_user_pokemon_id,
+                    "release_pokemon_name": entry.name,
+                    "release_rarity": entry.rarity,
+                }
+                if viewer_is_owner
+                else {}
+            ),
         )
         await message.edit_reply_markup(
             reply_markup=build_pokemon_card_keyboard(
                 session_id,
                 include_market_button=True,
-                include_release_button=True,
-                include_extra_button=True,
+                include_release_button=viewer_is_owner,
+                include_extra_button=viewer_is_owner,
             )
         )
     return message
@@ -454,6 +458,7 @@ def _render_encounter_card_caption(entry: CollectionEntry) -> str:
             base_defense=entry.base_defense,
             base_stamina=entry.base_stamina,
             user_pokemon_id=entry.sample_user_pokemon_id,
+            image_credit_id=entry.image_credit_id,
         )
     )
 

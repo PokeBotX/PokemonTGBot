@@ -120,11 +120,14 @@ async def test_find_command_in_group_sends_encounter() -> None:
     context = Mock(spec=ContextTypes.DEFAULT_TYPE)
     context.application = application
     context.job_queue = None
+    context.bot = Mock()
+    context.bot.send_photo = AsyncMock(return_value=Mock(spec=Message, message_id=77))
+    context.bot.send_message = AsyncMock(return_value=Mock(spec=Message, message_id=78))
 
     await find_command(update, context)
 
     assert db.trigger_find_encounter.called
-    assert chat.send_photo.called or chat.send_message.called
+    assert context.bot.send_photo.called or context.bot.send_message.called
     assert db.attach_chat_encounter_message.called
 
 
@@ -282,3 +285,69 @@ async def test_view_card_button_sends_card_message() -> None:
 
     assert context.bot.send_photo.called or context.bot.send_message.called
     query.answer.assert_awaited_with("Карточка открыта.", show_alert=False)
+
+
+@pytest.mark.asyncio
+async def test_view_card_button_hides_owner_actions_for_foreign_user() -> None:
+    user = Mock(spec=User)
+    user.id = 2
+    user.username = "misty"
+    user.first_name = "Misty"
+
+    chat = Mock(spec=Chat)
+    chat.id = -1001
+    chat.type = "group"
+
+    message = Mock(spec=Message)
+    message.message_id = 77
+    message.chat = chat
+    message.message_thread_id = None
+
+    query = Mock()
+    query.data = "enc:1:card"
+    query.message = message
+    query.answer = AsyncMock()
+    query.from_user = user
+
+    update = Mock(spec=Update)
+    update.callback_query = query
+    update.effective_user = user
+
+    db = AsyncMock()
+    encounter = _caught_encounter()
+    encounter.caught_by_user_id = 1
+    db.get_chat_encounter = AsyncMock(return_value=encounter)
+    db.get_user_pokemon_entry = AsyncMock(
+        return_value=CollectionEntry(
+            pokemon_id=382,
+            sample_user_pokemon_id=999,
+            name="Kyogre",
+            rarity="Legendary",
+            pokemon_type="water",
+            quantity=1,
+            base_hp=100,
+            base_attack=100,
+            base_defense=90,
+            base_stamina=95,
+            image_credit_id=None,
+        )
+    )
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+    sent_message = Mock(spec=Message)
+    sent_message.message_id = 88
+    sent_message.edit_reply_markup = AsyncMock()
+    context.bot = Mock()
+    context.bot.send_photo = AsyncMock(return_value=sent_message)
+    context.bot.send_message = AsyncMock(return_value=sent_message)
+
+    await handle_encounter_callback(update, context)
+
+    assert sent_message.edit_reply_markup.called
+    reply_markup = sent_message.edit_reply_markup.call_args.kwargs["reply_markup"]
+    labels = [button.text for row in reply_markup.inline_keyboard for button in row]
+    assert "🏪 Рынок" in labels
+    assert "🕊 Отпустить" not in labels
+    assert "⚙️ Дополнительно" not in labels

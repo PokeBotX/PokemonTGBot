@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
+from io import BytesIO
+import os
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote
+from urllib.request import urlopen
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.ext import ContextTypes
@@ -30,6 +35,7 @@ class PokemonCardData:
     trainer_label: Optional[str] = None
     quantity: Optional[int] = None
     user_pokemon_id: Optional[int] = None
+    image_credit_id: Optional[int] = None
     extra_lines: tuple[str, ...] = ()
 
 
@@ -52,17 +58,70 @@ def render_pokemon_card_caption(card: PokemonCardData) -> str:
     return "\n".join(line for line in lines if line)
 
 
-async def send_pokemon_card(
+def _storage_endpoint_url() -> str:
+    return os.getenv("S3_ENDPOINT_URL", "http://127.0.0.1:9000").rstrip("/")
+
+
+def _build_object_url(storage_bucket: str, object_key: str) -> str:
+    quoted_key = quote(object_key, safe="/")
+    return f"{_storage_endpoint_url()}/{storage_bucket}/{quoted_key}"
+
+
+def _fetch_remote_bytes(url: str) -> bytes:
+    with urlopen(url, timeout=10) as response:
+        return response.read()
+
+
+async def _fetch_image_bytes_from_storage(
+    context: ContextTypes.DEFAULT_TYPE,
+    image_credit_id: int,
+) -> Optional[tuple[bytes, str]]:
+    application = getattr(context, "application", None)
+    bot_data = getattr(application, "bot_data", None) if application is not None else None
+    if not isinstance(bot_data, dict):
+        return None
+    db = bot_data.get("db")
+    if not db or not hasattr(db, "get_image_credit"):
+        return None
+
+    image_credit = await db.get_image_credit(image_credit_id)
+    if not image_credit:
+        return None
+
+    object_url = _build_object_url(image_credit.storage_bucket, image_credit.object_key)
+    try:
+        image_bytes = await asyncio.to_thread(_fetch_remote_bytes, object_url)
+    except Exception:
+        return None
+    return image_bytes, Path(image_credit.object_key).name or "pokemon-image"
+
+
+async def send_captioned_image(
     context: ContextTypes.DEFAULT_TYPE,
     *,
     chat_id: int,
     message_thread_id: Optional[int],
-    card: PokemonCardData,
+    caption: str,
     reply_markup: Optional[InlineKeyboardMarkup] = None,
+    image_credit_id: Optional[int] = None,
     image_path: Optional[Path] = None,
 ) -> Message:
-    """Send a shared non-shop pokemon card as photo or text fallback."""
-    caption = render_pokemon_card_caption(card)
+    """Send a captioned image from object storage, explicit path, or fallback image."""
+    if image_credit_id is not None:
+        remote_image = await _fetch_image_bytes_from_storage(context, image_credit_id)
+        if remote_image is not None:
+            image_bytes, filename = remote_image
+            file_obj = BytesIO(image_bytes)
+            file_obj.name = filename
+            return await context.bot.send_photo(
+                chat_id=chat_id,
+                message_thread_id=message_thread_id,
+                photo=file_obj,
+                caption=caption,
+                parse_mode="HTML",
+                reply_markup=reply_markup,
+            )
+
     resolved_image = image_path or FALLBACK_IMAGE_PATH
     if resolved_image.exists():
         with resolved_image.open("rb") as image_file:
@@ -74,12 +133,35 @@ async def send_pokemon_card(
                 parse_mode="HTML",
                 reply_markup=reply_markup,
             )
+
     return await context.bot.send_message(
         chat_id=chat_id,
         message_thread_id=message_thread_id,
         text=caption,
         parse_mode="HTML",
         reply_markup=reply_markup,
+    )
+
+
+async def send_pokemon_card(
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    chat_id: int,
+    message_thread_id: Optional[int],
+    card: PokemonCardData,
+    reply_markup: Optional[InlineKeyboardMarkup] = None,
+    image_path: Optional[Path] = None,
+) -> Message:
+    """Send a shared non-shop pokemon card as photo or text fallback."""
+    caption = render_pokemon_card_caption(card)
+    return await send_captioned_image(
+        context,
+        chat_id=chat_id,
+        message_thread_id=message_thread_id,
+        caption=caption,
+        reply_markup=reply_markup,
+        image_credit_id=card.image_credit_id,
+        image_path=image_path,
     )
 
 

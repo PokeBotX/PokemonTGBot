@@ -605,6 +605,7 @@ async def _send_collection_card(
             base_stamina=entry.base_stamina,
             trainer_label=user_label,
             user_pokemon_id=entry.sample_user_pokemon_id,
+            image_credit_id=entry.image_credit_id,
         ),
     )
     detail_session_id = session_store.create_session(
@@ -891,5 +892,6 @@ def _render_collection_card_caption(entry: CollectionEntry, user_label: Optional
             base_stamina=entry.base_stamina,
             trainer_label=user_label,
             user_pokemon_id=entry.sample_user_pokemon_id,
+            image_credit_id=entry.image_credit_id,
         )
     )

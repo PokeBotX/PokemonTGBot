@@ -17,6 +17,7 @@ from bot.navigation.context import extract_context
 from bot.navigation.router import NavigationRouter, parse_callback_data
 from bot.navigation.session import MenuSession, PendingInput, session_store
 from bot.ui.menu import build_back_button
+from bot.ui.pokemon_cards import send_captioned_image
 
 logger = structlog.get_logger()
 
@@ -337,7 +338,7 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, se
             if not result_payloads or not isinstance(result_payloads, list) or index >= len(result_payloads):
                 raise ShopError("Список результатов поиска устарел.")
             entry = PokemonSearchEntry.from_payload(result_payloads[index])
-            await _send_pokemon_search_card(context, session, entry, _display_user(update))
+            await _send_pokemon_search_card(context, session, entry)
             return
 
         summary = await db.get_profile_summary(session.user_id, username)
@@ -575,22 +576,14 @@ async def _send_pokemon_search_card(
 ) -> Message:
     # Keep profile search card local for now until profile UI is revisited.
     caption = _render_pokemon_search_card_caption(entry, user_label)
-    if FALLBACK_IMAGE_PATH.exists():
-        with FALLBACK_IMAGE_PATH.open("rb") as image_file:
-            message = await context.bot.send_photo(
-                chat_id=session.chat_id,
-                message_thread_id=session.message_thread_id,
-                photo=image_file,
-                caption=caption,
-                parse_mode="HTML",
-            )
-    else:
-        message = await context.bot.send_message(
-            chat_id=session.chat_id,
-            message_thread_id=session.message_thread_id,
-            text=caption,
-            parse_mode="HTML",
-        )
+    message = await send_captioned_image(
+        context,
+        chat_id=session.chat_id,
+        message_thread_id=session.message_thread_id,
+        caption=caption,
+        image_credit_id=entry.image_credit_id,
+        image_path=FALLBACK_IMAGE_PATH,
+    )
 
     detail_session_id = session_store.create_session(
         chat_id=session.chat_id,
@@ -891,7 +884,6 @@ async def handle_pokemon_search_command(update: Update, context: ContextTypes.DE
                 message_thread_id=getattr(update.effective_message, "message_thread_id", None),
             ),
             results[0],
-            _display_user(update),
         )
         return
 

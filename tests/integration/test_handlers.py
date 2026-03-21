@@ -536,6 +536,9 @@ async def test_search_command_single_result_sends_card(mock_update) -> None:
 
     assert db.search_pokemon_catalog.called
     assert context.bot.send_photo.called or context.bot.send_message.called
+    call_args = context.bot.send_photo.call_args if context.bot.send_photo.called else context.bot.send_message.call_args
+    rendered_text = call_args.kwargs["caption"] if context.bot.send_photo.called else call_args.kwargs["text"]
+    assert "Тренер:" not in rendered_text
 
 
 @pytest.mark.asyncio

@@ -394,6 +394,16 @@ class PokemonSearchEntry:
 
 
 @dataclass(slots=True)
+class ImageCreditRecord:
+    """Stored object metadata for one image asset."""
+
+    image_credit_id: int
+    storage_bucket: str
+    object_key: str
+    content_type: Optional[str]
+
+
+@dataclass(slots=True)
 class MarketBrowseState:
     """Current browse filters for the market buy screen."""
 
@@ -1028,6 +1038,27 @@ class Database:
             base_defense=int(row["base_defense"]),
             base_stamina=int(row["base_stamina"]),
             image_credit_id=row["image_credit_id"],
+        )
+
+    async def get_image_credit(self, image_credit_id: int) -> Optional[ImageCreditRecord]:
+        """Load one stored object reference by image credit id."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, storage_bucket, object_key, content_type
+                FROM image_credits
+                WHERE id = $1
+                """,
+                image_credit_id,
+            )
+        if not row:
+            return None
+        return ImageCreditRecord(
+            image_credit_id=int(row["id"]),
+            storage_bucket=str(row["storage_bucket"]),
+            object_key=str(row["object_key"]),
+            content_type=row["content_type"],
         )
 
     async def get_market_listings_page(
