@@ -15,8 +15,14 @@ from bot.handlers.sections.market import (
     handle_market_price_command,
     show_market_screen,
 )
-from bot.handlers.sections.profile import _display_profile_owner, handle_pokemon_search_command, show_profile_screen
+from bot.handlers.sections.profile import (
+    _display_profile_owner,
+    _display_self_profile_owner,
+    handle_pokemon_search_command,
+    show_profile_screen,
+)
 from bot.handlers.sections.shop import show_shop_screen, SHOP_VIEW_ITEMS, SHOP_VIEW_POKEMON
+from bot.handlers.sections.info import show_info_screen
 from bot.ui.menu import build_main_menu_keyboard
 from bot.ui.menu import build_back_button
 from bot.ui.messages import get_main_menu_text, get_section_placeholder
@@ -105,12 +111,20 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await show_profile_screen(update, context)
         return
 
-    reply_to = getattr(update.effective_message, "reply_to_message", None)
+    message = update.effective_message
+    reply_to = getattr(message, "reply_to_message", None)
     command_text = update.effective_message.text or ""
     argument = _extract_command_argument(command_text)
 
     try:
-        if reply_to and getattr(reply_to, "from_user", None) and not getattr(reply_to.from_user, "is_bot", False):
+        if (
+            update.effective_chat
+            and update.effective_chat.type in {"group", "supergroup"}
+            and _should_use_profile_reply_target(message)
+            and reply_to
+            and getattr(reply_to, "from_user", None)
+            and not getattr(reply_to.from_user, "is_bot", False)
+        ):
             target_user = reply_to.from_user
             await db.get_or_create_user(target_user.id, target_user.username)
             summary = await db.get_profile_summary_by_telegram_id(target_user.id)
@@ -147,7 +161,14 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return
 
-    await show_profile_screen(update, context)
+    summary = await db.get_profile_summary(update.effective_user.id, update.effective_user.username)
+    await show_profile_screen(
+        update,
+        context,
+        summary=summary,
+        user_label=_display_self_profile_owner(update, summary),
+        allow_manage=True,
+    )
 
 
 async def find_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -160,6 +181,44 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """Handle /search command for pokemon-name lookup."""
     await _sync_user_with_db(update, context)
     await handle_pokemon_search_command(update, context)
+
+
+async def changename_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /changename command for profile nickname updates."""
+    await _sync_user_with_db(update, context)
+    application = getattr(context, "application", None)
+    db = application.bot_data.get("db") if application else None
+    if not db or not update.effective_user or not update.effective_chat or not update.effective_message:
+        return
+
+    nickname = _extract_command_argument(update.effective_message.text or "")
+    if not nickname:
+        await update.effective_chat.send_message(
+            "✏️ Используйте команду так: <code>/changename Артём</code>",
+            parse_mode="HTML",
+            message_thread_id=getattr(update.effective_message, "message_thread_id", None),
+        )
+        return
+
+    try:
+        saved_nickname = await db.update_profile_nickname(
+            update.effective_user.id,
+            update.effective_user.username,
+            nickname,
+        )
+    except ShopError as exc:
+        await update.effective_chat.send_message(
+            f"⚠️ {exc}",
+            message_thread_id=getattr(update.effective_message, "message_thread_id", None),
+        )
+        return
+
+    session_store.clear_pending_input(chat_id=update.effective_chat.id, user_id=update.effective_user.id)
+    await update.effective_chat.send_message(
+        f"✅ Ник сохранён: <b>{saved_nickname}</b>",
+        parse_mode="HTML",
+        message_thread_id=getattr(update.effective_message, "message_thread_id", None),
+    )
 
 
 async def sellprice_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -184,6 +243,9 @@ async def section_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if section == "market":
         await show_market_screen(update, context)
         return
+    if section == "info":
+        await show_info_screen(update, context)
+        return
     section_name = PLACEHOLDER_COMMAND_SECTIONS.get(section)
     if not section_name:
         return
@@ -197,6 +259,25 @@ def _extract_command_argument(text: str) -> str:
     if len(parts) < 2:
         return ""
     return parts[1].strip()
+
+
+def _should_use_profile_reply_target(message) -> bool:
+    if not message:
+        return False
+    reply_to = getattr(message, "reply_to_message", None)
+    if not reply_to:
+        return False
+
+    is_topic_message = getattr(message, "is_topic_message", False) is True
+    if not is_topic_message:
+        return True
+
+    message_thread_id = getattr(message, "message_thread_id", None)
+    reply_message_id = getattr(reply_to, "message_id", None)
+    if message_thread_id is None or reply_message_id is None:
+        return True
+
+    return int(reply_message_id) != int(message_thread_id)
 
 
 async def _show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

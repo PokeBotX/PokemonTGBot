@@ -8,7 +8,7 @@ from telegram import CallbackQuery, Chat, Message, Update, User
 from telegram.ext import ContextTypes
 
 from bot.db.database import PokemonSearchEntry, ProfileCoverCandidate, ProfileRarityProgress, ProfileSummary
-from bot.handlers.commands import profile_command, search_command
+from bot.handlers.commands import changename_command, profile_command, search_command
 from bot.handlers.sections.profile import handle_profile_text_input, profile_handler
 from bot.navigation.session import MenuSession, session_store
 
@@ -87,7 +87,7 @@ async def test_profile_command_sends_profile_screen() -> None:
 
 
 @pytest.mark.asyncio
-async def test_profile_nickname_text_flow_updates_settings_message() -> None:
+async def test_profile_nickname_button_shows_command_hint() -> None:
     session = MenuSession(
         session_id="profile-session",
         chat_id=12345,
@@ -116,8 +116,20 @@ async def test_profile_nickname_text_flow_updates_settings_message() -> None:
     context.application = application
 
     await profile_handler(callback_update, context, session)
-    pending = session_store.get_pending_input(chat_id=12345, user_id=12345)
-    assert pending is not None
+    if query.edit_message_text.called:
+        edited_text = query.edit_message_text.call_args.kwargs["text"]
+    else:
+        edited_text = query.edit_message_caption.call_args.kwargs["caption"]
+    assert "/changename Артём" in edited_text
+    assert session_store.get_pending_input(chat_id=12345, user_id=12345) is None
+
+
+@pytest.mark.asyncio
+async def test_changename_command_updates_nickname() -> None:
+    user = Mock(spec=User)
+    user.id = 12345
+    user.username = "ash"
+    user.first_name = "Ash"
 
     chat = Mock(spec=Chat)
     chat.id = 12345
@@ -128,23 +140,62 @@ async def test_profile_nickname_text_flow_updates_settings_message() -> None:
     message.message_id = 778
     message.chat = chat
     message.message_thread_id = None
-    message.text = "New Ash"
+    message.text = "/changename New Ash"
 
-    text_update = Mock(spec=Update)
-    text_update.effective_chat = chat
-    text_update.effective_user = user
-    text_update.effective_message = message
+    update = Mock(spec=Update)
+    update.effective_chat = chat
+    update.effective_user = user
+    update.effective_message = message
 
-    context.bot = Mock()
-    context.bot.edit_message_caption = AsyncMock()
-    context.bot.edit_message_text = AsyncMock()
+    db = AsyncMock()
     db.update_profile_nickname = AsyncMock(return_value="New Ash")
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
 
-    await handle_profile_text_input(text_update, context)
+    await changename_command(update, context)
 
     assert db.update_profile_nickname.called
-    assert context.bot.edit_message_caption.called or context.bot.edit_message_text.called
     assert chat.send_message.called
+
+
+@pytest.mark.asyncio
+async def test_profile_settings_keyboard_hides_cover_button() -> None:
+    session = MenuSession(
+        session_id="profile-settings",
+        chat_id=12345,
+        message_id=777,
+        user_id=12345,
+        message_thread_id=None,
+    )
+    query = AsyncMock(spec=CallbackQuery)
+    query.data = "menu:prs:profile-settings"
+    query.edit_message_caption = AsyncMock()
+    query.message = Mock(spec=Message)
+    query.message.photo = [object()]
+
+    user = Mock(spec=User)
+    user.id = 12345
+    user.username = "ash"
+    user.first_name = "Ash"
+
+    update = Mock(spec=Update)
+    update.callback_query = query
+    update.effective_user = user
+
+    db = AsyncMock()
+    db.get_profile_summary = AsyncMock(return_value=_profile_summary())
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+
+    await profile_handler(update, context, session)
+
+    reply_markup = query.edit_message_caption.call_args.kwargs["reply_markup"]
+    labels = [button.text for row in reply_markup.inline_keyboard for button in row]
+    assert "🖼 Обложка" not in labels
 
 
 @pytest.mark.asyncio
@@ -298,3 +349,48 @@ async def test_search_command_single_result_sends_card_with_market_button() -> N
     assert sent_message.edit_reply_markup.called
     reply_markup = sent_message.edit_reply_markup.call_args.kwargs["reply_markup"]
     assert reply_markup.inline_keyboard[0][0].callback_data.startswith("menu:mce:")
+
+
+@pytest.mark.asyncio
+async def test_search_command_numeric_id_sends_exact_card() -> None:
+    user = Mock(spec=User)
+    user.id = 12345
+    user.first_name = "Ash"
+    user.username = "ash"
+
+    chat = Mock(spec=Chat)
+    chat.id = 12345
+    chat.type = "private"
+
+    sent_message = Mock(spec=Message)
+    sent_message.message_id = 141
+    sent_message.edit_reply_markup = AsyncMock()
+
+    message = Mock(spec=Message)
+    message.message_id = 123
+    message.chat = chat
+    message.message_thread_id = None
+    message.text = "/search 151"
+
+    update = Mock(spec=Update)
+    update.effective_chat = chat
+    update.effective_user = user
+    update.effective_message = message
+
+    db = AsyncMock()
+    db.get_pokemon_catalog_entry = AsyncMock(
+        return_value=PokemonSearchEntry(151, "Mew", "Legendary", "psychic", 100, 100, 100, 100, None)
+    )
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+    context.bot = Mock()
+    context.bot.send_photo = AsyncMock(return_value=sent_message)
+    context.bot.send_message = AsyncMock(return_value=sent_message)
+
+    await search_command(update, context)
+
+    assert db.get_pokemon_catalog_entry.called
+    assert not db.search_pokemon_catalog.called
+    assert sent_message.edit_reply_markup.called

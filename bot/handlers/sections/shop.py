@@ -238,6 +238,10 @@ async def shop_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, sessi
         logger.info("shop_edit_done", section=section, user_id=session.user_id, screen=SHOP_VIEW_MAIN)
         logger.info("shop_bonus_not_ready", user_id=session.user_id, remaining_seconds=exc.remaining_seconds)
     except InsufficientFundsError:
+        try:
+            await query.answer("💸 Недостаточно PokéDollar для этого действия.", show_alert=False)
+        except TelegramError:
+            pass
         logger.info("shop_insufficient_fetch_start", user_id=session.user_id, section=section)
         shop_view = await db.get_shop_view(session.user_id, username)
         logger.info("shop_insufficient_fetch_done", user_id=session.user_id, section=section)
@@ -252,12 +256,7 @@ async def shop_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, sessi
                 target_screen,
                 _display_user(update),
             ),
-            _build_shop_keyboard(
-                _create_session(session),
-                shop_view,
-                target_screen,
-                _display_user(update),
-            ),
+            _build_shop_keyboard(_create_session(session), shop_view, target_screen),
         )
         logger.info("shop_edit_done", section=section, user_id=session.user_id, screen=target_screen)
         logger.info("shop_insufficient_funds", section=section, user_id=session.user_id)

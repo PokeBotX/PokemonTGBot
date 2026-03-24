@@ -11,6 +11,7 @@ from bot.db.database import MARKET_MAINTENANCE_INTERVAL_SECONDS
 from bot.handlers.chat_activity import group_message_activity_handler
 from bot.handlers.commands import (
     buyprice_command,
+    changename_command,
     collection_command,
     find_command,
     items_command,
@@ -117,19 +118,11 @@ async def post_init(application: Application) -> None:
     await application.bot.set_my_commands([
         BotCommand("menu", "Открыть главное меню"),
         BotCommand("shop", "Открыть магазин"),
-        BotCommand("pokemon", "Открыть раздел покемонов"),
-        BotCommand("items", "Открыть раздел предметов"),
         BotCommand("market", "Открыть рынок"),
         BotCommand("profile", "Открыть профиль"),
-        BotCommand("games", "Открыть мини-игры"),
         BotCommand("collection", "Открыть коллекцию"),
         BotCommand("find", "Поиск покемона в чате"),
         BotCommand("search", "Поиск покемона по имени"),
-        BotCommand("sellprice", "Указать цену продажи"),
-        BotCommand("buyprice", "Указать цену заявки"),
-        BotCommand("updates", "Открыть обновления"),
-        BotCommand("chat", "Открыть чат"),
-        BotCommand("support", "Открыть поддержку"),
         BotCommand("info", "Открыть информацию"),
     ])
     logger.info("bot_ready", mode="polling")
@@ -160,6 +153,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("items", items_command))
     application.add_handler(CommandHandler("find", find_command))
     application.add_handler(CommandHandler("search", search_command))
+    application.add_handler(CommandHandler("changename", changename_command))
     application.add_handler(CommandHandler("sellprice", sellprice_command))
     application.add_handler(CommandHandler("buyprice", buyprice_command))
     application.add_handler(CommandHandler("collection", collection_command))

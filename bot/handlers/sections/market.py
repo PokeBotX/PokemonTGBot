@@ -655,7 +655,7 @@ async def _handle_market_start_sell_price(query, session: MenuSession) -> None:
                 "🏪 <b>Создание лота</b>",
                 "",
                 "Укажи цену командой:",
-                f"<code>/sellprice 2500 {int(user_pokemon_id)}</code>" if user_pokemon_id is not None else "<code>/sellprice 2500 ID</code>",
+                f"<code>/sellprice цена {int(user_pokemon_id)}</code>" if user_pokemon_id is not None else "<code>/sellprice цена ID</code>",
                 "",
                 "После этого бот покажет короткое подтверждение.",
             ]
@@ -686,7 +686,7 @@ async def _handle_market_start_buy_price(query, session: MenuSession) -> None:
                 "🏪 <b>Создание заявки</b>",
                 "",
                 "Укажи цену командой:",
-                f"<code>/buyprice 2500 {int(pokemon_id)}</code>" if pokemon_id is not None else "<code>/buyprice 2500 ID</code>",
+                f"<code>/buyprice цена {int(pokemon_id)}</code>" if pokemon_id is not None else "<code>/buyprice цена ID</code>",
                 "",
                 "После этого бот покажет короткое подтверждение.",
             ]
@@ -718,9 +718,9 @@ async def handle_market_price_command(
     parts = command_text.split(maxsplit=2)
     if len(parts) < 3 or not parts[1].strip().isdigit() or not parts[2].strip().isdigit():
         usage = (
-            "/sellprice 2500 1234"
+            "/sellprice цена 1234"
             if action == MARKET_PENDING_ACTION_SELL_PRICE
-            else "/buyprice 2500 25"
+            else "/buyprice цена 25"
         )
         await update.effective_chat.send_message(
             f"⚠️ Использование: <code>{usage}</code>",

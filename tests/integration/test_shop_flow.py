@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from telegram import CallbackQuery, Chat, Message, Update, User
 
-from bot.db.database import BonusNotReadyError, ItemPurchaseResult, PokemonReward, ShopView, SpinResult
+from bot.db.database import BonusNotReadyError, InsufficientFundsError, ItemPurchaseResult, PokemonReward, ShopView, SpinResult
 from bot.handlers.sections.shop import shop_handler
 from bot.navigation.session import MenuSession, session_store
 
@@ -139,6 +139,21 @@ async def test_shop_bonus_cooldown_shows_remaining_time() -> None:
     await shop_handler(update, context, session)
 
     assert "бонус пока недоступен" in update.callback_query.edit_message_text.call_args.kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_shop_spin_without_funds_shows_toast() -> None:
+    session = MenuSession("session-no-money", 1, 100, None, 1)
+    db = AsyncMock()
+    db.spin_gacha = AsyncMock(side_effect=InsufficientFundsError("Not enough pokedollar"))
+    db.get_shop_view = AsyncMock(return_value=_shop_view(100))
+    context = _make_context(db)
+    update = _make_update("shop_spin_1", session)
+
+    await shop_handler(update, context, session)
+
+    update.callback_query.answer.assert_awaited_with("💸 Недостаточно PokéDollar для этого действия.", show_alert=False)
+    assert "Недостаточно PokéDollar" in update.callback_query.edit_message_text.call_args.kwargs["text"]
 
 
 @pytest.mark.asyncio

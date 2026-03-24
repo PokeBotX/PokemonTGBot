@@ -14,6 +14,7 @@ from bot.utils.logging import setup_logging
 from bot.handlers.chat_activity import group_message_activity_handler
 from bot.handlers.commands import (
     buyprice_command,
+    changename_command,
     collection_command,
     find_command,
     items_command,
@@ -115,19 +116,11 @@ async def setup_bot_commands(application: Application) -> None:
     commands = [
         BotCommand("menu", "Открыть главное меню"),
         BotCommand("shop", "Открыть магазин"),
-        BotCommand("pokemon", "Открыть раздел покемонов"),
-        BotCommand("items", "Открыть раздел предметов"),
         BotCommand("market", "Открыть рынок"),
         BotCommand("profile", "Открыть профиль"),
-        BotCommand("games", "Открыть мини-игры"),
         BotCommand("collection", "Открыть коллекцию"),
         BotCommand("find", "Поиск покемона в чате"),
         BotCommand("search", "Поиск покемона по имени"),
-        BotCommand("sellprice", "Указать цену продажи"),
-        BotCommand("buyprice", "Указать цену заявки"),
-        BotCommand("updates", "Открыть обновления"),
-        BotCommand("chat", "Открыть чат"),
-        BotCommand("support", "Открыть поддержку"),
         BotCommand("info", "Открыть информацию"),
     ]
     
@@ -192,6 +185,7 @@ async def lifespan(app: FastAPI):
     bot_app.add_handler(CommandHandler("items", items_command))
     bot_app.add_handler(CommandHandler("find", find_command))
     bot_app.add_handler(CommandHandler("search", search_command))
+    bot_app.add_handler(CommandHandler("changename", changename_command))
     bot_app.add_handler(CommandHandler("sellprice", sellprice_command))
     bot_app.add_handler(CommandHandler("buyprice", buyprice_command))
     bot_app.add_handler(CommandHandler("collection", collection_command))

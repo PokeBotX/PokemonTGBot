@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, Mock
 from telegram import Update, Message, User, Chat, CallbackQuery
 from telegram.ext import ContextTypes
 
-from bot.handlers.commands import collection_command, menu_command, profile_command, search_command, section_command, shop_command, start_command
+from bot.handlers.commands import changename_command, collection_command, menu_command, profile_command, search_command, section_command, shop_command, start_command
 from bot.handlers.sections.profile import _display_profile_owner, handle_profile_text_input, profile_handler
 from bot.handlers.sections.shop import shop_handler
 from bot.handlers.sections.back import back_to_menu_handler
@@ -342,7 +342,72 @@ async def test_profile_command_sends_profile_section(mock_update):
 
 
 @pytest.mark.asyncio
-async def test_profile_nickname_prompt_and_text_input_flow() -> None:
+async def test_profile_command_in_group_without_target_uses_requester_profile() -> None:
+    user = Mock(spec=User)
+    user.id = 12345
+    user.username = "ash"
+    user.first_name = "Ash"
+
+    chat = Mock(spec=Chat)
+    chat.id = -10012345
+    chat.type = "supergroup"
+
+    sent_message = Mock(spec=Message)
+    sent_message.message_id = 1061
+    sent_message.edit_reply_markup = AsyncMock()
+    context_bot = Mock()
+    context_bot.send_photo = AsyncMock(return_value=sent_message)
+    context_bot.send_message = AsyncMock(return_value=sent_message)
+
+    message = Mock(spec=Message)
+    message.message_id = 1060
+    message.chat = chat
+    message.from_user = user
+    message.message_thread_id = None
+    message.text = "/profile"
+    message.reply_to_message = None
+
+    update = Mock(spec=Update)
+    update.effective_chat = chat
+    update.effective_user = user
+    update.effective_message = message
+    update.message = message
+
+    db = AsyncMock()
+    db.get_profile_summary = AsyncMock(
+        return_value=ProfileSummary(
+            user_id=1,
+            telegram_id=12345,
+            tg_username="ash",
+            nickname=None,
+            language="ru",
+            created_at=__import__("datetime").datetime.now(__import__("datetime").UTC),
+            total_unique_owned=1,
+            total_catalog=1025,
+            total_unique_percent=0,
+            rarity_progress=(),
+            profile_pic_credit_id=None,
+            cover_pokemon_name=None,
+        )
+    )
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+    context.bot = context_bot
+
+    await profile_command(update, context)
+
+    call_args = context_bot.send_photo.call_args if context_bot.send_photo.called else context_bot.send_message.call_args
+    rendered_text = call_args.kwargs["caption"] if context_bot.send_photo.called else call_args.kwargs["text"]
+    assert "Ash" in rendered_text
+    assert "12345" in rendered_text
+    assert not db.get_profile_summary_by_telegram_id.called
+    assert not db.get_profile_summary_by_username.called
+
+
+@pytest.mark.asyncio
+async def test_profile_nickname_button_shows_command_hint() -> None:
     session = MenuSession(
         session_id="profile-session",
         chat_id=12345,
@@ -388,37 +453,30 @@ async def test_profile_nickname_prompt_and_text_input_flow() -> None:
 
     await profile_handler(update, context, session)
 
-    pending = session_store.get_pending_input(chat_id=12345, user_id=12345)
-    assert pending is not None
-    assert pending.action == "profile_nickname"
+    if query.edit_message_text.called:
+        edited_text = query.edit_message_text.call_args.kwargs["text"]
+    else:
+        edited_text = query.edit_message_caption.call_args.kwargs["caption"]
+    assert "/changename Артём" in edited_text
+    assert session_store.get_pending_input(chat_id=12345, user_id=12345) is None
 
-    chat = Mock(spec=Chat)
-    chat.id = 12345
-    chat.type = "private"
-    chat.send_message = AsyncMock()
 
-    message = Mock(spec=Message)
-    message.message_id = 778
-    message.chat = chat
-    message.message_thread_id = None
-    message.text = "New Ash"
+@pytest.mark.asyncio
+async def test_changename_command_updates_nickname(mock_update) -> None:
+    mock_update.effective_message.text = "/changename New Ash"
+    mock_update.effective_chat.send_message = AsyncMock()
 
-    text_update = Mock(spec=Update)
-    text_update.effective_chat = chat
-    text_update.effective_user = user
-    text_update.effective_message = message
-
-    context.bot = Mock()
-    context.bot.edit_message_caption = AsyncMock()
-    context.bot.edit_message_text = AsyncMock()
+    db = AsyncMock()
     db.update_profile_nickname = AsyncMock(return_value="New Ash")
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
 
-    await handle_profile_text_input(text_update, context)
+    await changename_command(mock_update, context)
 
     assert db.update_profile_nickname.called
-    assert context.bot.edit_message_caption.called or context.bot.edit_message_text.called
-    assert chat.send_message.called
-    assert session_store.get_pending_input(chat_id=12345, user_id=12345) is None
+    assert mock_update.effective_chat.send_message.called
 
 
 @pytest.mark.asyncio
@@ -583,6 +641,7 @@ async def test_profile_command_opens_replied_user_profile_read_only(mock_update)
     context = Mock(spec=ContextTypes.DEFAULT_TYPE)
     context.application = application
     context.bot = context_bot
+    mock_update.effective_chat.type = "group"
 
     await profile_command(mock_update, context)
 
@@ -590,6 +649,158 @@ async def test_profile_command_opens_replied_user_profile_read_only(mock_update)
     rendered_text = call_args.kwargs["caption"] if context_bot.send_photo.called else call_args.kwargs["text"]
     assert "@misty" in rendered_text
     assert sent_message.edit_reply_markup.called
+
+
+@pytest.mark.asyncio
+async def test_profile_command_ignores_reply_target_in_private_chat(mock_update) -> None:
+    replied_user = Mock(spec=User)
+    replied_user.id = 777
+    replied_user.username = "misty"
+    replied_user.is_bot = False
+
+    reply_message = Mock(spec=Message)
+    reply_message.from_user = replied_user
+
+    sent_message = Mock(spec=Message)
+    sent_message.message_id = 182
+    sent_message.edit_reply_markup = AsyncMock()
+    context_bot = Mock()
+    context_bot.send_photo = AsyncMock(return_value=sent_message)
+    context_bot.send_message = AsyncMock(return_value=sent_message)
+    mock_update.effective_message.reply_to_message = reply_message
+    mock_update.effective_message.text = "/profile"
+
+    db = AsyncMock()
+    db.get_profile_summary = AsyncMock(
+        return_value=ProfileSummary(
+            user_id=1,
+            telegram_id=12345,
+            tg_username="ash",
+            nickname=None,
+            language="ru",
+            created_at=__import__("datetime").datetime.now(__import__("datetime").UTC),
+            total_unique_owned=4,
+            total_catalog=1025,
+            total_unique_percent=0,
+            rarity_progress=(),
+            profile_pic_credit_id=None,
+            cover_pokemon_name=None,
+        )
+    )
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+    context.bot = context_bot
+
+    await profile_command(mock_update, context)
+
+    assert db.get_profile_summary.called
+    assert not db.get_profile_summary_by_telegram_id.called
+
+
+@pytest.mark.asyncio
+async def test_profile_command_ignores_reply_target_for_topic_messages(mock_update) -> None:
+    replied_user = Mock(spec=User)
+    replied_user.id = 777
+    replied_user.username = "misty"
+    replied_user.is_bot = False
+
+    reply_message = Mock(spec=Message)
+    reply_message.from_user = replied_user
+
+    sent_message = Mock(spec=Message)
+    sent_message.message_id = 183
+    sent_message.edit_reply_markup = AsyncMock()
+    context_bot = Mock()
+    context_bot.send_photo = AsyncMock(return_value=sent_message)
+    context_bot.send_message = AsyncMock(return_value=sent_message)
+    mock_update.effective_message.reply_to_message = reply_message
+    mock_update.effective_message.text = "/profile"
+    mock_update.effective_message.is_topic_message = True
+    mock_update.effective_chat.type = "supergroup"
+
+    db = AsyncMock()
+    db.get_profile_summary = AsyncMock(
+        return_value=ProfileSummary(
+            user_id=1,
+            telegram_id=12345,
+            tg_username="ash",
+            nickname=None,
+            language="ru",
+            created_at=__import__("datetime").datetime.now(__import__("datetime").UTC),
+            total_unique_owned=4,
+            total_catalog=1025,
+            total_unique_percent=0,
+            rarity_progress=(),
+            profile_pic_credit_id=None,
+            cover_pokemon_name=None,
+        )
+    )
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+    context.bot = context_bot
+    mock_update.effective_message.message_thread_id = 500
+    reply_message.message_id = 500
+
+    await profile_command(mock_update, context)
+
+    assert db.get_profile_summary.called
+    assert not db.get_profile_summary_by_telegram_id.called
+
+
+@pytest.mark.asyncio
+async def test_profile_command_uses_reply_target_for_explicit_topic_reply(mock_update) -> None:
+    replied_user = Mock(spec=User)
+    replied_user.id = 777
+    replied_user.username = "misty"
+    replied_user.is_bot = False
+
+    reply_message = Mock(spec=Message)
+    reply_message.from_user = replied_user
+    reply_message.message_id = 501
+
+    sent_message = Mock(spec=Message)
+    sent_message.message_id = 184
+    sent_message.edit_reply_markup = AsyncMock()
+    context_bot = Mock()
+    context_bot.send_photo = AsyncMock(return_value=sent_message)
+    context_bot.send_message = AsyncMock(return_value=sent_message)
+    mock_update.effective_message.reply_to_message = reply_message
+    mock_update.effective_message.text = "/profile"
+    mock_update.effective_message.is_topic_message = True
+    mock_update.effective_message.message_thread_id = 500
+    mock_update.effective_chat.type = "supergroup"
+
+    db = AsyncMock()
+    db.get_or_create_user = AsyncMock(return_value=2)
+    db.get_profile_summary_by_telegram_id = AsyncMock(
+        return_value=ProfileSummary(
+            user_id=2,
+            telegram_id=777,
+            tg_username="misty",
+            nickname=None,
+            language="ru",
+            created_at=__import__("datetime").datetime.now(__import__("datetime").UTC),
+            total_unique_owned=4,
+            total_catalog=1025,
+            total_unique_percent=0,
+            rarity_progress=(),
+            profile_pic_credit_id=None,
+            cover_pokemon_name=None,
+        )
+    )
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+    context.bot = context_bot
+
+    await profile_command(mock_update, context)
+
+    assert db.get_profile_summary_by_telegram_id.called
 
 
 @pytest.mark.asyncio

@@ -6,12 +6,15 @@ from bot.db.database import ProfileRarityProgress, ProfileReferral, ProfileSumma
 from pathlib import Path
 
 from bot.handlers.sections.profile import (
+    _display_self_profile_owner,
     _find_local_pokemon_image,
     _humanize_account_age,
     _render_profile_text,
     _render_referral_text,
     _resolve_profile_image_path,
 )
+from unittest.mock import Mock
+from telegram import Update, User
 
 
 def _summary(created_at: datetime) -> ProfileSummary:
@@ -77,6 +80,30 @@ def test_display_profile_owner_prefers_nickname_then_username() -> None:
     from bot.handlers.sections.profile import _display_profile_owner
 
     assert _display_profile_owner(_summary(datetime.now(UTC))) == "Артём Марьинский"
+
+
+def test_display_self_profile_owner_prefers_current_user_first_name_when_no_nickname() -> None:
+    summary = ProfileSummary(
+        user_id=1,
+        telegram_id=1640978922,
+        tg_username="artyom",
+        nickname=None,
+        language="ru",
+        created_at=datetime.now(UTC),
+        total_unique_owned=0,
+        total_catalog=1025,
+        total_unique_percent=0,
+        rarity_progress=(),
+        profile_pic_credit_id=None,
+        cover_pokemon_name=None,
+    )
+    user = Mock(spec=User)
+    user.first_name = "Артём"
+    user.username = "artyom"
+    update = Mock(spec=Update)
+    update.effective_user = user
+
+    assert _display_self_profile_owner(update, summary) == "Артём"
 
 
 def test_find_local_pokemon_image_returns_first_known_asset() -> None:

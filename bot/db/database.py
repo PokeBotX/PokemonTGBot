@@ -672,7 +672,8 @@ class Database:
         self._ensure_pool()
         async with self.pool.acquire() as conn:
             async with conn.transaction():
-                user_id = await self._ensure_user(conn, telegram_id, username)
+                await self._ensure_user(conn, telegram_id, username)
+                user_id = await self._get_user_id_by_telegram_id(conn, telegram_id)
                 return await self._fetch_profile_summary_by_user_id(conn, user_id)
 
     async def get_profile_summary_by_telegram_id(self, telegram_id: int) -> ProfileSummary:
@@ -708,6 +709,7 @@ class Database:
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 await self._ensure_user(conn, telegram_id, username)
+                await self._get_user_id_by_telegram_id(conn, telegram_id)
 
         referral_code = f"ref_{telegram_id}"
         referral_link = referral_code
@@ -726,7 +728,8 @@ class Database:
         self._ensure_pool()
         async with self.pool.acquire() as conn:
             async with conn.transaction():
-                user_id = await self._ensure_user(conn, telegram_id, username)
+                await self._ensure_user(conn, telegram_id, username)
+                user_id = await self._get_user_id_by_telegram_id(conn, telegram_id)
                 await conn.execute(
                     """
                     UPDATE user_settings
@@ -751,7 +754,8 @@ class Database:
         self._ensure_pool()
         async with self.pool.acquire() as conn:
             async with conn.transaction():
-                user_id = await self._ensure_user(conn, telegram_id, username)
+                await self._ensure_user(conn, telegram_id, username)
+                user_id = await self._get_user_id_by_telegram_id(conn, telegram_id)
                 await conn.execute(
                     """
                     UPDATE users
@@ -866,7 +870,8 @@ class Database:
         self._ensure_pool()
         async with self.pool.acquire() as conn:
             async with conn.transaction():
-                user_id = await self._ensure_user(conn, telegram_id, username)
+                await self._ensure_user(conn, telegram_id, username)
+                user_id = await self._get_user_id_by_telegram_id(conn, telegram_id)
                 rows = await conn.fetch(
                     """
                     SELECT
@@ -923,7 +928,8 @@ class Database:
         self._ensure_pool()
         async with self.pool.acquire() as conn:
             async with conn.transaction():
-                user_id = await self._ensure_user(conn, telegram_id, username)
+                await self._ensure_user(conn, telegram_id, username)
+                user_id = await self._get_user_id_by_telegram_id(conn, telegram_id)
                 exists = await conn.fetchval(
                     """
                     SELECT 1
@@ -2666,6 +2672,21 @@ class Database:
         if not row:
             raise ShopError("Unable to ensure user record")
         return int(row["id"])
+
+    async def _get_user_id_by_telegram_id(self, conn: asyncpg.Connection, telegram_id: int) -> int:
+        user_id = await conn.fetchval(
+            """
+            SELECT id
+            FROM users
+            WHERE tg_user_id = $1
+            ORDER BY id ASC
+            LIMIT 1
+            """,
+            telegram_id,
+        )
+        if user_id is None:
+            raise ShopError("Профиль пользователя не найден.")
+        return int(user_id)
 
     async def _ensure_shop_state(self, conn: asyncpg.Connection, user_id: int) -> None:
         await conn.execute(

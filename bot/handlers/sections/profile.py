@@ -51,7 +51,6 @@ PROFILE_ROUTE_SECTIONS = [
     "prv",
 ]
 
-PROFILE_PENDING_ACTION_NICKNAME = "profile_nickname"
 PROFILE_PENDING_ACTION_COVER = "profile_cover"
 PROFILE_SEARCH_RESULT_LIMIT = 5
 FALLBACK_IMAGE_PATH = Path("image.png")
@@ -95,8 +94,15 @@ async def show_profile_screen(
     if summary is None:
         summary = await db.get_profile_summary(msg_context.user_id, update.effective_user.username if update.effective_user else None)
     if user_label is None:
-        user_label = _display_user(update)
-    logger.info("profile_render_start", user_id=msg_context.user_id, chat_id=msg_context.chat_id, source="command")
+        user_label = _display_self_profile_owner(update, summary) if summary.telegram_id == msg_context.user_id else _display_profile_owner(summary)
+    logger.info(
+        "profile_render_start",
+        user_id=msg_context.user_id,
+        chat_id=msg_context.chat_id,
+        source="command",
+        target_telegram_id=summary.telegram_id,
+        target_label=user_label,
+    )
     sent_message = await _send_profile_message(
         update,
         context,
@@ -119,7 +125,7 @@ async def show_profile_screen(
 
 
 async def handle_profile_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle pending profile text input such as nickname changes."""
+    """Handle pending profile text input such as cover search."""
     if not update.effective_chat or not update.effective_user or not update.effective_message:
         return
 
@@ -135,9 +141,6 @@ async def handle_profile_text_input(update: Update, context: ContextTypes.DEFAUL
         session_store.clear_pending_input(chat_id=update.effective_chat.id, user_id=update.effective_user.id)
         return
 
-    if pending.action == PROFILE_PENDING_ACTION_NICKNAME:
-        await _handle_profile_nickname_input(update, context, db, pending)
-        return
     if pending.action == PROFILE_PENDING_ACTION_COVER:
         await _handle_profile_cover_search_input(update, context, db, pending)
         return
@@ -162,11 +165,11 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, se
             return
 
         username = update.effective_user.username if update.effective_user else None
-        user_label = _display_user(update)
 
         if section == "profile":
             session_store.clear_pending_input(chat_id=session.chat_id, user_id=session.user_id)
             summary = await db.get_profile_summary(session.user_id, username)
+            user_label = _display_self_profile_owner(update, summary)
             logger.info("profile_render_start", section=section, user_id=session.user_id, chat_id=session.chat_id, source="callback")
             if _message_supports_caption(getattr(query, "message", None)):
                 await _edit_profile_message(
@@ -182,6 +185,7 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, se
         if section == "prs":
             session_store.clear_pending_input(chat_id=session.chat_id, user_id=session.user_id)
             summary = await db.get_profile_summary(session.user_id, username)
+            user_label = _display_self_profile_owner(update, summary)
             await _edit_profile_message(
                 query,
                 session,
@@ -193,6 +197,7 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, se
         if section == "prl":
             session_store.clear_pending_input(chat_id=session.chat_id, user_id=session.user_id)
             summary = await db.get_profile_summary(session.user_id, username)
+            user_label = _display_self_profile_owner(update, summary)
             await _edit_profile_message(
                 query,
                 session,
@@ -206,6 +211,7 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, se
             language = "ru" if section == "prlr" else "en"
             saved_language = await db.update_profile_language(session.user_id, username, language)
             summary = await db.get_profile_summary(session.user_id, username)
+            user_label = _display_self_profile_owner(update, summary)
             await _edit_profile_message(
                 query,
                 session,
@@ -221,6 +227,8 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, se
         if section == "prr":
             session_store.clear_pending_input(chat_id=session.chat_id, user_id=session.user_id)
             referral = await db.get_profile_referral(session.user_id, username, _extract_bot_username(update))
+            summary = await db.get_profile_summary(session.user_id, username)
+            user_label = _display_self_profile_owner(update, summary)
             await _edit_profile_message(
                 query,
                 session,
@@ -251,13 +259,7 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, se
 
         if section == "prn":
             summary = await db.get_profile_summary(session.user_id, username)
-            session_store.set_pending_input(
-                action=PROFILE_PENDING_ACTION_NICKNAME,
-                chat_id=session.chat_id,
-                user_id=session.user_id,
-                source_message_id=session.message_id,
-                source_message_thread_id=session.message_thread_id,
-            )
+            user_label = _display_self_profile_owner(update, summary)
             await _edit_profile_message(
                 query,
                 session,
@@ -266,8 +268,9 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, se
                     user_label,
                     status_text=(
                         "✏️ <b>Смена ника</b>\n\n"
-                        "Отправьте следующим сообщением новый ник.\n"
-                        "Я сохраню его и обновлю экран настроек."
+                        "Используйте команду:\n"
+                        "<code>/changename Артём</code>\n\n"
+                        "Подставьте туда ваш новый ник."
                     ),
                 ),
                 _build_nickname_prompt_keyboard(_create_session(session)),
@@ -276,6 +279,7 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, se
 
         if section == "prc":
             summary = await db.get_profile_summary(session.user_id, username)
+            user_label = _display_self_profile_owner(update, summary)
             session_store.set_pending_input(
                 action=PROFILE_PENDING_ACTION_COVER,
                 chat_id=session.chat_id,
@@ -320,6 +324,7 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, se
                 image_credit_id=candidate.image_credit_id,
             )
             summary = await db.get_profile_summary(session.user_id, username)
+            user_label = _display_self_profile_owner(update, summary)
             await _edit_profile_message(
                 query,
                 session,
@@ -342,6 +347,7 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, se
             return
 
         summary = await db.get_profile_summary(session.user_id, username)
+        user_label = _display_self_profile_owner(update, summary)
         await _edit_profile_message(
             query,
             session,
@@ -485,7 +491,6 @@ def _build_settings_keyboard(session_id: str) -> InlineKeyboardMarkup:
         [
             [
                 InlineKeyboardButton("🌐 Язык", callback_data=f"menu:prl:{session_id}"),
-                InlineKeyboardButton("🖼 Обложка", callback_data=f"menu:prc:{session_id}"),
             ],
             [
                 InlineKeyboardButton("✏️ Смена ника", callback_data=f"menu:prn:{session_id}"),
@@ -859,11 +864,28 @@ async def handle_pokemon_search_command(update: Update, context: ContextTypes.DE
     query_text = _extract_command_argument(update.effective_message.text or "")
     if not query_text:
         await update.effective_chat.send_message(
-            "🔎 Использование: <code>/search имя_покемона</code>",
+            "🔎 Использование: <code>/search имя_покемона</code> или <code>/search id</code>",
             parse_mode="HTML",
             message_thread_id=getattr(update.effective_message, "message_thread_id", None),
         )
         return
+
+    numeric_query = query_text.strip()
+    if numeric_query.isdigit():
+        entry = await db.get_pokemon_catalog_entry(int(numeric_query))
+        if entry is not None:
+            await _send_pokemon_search_card(
+                context,
+                MenuSession(
+                    session_id="search",
+                    chat_id=update.effective_chat.id,
+                    message_id=update.effective_message.message_id,
+                    user_id=update.effective_user.id,
+                    message_thread_id=getattr(update.effective_message, "message_thread_id", None),
+                ),
+                entry,
+            )
+            return
 
     results = await db.search_pokemon_catalog(query_text, limit=PROFILE_SEARCH_RESULT_LIMIT)
     if not results:
@@ -920,6 +942,20 @@ def _display_user(update: Update) -> str:
     if not user:
         return "тренер"
     return user.first_name or user.username or "тренер"
+
+
+def _display_self_profile_owner(update: Update, summary: ProfileSummary) -> str:
+    if summary.nickname:
+        return summary.nickname
+    user = update.effective_user
+    if user:
+        if user.first_name:
+            return user.first_name
+        if user.username:
+            return f"@{user.username}"
+    if summary.tg_username:
+        return f"@{summary.tg_username}"
+    return f"id {summary.telegram_id}"
 
 
 def _display_profile_owner(summary: ProfileSummary) -> str:
