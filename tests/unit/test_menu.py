@@ -13,12 +13,9 @@ def test_build_main_menu_keyboard_structure():
     # Check it's an InlineKeyboardMarkup
     assert isinstance(keyboard, InlineKeyboardMarkup)
     
-    # Check it has 3 rows
-    assert len(keyboard.inline_keyboard) == 3
-    
-    # Check each row has 3 buttons
-    for row in keyboard.inline_keyboard:
-        assert len(row) == 3
+    assert len(keyboard.inline_keyboard) == 2
+    assert len(keyboard.inline_keyboard[0]) == 3
+    assert len(keyboard.inline_keyboard[1]) == 3
 
 
 def test_build_main_menu_keyboard_button_count():
@@ -28,7 +25,7 @@ def test_build_main_menu_keyboard_button_count():
     
     # Count all buttons
     button_count = sum(len(row) for row in keyboard.inline_keyboard)
-    assert button_count == 9
+    assert button_count == 6
 
 
 def test_build_main_menu_keyboard_callback_data():
@@ -38,8 +35,7 @@ def test_build_main_menu_keyboard_callback_data():
     
     expected_sections = [
         "shop", "market", "profile",
-        "games", "collection", "updates",
-        "chat", "support", "info"
+        "collection", "chat", "info"
     ]
     
     # Collect all buttons
@@ -50,7 +46,10 @@ def test_build_main_menu_keyboard_callback_data():
     # Check each button
     for i, button in enumerate(all_buttons):
         assert isinstance(button, InlineKeyboardButton)
-        assert button.callback_data == f"menu:{expected_sections[i]}:{session_id}"
+        if button.url:
+            assert expected_sections[i] == "chat"
+        else:
+            assert button.callback_data == f"menu:{expected_sections[i]}:{session_id}"
 
 
 def test_build_main_menu_keyboard_button_text():
@@ -60,8 +59,7 @@ def test_build_main_menu_keyboard_button_text():
     
     expected_texts = [
         "🛒 Магазин", "📈 Рынок", "👤 Профиль",
-        "🎮 Мини-игры", "📦 Моя коллекция", "📢 Обновления",
-        "💬 Чат", "🆘 Поддержка", "ℹ️ Информация"
+        "📦 Моя коллекция", "💬 Чат", "ℹ️ Информация"
     ]
     
     # Collect all buttons

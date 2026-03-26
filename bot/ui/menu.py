@@ -6,10 +6,9 @@ def build_main_menu_keyboard(session_id: str) -> InlineKeyboardMarkup:
     """
     Build main menu inline keyboard.
     
-    Layout (3 rows × 3 columns):
+    Layout:
     Row 1: Магазин | Рынок | Профиль
-    Row 2: Мини-игры | Моя коллекция | Обновления
-    Row 3: Чат | Поддержка | Информация
+    Row 2: Моя коллекция | Чат | Информация
     
     Args:
         session_id: Unique session identifier for this menu
@@ -24,13 +23,8 @@ def build_main_menu_keyboard(session_id: str) -> InlineKeyboardMarkup:
             InlineKeyboardButton("👤 Профиль", callback_data=f"menu:profile:{session_id}"),
         ],
         [
-            InlineKeyboardButton("🎮 Мини-игры", callback_data=f"menu:games:{session_id}"),
             InlineKeyboardButton("📦 Моя коллекция", callback_data=f"menu:collection:{session_id}"),
-            InlineKeyboardButton("📢 Обновления", callback_data=f"menu:updates:{session_id}"),
-        ],
-        [
             InlineKeyboardButton("💬 Чат", url="https://t.me/+TQ8-KkXpZa02MDY6"),
-            InlineKeyboardButton("🆘 Поддержка", callback_data=f"menu:support:{session_id}"),
             InlineKeyboardButton("ℹ️ Информация", callback_data=f"menu:info:{session_id}"),
         ],
     ]

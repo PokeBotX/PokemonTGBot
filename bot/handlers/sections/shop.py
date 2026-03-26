@@ -391,7 +391,6 @@ def _build_shop_keyboard(session_id: str, shop_view: ShopView, screen: str) -> I
         keyboard.append([InlineKeyboardButton("🎮 Покемоны", callback_data=f"menu:shop_pokemon:{session_id}")])
         keyboard.append([InlineKeyboardButton("🎁 Бонус", callback_data=f"menu:shop_bonus:{session_id}")])
         keyboard.append([InlineKeyboardButton("🎒 Предметы", callback_data=f"menu:shop_items:{session_id}")])
-        keyboard.append([InlineKeyboardButton("⭐ VIP", callback_data=f"menu:shop_vip:{session_id}")])
         keyboard.extend(build_back_button(session_id).inline_keyboard)
         return InlineKeyboardMarkup(keyboard)
 

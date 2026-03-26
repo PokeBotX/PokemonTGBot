@@ -477,10 +477,6 @@ def _build_profile_keyboard(session_id: str) -> InlineKeyboardMarkup:
                 InlineKeyboardButton("⚙️ Настройки", callback_data=f"menu:prs:{session_id}"),
                 InlineKeyboardButton("🔗 Рефка", callback_data=f"menu:prr:{session_id}"),
             ],
-            [
-                InlineKeyboardButton("🛡 Боевая команда", callback_data=f"menu:prt:{session_id}"),
-                InlineKeyboardButton("⭐ VIP", callback_data=f"menu:prv:{session_id}"),
-            ],
             build_back_button(session_id).inline_keyboard[0],
         ]
     )

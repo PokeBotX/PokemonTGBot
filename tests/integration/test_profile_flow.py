@@ -87,6 +87,45 @@ async def test_profile_command_sends_profile_screen() -> None:
 
 
 @pytest.mark.asyncio
+async def test_profile_root_hides_placeholder_buttons() -> None:
+    session = MenuSession(
+        session_id="profile-root",
+        chat_id=12345,
+        message_id=700,
+        user_id=12345,
+        message_thread_id=None,
+    )
+    query = AsyncMock(spec=CallbackQuery)
+    query.data = "menu:profile:profile-root"
+    query.edit_message_caption = AsyncMock()
+    query.message = Mock(spec=Message)
+    query.message.photo = [object()]
+
+    user = Mock(spec=User)
+    user.id = 12345
+    user.username = "ash"
+    user.first_name = "Ash"
+
+    update = Mock(spec=Update)
+    update.callback_query = query
+    update.effective_user = user
+
+    db = AsyncMock()
+    db.get_profile_summary = AsyncMock(return_value=_profile_summary())
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+
+    await profile_handler(update, context, session)
+
+    reply_markup = query.edit_message_caption.call_args.kwargs["reply_markup"]
+    labels = [button.text for row in reply_markup.inline_keyboard for button in row]
+    assert "🛡 Боевая команда" not in labels
+    assert "⭐ VIP" not in labels
+
+
+@pytest.mark.asyncio
 async def test_profile_nickname_button_shows_command_hint() -> None:
     session = MenuSession(
         session_id="profile-session",

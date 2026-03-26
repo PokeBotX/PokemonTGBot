@@ -46,20 +46,29 @@ async def _sync_user_with_db(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     db = application.bot_data.get("db")
     if not db or not update.effective_user:
-        return
+        return False
 
     try:
-        db_user_id = await db.get_or_create_user(
-            telegram_id=update.effective_user.id,
-            username=update.effective_user.username,
-        )
+        if hasattr(db, "get_or_create_user_status"):
+            db_user_id, is_new_user = await db.get_or_create_user_status(
+                telegram_id=update.effective_user.id,
+                username=update.effective_user.username,
+            )
+        else:
+            db_user_id = await db.get_or_create_user(
+                telegram_id=update.effective_user.id,
+                username=update.effective_user.username,
+            )
+            is_new_user = False
         logger.info("db_user_synced", telegram_id=update.effective_user.id, db_user_id=db_user_id)
+        return is_new_user
     except Exception as e:
         logger.warning(
             "db_user_sync_failed",
             telegram_id=update.effective_user.id if update.effective_user else None,
             error=str(e),
         )
+        return False
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -67,7 +76,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     Handle /start command.
     Shows main menu to user.
     """
-    await _show_main_menu(update, context)
+    is_new_user = await _sync_user_with_db(update, context)
+    if is_new_user:
+        await show_info_screen(update, context)
+        return
+    await _show_main_menu(update, context, skip_sync=True)
 
 
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -280,7 +293,7 @@ def _should_use_profile_reply_target(message) -> bool:
     return int(reply_message_id) != int(message_thread_id)
 
 
-async def _show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def _show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, *, skip_sync: bool = False) -> None:
     """
     Internal: Send main menu message with inline keyboard.
     
@@ -290,7 +303,8 @@ async def _show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     - Forum topics (threads)
     """
     try:
-        await _sync_user_with_db(update, context)
+        if not skip_sync:
+            await _sync_user_with_db(update, context)
         msg_context = extract_context(update)
         
         logger.info(

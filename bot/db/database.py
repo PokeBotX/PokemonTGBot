@@ -645,6 +645,15 @@ class Database:
                 user_id = await self._ensure_user(conn, telegram_id, username)
         return user_id
 
+    async def get_or_create_user_status(self, telegram_id: int, username: Optional[str]) -> tuple[int, bool]:
+        """Create/update user by telegram_id and return internal id plus whether it was a new user."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                existed = bool(await conn.fetchval("SELECT 1 FROM users WHERE tg_user_id = $1", telegram_id))
+                user_id = await self._ensure_user(conn, telegram_id, username)
+        return user_id, (not existed)
+
     async def get_shop_view(self, telegram_id: int, username: Optional[str]) -> ShopView:
         """Load shop data for the current user."""
         self._ensure_pool()
@@ -2691,11 +2700,12 @@ class Database:
     async def _ensure_shop_state(self, conn: asyncpg.Connection, user_id: int) -> None:
         await conn.execute(
             """
-            INSERT INTO user_shop_state (user_id)
-            VALUES ($1)
+            INSERT INTO user_shop_state (user_id, bonus_last_claim_at)
+            VALUES ($1, NOW() - make_interval(secs => $2))
             ON CONFLICT (user_id) DO NOTHING
             """,
             user_id,
+            SHOP_BONUS_CLAIM_INTERVAL_SECONDS,
         )
 
     async def _ensure_user_balance(

@@ -92,6 +92,27 @@ async def test_start_command_sends_menu(mock_update):
 
 
 @pytest.mark.asyncio
+async def test_start_command_new_user_shows_info(mock_update):
+    sent_message = Mock(spec=Message)
+    sent_message.message_id = 1011
+    sent_message.edit_reply_markup = AsyncMock()
+    mock_update.effective_chat.send_message = AsyncMock(return_value=sent_message)
+
+    db = AsyncMock()
+    db.get_or_create_user_status = AsyncMock(return_value=(1, True))
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+
+    await start_command(mock_update, context)
+
+    call_args = mock_update.effective_chat.send_message.call_args
+    assert "общий гайд по боту" in call_args.kwargs["text"]
+    assert sent_message.edit_reply_markup.called
+
+
+@pytest.mark.asyncio
 async def test_menu_command_sends_menu(mock_update):
     """Test /menu command sends main menu."""
     sent_message = Mock(spec=Message)

@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS "user_items" (
 
 CREATE TABLE IF NOT EXISTS "user_shop_state" (
   "user_id" bigint PRIMARY KEY,
-  "bonus_last_claim_at" timestamptz NOT NULL DEFAULT NOW(),
+  "bonus_last_claim_at" timestamptz NOT NULL DEFAULT (NOW() - INTERVAL '1 hour'),
   "epic_pity_counter" int NOT NULL DEFAULT 0,
   "legendary_pity_counter" int NOT NULL DEFAULT 0,
   "updated_at" timestamptz NOT NULL DEFAULT NOW()

@@ -64,7 +64,7 @@ def test_main_shop_keyboard_shows_category_buttons() -> None:
     assert "🎮 Покемоны" in button_texts
     assert "🎁 Бонус" in button_texts
     assert "🎒 Предметы" in button_texts
-    assert "⭐ VIP" in button_texts
+    assert "⭐ VIP" not in button_texts
 
 
 def test_pokemon_shop_keyboard_hides_only_x5_when_balance_is_low() -> None:
