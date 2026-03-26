@@ -654,6 +654,24 @@ class Database:
                 user_id = await self._ensure_user(conn, telegram_id, username)
         return user_id, (not existed)
 
+    async def consume_start_guide_flag(self, telegram_id: int, username: Optional[str]) -> bool:
+        """Return True once per user when the start guide should be shown."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                user_id = await self._ensure_user(conn, telegram_id, username)
+                already_seen = await conn.fetchval(
+                    "SELECT start_guide_seen_at IS NOT NULL FROM users WHERE id = $1",
+                    user_id,
+                )
+                if already_seen:
+                    return False
+                await conn.execute(
+                    "UPDATE users SET start_guide_seen_at = NOW() WHERE id = $1",
+                    user_id,
+                )
+                return True
+
     async def get_shop_view(self, telegram_id: int, username: Optional[str]) -> ShopView:
         """Load shop data for the current user."""
         self._ensure_pool()
@@ -2660,8 +2678,8 @@ class Database:
                 ON CONFLICT (user_id) DO NOTHING
             ),
             ensured_shop_state AS (
-                INSERT INTO user_shop_state (user_id)
-                SELECT id FROM upserted_user
+                INSERT INTO user_shop_state (user_id, bonus_last_claim_at)
+                SELECT id, NOW() - make_interval(secs => $5) FROM upserted_user
                 ON CONFLICT (user_id) DO NOTHING
             ),
             ensured_balance AS (
@@ -2677,6 +2695,7 @@ class Database:
             username,
             POKEDOLLAR_CODE,
             WELCOME_POKEDOLLAR_AMOUNT,
+            SHOP_BONUS_CAP_SECONDS,
         )
         if not row:
             raise ShopError("Unable to ensure user record")
@@ -2705,7 +2724,7 @@ class Database:
             ON CONFLICT (user_id) DO NOTHING
             """,
             user_id,
-            SHOP_BONUS_CLAIM_INTERVAL_SECONDS,
+            SHOP_BONUS_CAP_SECONDS,
         )
 
     async def _ensure_user_balance(

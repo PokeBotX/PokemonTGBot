@@ -100,6 +100,7 @@ async def test_start_command_new_user_shows_info(mock_update):
 
     db = AsyncMock()
     db.get_or_create_user_status = AsyncMock(return_value=(1, True))
+    db.consume_start_guide_flag = AsyncMock(return_value=True)
     application = Mock()
     application.bot_data = {"db": db}
     context = Mock(spec=ContextTypes.DEFAULT_TYPE)
@@ -110,6 +111,48 @@ async def test_start_command_new_user_shows_info(mock_update):
     call_args = mock_update.effective_chat.send_message.call_args
     assert "общий гайд по боту" in call_args.kwargs["text"]
     assert sent_message.edit_reply_markup.called
+
+
+@pytest.mark.asyncio
+async def test_start_command_existing_user_sends_menu_when_guide_already_seen(mock_update):
+    sent_message = Mock(spec=Message)
+    sent_message.message_id = 1012
+    sent_message.edit_reply_markup = AsyncMock()
+    mock_update.effective_chat.send_message = AsyncMock(return_value=sent_message)
+
+    db = AsyncMock()
+    db.get_or_create_user_status = AsyncMock(return_value=(1, False))
+    db.consume_start_guide_flag = AsyncMock(return_value=False)
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+
+    await start_command(mock_update, context)
+
+    call_args = mock_update.effective_chat.send_message.call_args
+    assert "Добро пожаловать" in call_args.kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_shop_command_first_entry_shows_info_instead_of_shop(mock_update):
+    sent_message = Mock(spec=Message)
+    sent_message.message_id = 1013
+    sent_message.edit_reply_markup = AsyncMock()
+    mock_update.effective_chat.send_message = AsyncMock(return_value=sent_message)
+
+    db = AsyncMock()
+    db.get_or_create_user_status = AsyncMock(return_value=(1, True))
+    db.consume_start_guide_flag = AsyncMock(return_value=True)
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+
+    await shop_command(mock_update, context)
+
+    call_args = mock_update.effective_chat.send_message.call_args
+    assert "общий гайд по боту" in call_args.kwargs["text"]
 
 
 @pytest.mark.asyncio

@@ -4,11 +4,13 @@ CREATE TABLE IF NOT EXISTS "users" (
   "tg_username" varchar(64),
   "nickname" varchar(64),
   "vip_level" int NOT NULL DEFAULT 0,
-  "created_at" timestamp NOT NULL DEFAULT (now())
+  "created_at" timestamp NOT NULL DEFAULT (now()),
+  "start_guide_seen_at" timestamptz
 );
 
 ALTER TABLE "users"
-  ADD COLUMN IF NOT EXISTS "tg_username" varchar(64);
+  ADD COLUMN IF NOT EXISTS "tg_username" varchar(64),
+  ADD COLUMN IF NOT EXISTS "start_guide_seen_at" timestamptz;
 
 CREATE TABLE IF NOT EXISTS "user_settings" (
   "user_id" bigint PRIMARY KEY,
@@ -47,7 +49,7 @@ CREATE TABLE IF NOT EXISTS "user_items" (
 
 CREATE TABLE IF NOT EXISTS "user_shop_state" (
   "user_id" bigint PRIMARY KEY,
-  "bonus_last_claim_at" timestamptz NOT NULL DEFAULT (NOW() - INTERVAL '1 hour'),
+  "bonus_last_claim_at" timestamptz NOT NULL DEFAULT (NOW() - INTERVAL '6 hours'),
   "epic_pity_counter" int NOT NULL DEFAULT 0,
   "legendary_pity_counter" int NOT NULL DEFAULT 0,
   "updated_at" timestamptz NOT NULL DEFAULT NOW()

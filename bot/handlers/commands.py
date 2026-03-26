@@ -39,7 +39,12 @@ PLACEHOLDER_COMMAND_SECTIONS = {
 }
 
 
-async def _sync_user_with_db(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+def _supports_db_method(db: object, method_name: str) -> bool:
+    """Return True when the db object actually implements or explicitly mocks a method."""
+    return method_name in getattr(db, "__dict__", {}) or hasattr(type(db), method_name)
+
+
+async def _sync_user_with_db(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """Create or update user in DB if DB integration is enabled."""
     application = getattr(context, "application", None)
     if not application:
@@ -49,7 +54,7 @@ async def _sync_user_with_db(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return False
 
     try:
-        if hasattr(db, "get_or_create_user_status"):
+        if _supports_db_method(db, "get_or_create_user_status"):
             db_user_id, is_new_user = await db.get_or_create_user_status(
                 telegram_id=update.effective_user.id,
                 username=update.effective_user.username,
@@ -76,9 +81,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     Handle /start command.
     Shows main menu to user.
     """
-    is_new_user = await _sync_user_with_db(update, context)
-    if is_new_user:
-        await show_info_screen(update, context)
+    await _sync_user_with_db(update, context)
+    if await _maybe_show_first_entry_guide(update, context):
         return
     await _show_main_menu(update, context, skip_sync=True)
 
@@ -88,36 +92,49 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     Handle /menu command.
     Shows main menu to user.
     """
+    await _sync_user_with_db(update, context)
+    if await _maybe_show_first_entry_guide(update, context):
+        return
     await _show_main_menu(update, context)
 
 
 async def shop_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /shop command."""
     await _sync_user_with_db(update, context)
+    if await _maybe_show_first_entry_guide(update, context):
+        return
     await show_shop_screen(update, context)
 
 
 async def pokemon_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /pokemon command."""
     await _sync_user_with_db(update, context)
+    if await _maybe_show_first_entry_guide(update, context):
+        return
     await show_shop_screen(update, context, screen=SHOP_VIEW_POKEMON)
 
 
 async def items_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /items command."""
     await _sync_user_with_db(update, context)
+    if await _maybe_show_first_entry_guide(update, context):
+        return
     await show_shop_screen(update, context, screen=SHOP_VIEW_ITEMS)
 
 
 async def collection_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /collection command."""
     await _sync_user_with_db(update, context)
+    if await _maybe_show_first_entry_guide(update, context):
+        return
     await show_collection_screen(update, context)
 
 
 async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /profile command."""
     await _sync_user_with_db(update, context)
+    if await _maybe_show_first_entry_guide(update, context):
+        return
     application = getattr(context, "application", None)
     db = application.bot_data.get("db") if application else None
     if not db or not update.effective_user:
@@ -187,18 +204,24 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def find_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /find command for group encounter spawning."""
     await _sync_user_with_db(update, context)
+    if await _maybe_show_first_entry_guide(update, context):
+        return
     await maybe_spawn_encounter_from_find(update, context)
 
 
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /search command for pokemon-name lookup."""
     await _sync_user_with_db(update, context)
+    if await _maybe_show_first_entry_guide(update, context):
+        return
     await handle_pokemon_search_command(update, context)
 
 
 async def changename_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /changename command for profile nickname updates."""
     await _sync_user_with_db(update, context)
+    if await _maybe_show_first_entry_guide(update, context):
+        return
     application = getattr(context, "application", None)
     db = application.bot_data.get("db") if application else None
     if not db or not update.effective_user or not update.effective_chat or not update.effective_message:
@@ -237,18 +260,24 @@ async def changename_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def sellprice_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /sellprice command for market sale input."""
     await _sync_user_with_db(update, context)
+    if await _maybe_show_first_entry_guide(update, context):
+        return
     await handle_market_price_command(update, context, action=MARKET_PENDING_ACTION_SELL_PRICE)
 
 
 async def buyprice_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /buyprice command for market buy-request input."""
     await _sync_user_with_db(update, context)
+    if await _maybe_show_first_entry_guide(update, context):
+        return
     await handle_market_price_command(update, context, action=MARKET_PENDING_ACTION_BUY_PRICE)
 
 
 async def section_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle direct placeholder section commands like /market and /profile."""
     await _sync_user_with_db(update, context)
+    if await _maybe_show_first_entry_guide(update, context):
+        return
     if not update.message or not update.message.text:
         return
 
@@ -263,6 +292,30 @@ async def section_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not section_name:
         return
     await _show_placeholder_section(update, section_name)
+
+
+async def _maybe_show_first_entry_guide(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Show the info guide once on the first meaningful entry into the bot."""
+    application = getattr(context, "application", None)
+    db = application.bot_data.get("db") if application else None
+    if not db or not update.effective_user or not _supports_db_method(db, "consume_start_guide_flag"):
+        return False
+    try:
+        should_show_guide = await db.consume_start_guide_flag(
+            telegram_id=update.effective_user.id,
+            username=update.effective_user.username,
+        )
+    except Exception as exc:
+        logger.warning(
+            "start_guide_flag_failed",
+            telegram_id=update.effective_user.id,
+            error=str(exc),
+        )
+        return False
+    if not should_show_guide:
+        return False
+    await show_info_screen(update, context)
+    return True
 
 
 def _extract_command_argument(text: str) -> str:
