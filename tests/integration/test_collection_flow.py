@@ -262,6 +262,99 @@ async def test_collection_detail_button_sends_separate_card_message() -> None:
 
 
 @pytest.mark.asyncio
+async def test_collection_detail_with_duplicates_opens_instance_picker_first() -> None:
+    session = MenuSession(
+        session_id="collection-instance-session",
+        chat_id=12345,
+        message_id=100,
+        user_id=12345,
+        message_thread_id=None,
+        data={
+            "collection_filters": CollectionFilterState().to_session_payload(),
+            "collection_screen": COLLECTION_VIEW_MAIN,
+            "collection_entries": [_entry(25, "Pikachu", "Rare", "electric", 3).as_session_payload()],
+        },
+    )
+
+    query = AsyncMock(spec=CallbackQuery)
+    query.data = f"menu:cd1:{session.session_id}"
+
+    user = Mock(spec=User)
+    user.id = 12345
+    user.username = "ash"
+
+    chat = Mock(spec=Chat)
+    chat.id = 12345
+    chat.type = "private"
+
+    message = Mock(spec=Message)
+    message.message_id = 100
+    message.chat = chat
+    message.message_thread_id = None
+
+    update = Mock(spec=Update)
+    update.callback_query = query
+    update.effective_user = user
+    update.effective_chat = chat
+    update.effective_message = message
+
+    picker_message = Mock(spec=Message)
+    picker_message.message_id = 202
+    picker_message.edit_reply_markup = AsyncMock()
+
+    bot = Mock()
+    bot.send_message = AsyncMock(return_value=picker_message)
+    bot.send_photo = AsyncMock()
+
+    db = AsyncMock()
+    db.get_user_pokemon_instances_for_species = AsyncMock(
+        return_value=[
+            _entry(25, "Pikachu", "Rare", "electric", 1),
+            CollectionEntry(
+                pokemon_id=25,
+                sample_user_pokemon_id=251,
+                name="Pikachu",
+                rarity="Rare",
+                pokemon_type="electric",
+                quantity=1,
+                base_hp=10,
+                base_attack=20,
+                base_defense=30,
+                base_stamina=40,
+                image_credit_id=None,
+            ),
+            CollectionEntry(
+                pokemon_id=25,
+                sample_user_pokemon_id=252,
+                name="Pikachu",
+                rarity="Rare",
+                pokemon_type="electric",
+                quantity=1,
+                base_hp=10,
+                base_attack=20,
+                base_defense=30,
+                base_stamina=40,
+                image_credit_id=None,
+            ),
+        ]
+    )
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+    context.bot = bot
+
+    await collection_handler(update, context, session)
+
+    assert db.get_user_pokemon_instances_for_species.called
+    assert bot.send_message.called
+    assert bot.send_photo.call_count == 0
+    picker_text = bot.send_message.call_args.kwargs["text"]
+    assert "Выберите экземпляр покемона" in picker_text
+    assert "<code>250</code>" in picker_text
+
+
+@pytest.mark.asyncio
 async def test_collection_release_flow_renders_confirmation_and_result() -> None:
     session = MenuSession(
         session_id="collection-release-session",
@@ -293,7 +386,9 @@ async def test_collection_release_flow_renders_confirmation_and_result() -> None
 
     context = Mock(spec=ContextTypes.DEFAULT_TYPE)
     context.application = Mock()
-    context.application.bot_data = {"db": AsyncMock()}
+    db = AsyncMock()
+    db.get_user_pokemon_entry = AsyncMock(return_value=_entry(25, "Pikachu", "Rare", "electric", 1))
+    context.application.bot_data = {"db": db}
 
     await collection_handler(update, context, session)
 

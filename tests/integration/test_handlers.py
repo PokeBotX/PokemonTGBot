@@ -5,7 +5,7 @@ from telegram import Update, Message, User, Chat, CallbackQuery
 from telegram.ext import ContextTypes
 
 from bot.handlers.commands import changename_command, collection_command, menu_command, profile_command, search_command, section_command, shop_command, start_command
-from bot.handlers.sections.profile import _display_profile_owner, handle_profile_text_input, profile_handler
+from bot.handlers.sections.profile import handle_profile_text_input, profile_handler
 from bot.handlers.sections.shop import shop_handler
 from bot.handlers.sections.back import back_to_menu_handler
 from bot.navigation.session import session_store, MenuSession
@@ -171,6 +171,24 @@ async def test_menu_command_sends_menu(mock_update):
     # Verify message was sent
     assert mock_update.effective_chat.send_message.called
     assert len(session_store._sessions) == 1
+
+
+@pytest.mark.asyncio
+async def test_menu_command_escapes_html_special_chars_in_user_label(mock_update):
+    sent_message = Mock(spec=Message)
+    sent_message.message_id = 1021
+    sent_message.edit_reply_markup = AsyncMock()
+    mock_update.effective_chat.send_message = AsyncMock(return_value=sent_message)
+    mock_update.effective_user.username = None
+    mock_update.effective_user.first_name = "<Ash&Co>"
+
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+
+    await menu_command(mock_update, context)
+
+    text = mock_update.effective_chat.send_message.call_args.kwargs["text"]
+    assert "&lt;Ash&amp;Co&gt;" in text
+    assert "<Ash&Co>" not in text
 
 
 @pytest.mark.asyncio
@@ -403,6 +421,53 @@ async def test_profile_command_sends_profile_section(mock_update):
     assert "12345" in rendered_text
     assert sent_message.edit_reply_markup.called
     assert len(session_store._sessions) == 1
+
+
+@pytest.mark.asyncio
+async def test_profile_command_escapes_html_special_chars_in_profile_label(mock_update):
+    sent_message = Mock(spec=Message)
+    sent_message.message_id = 1062
+    sent_message.edit_reply_markup = AsyncMock()
+    context_bot = Mock()
+    context_bot.send_photo = AsyncMock(return_value=sent_message)
+    context_bot.send_message = AsyncMock(return_value=sent_message)
+
+    mock_update.effective_user.username = None
+    mock_update.effective_user.first_name = "<Ash>"
+    mock_update.message = Mock(spec=Message)
+    mock_update.message.text = "/profile"
+
+    db = AsyncMock()
+    db.get_profile_summary = AsyncMock(
+        return_value=ProfileSummary(
+            user_id=1,
+            telegram_id=12345,
+            tg_username=None,
+            nickname="<Ash>",
+            language="ru",
+            created_at=__import__("datetime").datetime.now(__import__("datetime").UTC),
+            total_unique_owned=2,
+            total_catalog=1025,
+            total_unique_percent=0,
+            rarity_progress=(),
+            profile_pic_credit_id=None,
+            cover_pokemon_name=None,
+        )
+    )
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+    context.bot = context_bot
+
+    await profile_command(mock_update, context)
+
+    if context_bot.send_photo.called:
+        rendered_text = context_bot.send_photo.call_args.kwargs["caption"]
+    else:
+        rendered_text = context_bot.send_message.call_args.kwargs["text"]
+    assert "&lt;Ash&gt;" in rendered_text
+    assert "<Ash>" not in rendered_text
 
 
 @pytest.mark.asyncio

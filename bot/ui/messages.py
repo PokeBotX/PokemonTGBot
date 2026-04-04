@@ -1,9 +1,11 @@
 """Message text templates for bot UI."""
 
-def get_main_menu_text(username: str) -> str:
-    """Get main menu text with user mention."""
+from bot.ui.html import escape_html
+
+def get_main_menu_text(user_label: str) -> str:
+    """Get main menu text with a safe user label."""
     return f"""
-👋 @{username}, <b>Добро пожаловать в PokéCollect!</b>
+👋 {escape_html(user_label)}, <b>Добро пожаловать в PokéCollect!</b>
 
 Коллекционируйте покемонов, торгуйте на рынке и участвуйте в мини-играх.
 Выберите раздел из меню ниже:

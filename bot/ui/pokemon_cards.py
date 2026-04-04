@@ -14,6 +14,8 @@ from urllib.request import urlopen
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.ext import ContextTypes
 
+from bot.ui.html import escape_html
+
 FALLBACK_IMAGE_PATH = Path("image.png")
 MARKET_CARD_SECTION = "mce"
 RELEASE_CARD_SECTION = "pkr"
@@ -42,10 +44,10 @@ class PokemonCardData:
 def render_pokemon_card_caption(card: PokemonCardData) -> str:
     """Render a compact pokemon card caption."""
     lines = [
-        f"📘 <b>{card.name}</b>",
-        (f"Тренер: <b>{card.trainer_label}</b>" if card.trainer_label else ""),
-        f"Редкость: <b>{card.rarity}</b>",
-        f"Тип: <b>{card.pokemon_type or 'unknown'}</b>",
+        f"📘 <b>{escape_html(card.name)}</b>",
+        (f"Тренер: <b>{escape_html(card.trainer_label)}</b>" if card.trainer_label else ""),
+        f"Редкость: <b>{escape_html(card.rarity)}</b>",
+        f"Тип: <b>{escape_html(card.pokemon_type or 'unknown')}</b>",
         (f"Количество: <b>{card.quantity}</b>" if card.quantity is not None else ""),
         f"HP: <b>{card.base_hp}</b>",
         f"ATK: <b>{card.base_attack}</b>",

@@ -164,6 +164,7 @@ class SessionStore:
         data: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Create a new menu session."""
+        self.cleanup_expired()
         session_id = str(uuid.uuid4())
         session = MenuSession(
             session_id=session_id,
@@ -185,6 +186,7 @@ class SessionStore:
 
     def get_session(self, session_id: str) -> Optional[MenuSession]:
         """Get session by ID, return None if expired."""
+        self.cleanup_expired()
         if self._redis is not None:
             payload = self._redis.get(f"{SESSION_KEY_PREFIX}{session_id}")
             if not payload:
@@ -206,6 +208,7 @@ class SessionStore:
 
     def is_callback_locked(self, callback_query_id: str) -> bool:
         """Check if callback is already being processed."""
+        self.cleanup_expired()
         if self._redis is not None:
             return bool(self._redis.exists(f"{CALLBACK_LOCK_KEY_PREFIX}{callback_query_id}"))
 
@@ -218,6 +221,7 @@ class SessionStore:
 
     def lock_callback(self, callback_query_id: str) -> None:
         """Lock callback to prevent duplicate processing."""
+        self.cleanup_expired()
         if self._redis is not None:
             self._redis.set(
                 f"{CALLBACK_LOCK_KEY_PREFIX}{callback_query_id}",
@@ -263,6 +267,7 @@ class SessionStore:
         data: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Store a pending text-input action for a user."""
+        self.cleanup_expired()
         pending = PendingInput(
             action=action,
             chat_id=chat_id,
@@ -283,6 +288,7 @@ class SessionStore:
 
     def get_pending_input(self, *, chat_id: int, user_id: int) -> Optional[PendingInput]:
         """Return pending input for the given chat/user pair."""
+        self.cleanup_expired()
         key = self._pending_input_key(chat_id, user_id)
         if self._redis is not None:
             payload = self._redis.get(f"{PENDING_INPUT_KEY_PREFIX}{key}")

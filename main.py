@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Response, status
+from fastapi.responses import JSONResponse
 from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
@@ -63,6 +64,8 @@ DB_INIT_SCHEMA = os.getenv("DB_INIT_SCHEMA", "false").lower() == "true"
 DB_SCHEMA_PATH = os.getenv("DB_SCHEMA_PATH", "sql/schema.sql")
 REDIS_ENABLED = os.getenv("REDIS_ENABLED", "false").lower() == "true"
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+SESSION_REDIS_ENABLED = os.getenv("SESSION_REDIS_ENABLED", "false").lower() == "true"
+DROP_PENDING_UPDATES = os.getenv("DROP_PENDING_UPDATES", "false").lower() == "true"
 
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN not set in .env")
@@ -78,6 +81,33 @@ GROUP_ACTIVITY_FILTER = (
 # Global bot application
 bot_app: Application = None
 db: Database = None
+
+
+def _build_health_payload() -> dict[str, object]:
+    """Build a shallow operational health payload for runtime dependencies."""
+    bot_initialized = bot_app is not None
+    db_connected = (not DB_ENABLED) or (db is not None and getattr(db, "pool", None) is not None)
+    redis_configured = (not REDIS_ENABLED) or (
+        (db is not None and getattr(db, "redis", None) is not None)
+        or (
+            bot_app is not None
+            and isinstance(getattr(bot_app, "bot_data", None), dict)
+            and bool(bot_app.bot_data.get("redis_url"))
+        )
+    )
+    return {
+        "status": "healthy" if bot_initialized and db_connected and redis_configured else "degraded",
+        "bot_initialized": bot_initialized,
+        "db_enabled": DB_ENABLED,
+        "db_connected": db_connected,
+        "redis_enabled": REDIS_ENABLED,
+        "redis_configured": redis_configured,
+    }
+
+
+def _health_status_code(payload: dict[str, object]) -> int:
+    """Choose HTTP status code for the health response."""
+    return status.HTTP_200_OK if payload["status"] == "healthy" else status.HTTP_503_SERVICE_UNAVAILABLE
 
 
 async def run_market_maintenance_job(context) -> None:
@@ -134,7 +164,7 @@ async def setup_webhook() -> None:
     webhook_kwargs = {
         "url": webhook_full_url,
         "allowed_updates": ["message", "callback_query"],
-        "drop_pending_updates": False,
+        "drop_pending_updates": DROP_PENDING_UPDATES,
     }
 
     if WEBHOOK_CERT_PATH:
@@ -144,7 +174,7 @@ async def setup_webhook() -> None:
         webhook_kwargs["certificate"] = cert_path.open("rb")
     
     # Delete any existing webhook
-    await bot_app.bot.delete_webhook(drop_pending_updates=True)
+    await bot_app.bot.delete_webhook(drop_pending_updates=DROP_PENDING_UPDATES)
     logger.info("webhook_deleted")
     
     try:
@@ -161,6 +191,7 @@ async def setup_webhook() -> None:
         has_custom_certificate=webhook_info.has_custom_certificate,
         pending_update_count=webhook_info.pending_update_count,
         webhook_cert_path=WEBHOOK_CERT_PATH,
+        drop_pending_updates=DROP_PENDING_UPDATES,
     )
 
 
@@ -170,6 +201,15 @@ async def lifespan(app: FastAPI):
     global bot_app, db
     
     logger.info("bot_starting")
+    logger.info(
+        "startup_config",
+        mode="webhook",
+        db_enabled=DB_ENABLED,
+        redis_enabled=REDIS_ENABLED,
+        session_redis_enabled=SESSION_REDIS_ENABLED,
+        drop_pending_updates=DROP_PENDING_UPDATES,
+        db_init_schema=DB_INIT_SCHEMA,
+    )
     
     # Register navigation routes
     register_routes()
@@ -211,10 +251,10 @@ async def lifespan(app: FastAPI):
 
     # Initialize database (optional)
     session_store.disable_redis()
-    if REDIS_ENABLED:
+    if REDIS_ENABLED and SESSION_REDIS_ENABLED:
         session_store.configure_redis(REDIS_URL)
         bot_app.bot_data["redis_url"] = REDIS_URL
-        logger.info("redis_ready", redis_url=REDIS_URL)
+        logger.info("redis_ready", redis_url=REDIS_URL, mode="session_store")
 
     if DB_ENABLED:
         db = Database()
@@ -222,6 +262,8 @@ async def lifespan(app: FastAPI):
         if DB_INIT_SCHEMA:
             await db.init_schema(DB_SCHEMA_PATH)
         bot_app.bot_data["db"] = db
+        if getattr(db, "redis", None) is not None:
+            bot_app.bot_data["redis_url"] = REDIS_URL
         maintenance_stats = await db.process_market_listing_maintenance()
         if any(maintenance_stats.values()):
             logger.info("market_maintenance_cycle", **maintenance_stats)
@@ -233,6 +275,7 @@ async def lifespan(app: FastAPI):
                 first=MARKET_MAINTENANCE_INTERVAL_SECONDS,
                 name="market-maintenance",
             )
+    logger.info("runtime_dependency_state", **_build_health_payload())
     
     # Set up bot commands
     await setup_bot_commands(bot_app)
@@ -259,14 +302,15 @@ app = FastAPI(title="PokéCollect Bot", lifespan=lifespan)
 
 @app.get("/")
 async def root():
-    """Health check endpoint."""
-    return {"status": "ok", "bot": "PokéCollect"}
+    """Basic root endpoint."""
+    return {"status": "ok", "bot": "PokéCollect", "docs": "/docs", "health": "/health"}
 
 
 @app.get("/health")
 async def health():
-    """Health check endpoint."""
-    return {"status": "healthy"}
+    """Operational health check for bot runtime and backing services."""
+    payload = _build_health_payload()
+    return JSONResponse(status_code=_health_status_code(payload), content=payload)
 
 
 @app.post(WEBHOOK_PATH)

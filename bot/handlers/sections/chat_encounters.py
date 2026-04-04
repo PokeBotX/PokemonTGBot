@@ -16,16 +16,15 @@ from bot.db.database import (
     CHAT_ENCOUNTER_TEXT,
     CollectionEntry,
     MASTERBALL_CODE,
-    MASTERBALL_PRICE,
     REGULAR_POKEBALL_CODE,
     ULTRABALL_CODE,
-    ULTRABALL_PRICE,
     ChatEncounter,
     ChatEncounterAttemptResult,
     Database,
 )
 from bot.handlers.sections.market import build_market_entry_payload, resolve_market_card_action
 from bot.navigation.session import session_store
+from bot.ui.html import display_name, escape_html
 from bot.ui.pokemon_cards import (
     PokemonCardData,
     build_pokemon_card_keyboard,
@@ -259,7 +258,7 @@ async def _resolve_attempt_result(
         await _send_caught_message(query, result.encounter, result.catcher_label)
         await _edit_query_encounter_message(
             query,
-            f"✨ <b>{result.encounter.name}</b> пойман!\nПоймал: <b>{result.catcher_label}</b>",
+            f"✨ <b>{escape_html(result.encounter.name)}</b> пойман!\nПоймал: <b>{escape_html(result.catcher_label)}</b>",
             reply_markup=build_caught_encounter_keyboard(result.encounter.encounter_id),
         )
         await query.answer("Пойман!", show_alert=False)
@@ -344,7 +343,7 @@ async def _send_failed_attempt_message(
 ) -> None:
     ball_label = BALL_LABELS.get(ball_code or "", "покебол")
     await query.message.reply_text(
-        f"❌ {user_label} бросил {ball_label}, но поймать покемона не удалось.",
+        f"❌ {escape_html(user_label)} бросил {escape_html(ball_label)}, но поймать покемона не удалось.",
         parse_mode="HTML",
         message_thread_id=getattr(query.message, "message_thread_id", None),
     )
@@ -356,7 +355,7 @@ async def _send_caught_message(
     catcher_label: Optional[str],
 ) -> None:
     await query.message.reply_text(
-        f"✨ <b>{catcher_label or 'Тренер'}</b> поймал <b>{encounter.name}</b>!",
+        f"✨ <b>{escape_html(catcher_label or 'Тренер')}</b> поймал <b>{escape_html(encounter.name)}</b>!",
         parse_mode="HTML",
         message_thread_id=getattr(query.message, "message_thread_id", None),
     )
@@ -465,12 +464,10 @@ def _render_encounter_card_caption(entry: CollectionEntry) -> str:
 
 def _display_user(update: Optional[Update]) -> str:
     if update and update.effective_user:
-        username = getattr(update.effective_user, "username", None)
-        if username:
-            return f"@{username}"
-        first_name = getattr(update.effective_user, "first_name", None)
-        if first_name:
-            return first_name
+        return display_name(
+            getattr(update.effective_user, "username", None),
+            getattr(update.effective_user, "first_name", None),
+        )
     return "тренер"
 
 

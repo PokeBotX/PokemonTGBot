@@ -8,6 +8,7 @@ from telegram.ext import ContextTypes
 
 from bot.navigation.context import extract_context
 from bot.navigation.session import MenuSession, session_store
+from bot.ui.html import display_name, escape_html
 from bot.ui.menu import build_back_button
 
 logger = structlog.get_logger()
@@ -85,13 +86,13 @@ def _display_user(update: Update) -> str:
     user = update.effective_user
     if not user:
         return "тренер"
-    return user.first_name or user.username or "тренер"
+    return display_name(getattr(user, "username", None), getattr(user, "first_name", None))
 
 
 def _render_info_text(user_label: str) -> str:
     return "\n".join(
         [
-            f"ℹ️ <b>{user_label}</b>, общий гайд по боту:",
+            f"ℹ️ <b>{escape_html(user_label)}</b>, общий гайд по боту:",
             "",
             "• 👀 Время от времени в беседе появляются дикие покемоны в виде сообщения с картинкой.",
             "Поймать их может любой участник чата: нажмите на подходящий покебол и попробуйте забрать покемона себе.",

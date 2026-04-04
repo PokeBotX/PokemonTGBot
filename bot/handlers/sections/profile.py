@@ -16,6 +16,7 @@ from bot.handlers.sections.market import build_market_entry_payload, resolve_mar
 from bot.navigation.context import extract_context
 from bot.navigation.router import NavigationRouter, parse_callback_data
 from bot.navigation.session import MenuSession, PendingInput, session_store
+from bot.ui.html import display_name, escape_html
 from bot.ui.menu import build_back_button
 from bot.ui.pokemon_cards import send_captioned_image
 
@@ -390,13 +391,13 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, se
 
 def _render_profile_text(summary: ProfileSummary, user_label: str, status_text: Optional[str] = None) -> str:
     rarity_lines = [
-        f"{_rarity_emoji(progress.rarity)} {progress.rarity}: <b>{progress.owned_unique}</b> из <b>{progress.total_catalog}</b> ({progress.percent}%)"
+        f"{_rarity_emoji(progress.rarity)} {escape_html(progress.rarity)}: <b>{progress.owned_unique}</b> из <b>{progress.total_catalog}</b> ({progress.percent}%)"
         for progress in summary.rarity_progress
         if progress.total_catalog > 0
     ]
 
     lines = [
-        f"👤 <b>{user_label}</b>, ваш профиль:",
+        f"👤 <b>{escape_html(user_label)}</b>, ваш профиль:",
         f"🆔 <code>{summary.telegram_id}</code>",
         "",
         f"📦 У вас <b>{summary.total_unique_owned}</b> уникальных покемонов из <b>{summary.total_catalog}</b> ({summary.total_unique_percent}%)",
@@ -411,11 +412,11 @@ def _render_profile_text(summary: ProfileSummary, user_label: str, status_text: 
 
 def _render_settings_text(summary: ProfileSummary, user_label: str, status_text: Optional[str] = None) -> str:
     lines = [
-        f"⚙️ <b>{user_label}</b>, настройки профиля:",
+        f"⚙️ <b>{escape_html(user_label)}</b>, настройки профиля:",
         "",
         f"🌐 Язык в БД: <b>{_language_label(summary.language)}</b>",
         f"🖼 Обложка: <b>{'кастомная' if summary.profile_pic_credit_id else 'image_profile.png'}</b>",
-        f"✏️ Ник в профиле: <b>{summary.nickname or user_label}</b>",
+        f"✏️ Ник в профиле: <b>{escape_html(summary.nickname or user_label)}</b>",
     ]
     if status_text:
         lines.extend(["", status_text])
@@ -425,7 +426,7 @@ def _render_settings_text(summary: ProfileSummary, user_label: str, status_text:
 def _render_language_text(summary: ProfileSummary, user_label: str) -> str:
     return "\n".join(
         [
-            f"🌐 <b>{user_label}</b>, выберите язык:",
+            f"🌐 <b>{escape_html(user_label)}</b>, выберите язык:",
             "",
             f"Сейчас в БД сохранено: <b>{_language_label(summary.language)}</b>",
             "",
@@ -437,21 +438,21 @@ def _render_language_text(summary: ProfileSummary, user_label: str) -> str:
 def _render_referral_text(user_label: str, referral: ProfileReferral) -> str:
     return "\n".join(
         [
-            f"🔗 <b>{user_label}</b>, ваша реферальная ссылка:",
+            f"🔗 <b>{escape_html(user_label)}</b>, ваша реферальная ссылка:",
             "",
-            f"<code>{referral.referral_link}</code>",
+            f"<code>{escape_html(referral.referral_link)}</code>",
         ]
     )
 
 
 def _render_cover_candidates_text(user_label: str, candidates: list[ProfileCoverCandidate]) -> str:
     lines = [
-        f"🖼 <b>{user_label}</b>, варианты обложки:",
+        f"🖼 <b>{escape_html(user_label)}</b>, варианты обложки:",
         "",
     ]
     for index, candidate in enumerate(candidates, start=1):
         lines.append(
-            f"{index}. <b>{candidate.name}</b> | {candidate.rarity} | id: <code>{candidate.pokemon_id}</code>"
+            f"{index}. <b>{escape_html(candidate.name)}</b> | {escape_html(candidate.rarity)} | id: <code>{candidate.pokemon_id}</code>"
         )
     lines.extend(["", "Выберите подходящий вариант:"])
     return "\n".join(lines)
@@ -459,12 +460,12 @@ def _render_cover_candidates_text(user_label: str, candidates: list[ProfileCover
 
 def _render_search_results_text(user_label: str, results: list[PokemonSearchEntry]) -> str:
     lines = [
-        f"🔎 <b>{user_label}</b>, найдено несколько вариантов:",
+        f"🔎 <b>{escape_html(user_label)}</b>, найдено несколько вариантов:",
         "",
     ]
     for index, entry in enumerate(results, start=1):
         lines.append(
-            f"{index}. <b>{entry.name}</b> | {entry.rarity} | id: <code>{entry.pokemon_id}</code>"
+            f"{index}. <b>{escape_html(entry.name)}</b> | {escape_html(entry.rarity)} | id: <code>{entry.pokemon_id}</code>"
         )
     lines.extend(["", "Выберите покемона из списка:"])
     return "\n".join(lines)
@@ -636,10 +637,10 @@ def _render_pokemon_search_card_caption(entry: PokemonSearchEntry, user_label: O
     return "\n".join(
         line
         for line in [
-            f"📘 <b>{entry.name}</b>",
-            (f"Тренер: <b>{user_label}</b>" if user_label else ""),
-            f"Редкость: <b>{entry.rarity}</b>",
-            f"Тип: <b>{entry.pokemon_type or 'unknown'}</b>",
+            f"📘 <b>{escape_html(entry.name)}</b>",
+            (f"Тренер: <b>{escape_html(user_label)}</b>" if user_label else ""),
+            f"Редкость: <b>{escape_html(entry.rarity)}</b>",
+            f"Тип: <b>{escape_html(entry.pokemon_type or 'unknown')}</b>",
             f"HP: <b>{entry.base_hp}</b>",
             f"ATK: <b>{entry.base_attack}</b>",
             f"DEF: <b>{entry.base_defense}</b>",
@@ -700,61 +701,6 @@ async def _edit_profile_message_by_ids(
         chat_id=pending.chat_id,
         message_id=pending.source_message_id,
         action=pending.action,
-    )
-
-
-async def _handle_profile_nickname_input(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    db: Database,
-    pending: PendingInput,
-) -> None:
-    nickname = (update.effective_message.text or "").strip()
-    logger.info("profile_nickname_input_received", user_id=update.effective_user.id, chat_id=update.effective_chat.id)
-    if not nickname:
-        await update.effective_chat.send_message(
-            "✏️ Отправь новый ник одним обычным сообщением.",
-            message_thread_id=getattr(update.effective_message, "message_thread_id", None),
-        )
-        return
-
-    try:
-        saved_nickname = await db.update_profile_nickname(
-            update.effective_user.id,
-            update.effective_user.username,
-            nickname,
-        )
-    except ShopError as exc:
-        await update.effective_chat.send_message(
-            f"⚠️ {exc}",
-            message_thread_id=getattr(update.effective_message, "message_thread_id", None),
-        )
-        return
-
-    session_store.clear_pending_input(chat_id=update.effective_chat.id, user_id=update.effective_user.id)
-    summary = await db.get_profile_summary(update.effective_user.id, update.effective_user.username)
-    if pending.source_message_id is not None:
-        await _edit_profile_message_by_ids(
-            context,
-            pending,
-            _render_settings_text(
-                summary,
-                _display_user(update),
-                status_text=f"✅ Ник сохранён: <b>{saved_nickname}</b>",
-            ),
-            _build_settings_keyboard(
-                session_store.create_session(
-                    chat_id=pending.chat_id,
-                    message_id=pending.source_message_id,
-                    user_id=pending.user_id,
-                    message_thread_id=pending.source_message_thread_id,
-                )
-            ),
-        )
-    await update.effective_chat.send_message(
-        f"✅ Ник сохранён: <b>{saved_nickname}</b>",
-        parse_mode="HTML",
-        message_thread_id=getattr(update.effective_message, "message_thread_id", None),
     )
 
 
@@ -937,7 +883,7 @@ def _display_user(update: Update) -> str:
     user = update.effective_user
     if not user:
         return "тренер"
-    return user.first_name or user.username or "тренер"
+    return display_name(getattr(user, "username", None), getattr(user, "first_name", None))
 
 
 def _display_self_profile_owner(update: Update, summary: ProfileSummary) -> str:

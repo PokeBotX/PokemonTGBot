@@ -18,6 +18,7 @@ async def group_message_activity_handler(update: Update, context: ContextTypes.D
         user_id=update.effective_user.id if update.effective_user else None,
         is_bot=getattr(update.effective_user, "is_bot", None) if update.effective_user else None,
         message_id=update.effective_message.message_id if update.effective_message else None,
-        text=getattr(update.effective_message, "text", None) if update.effective_message else None,
+        has_text=bool(getattr(update.effective_message, "text", None)) if update.effective_message else None,
+        text_length=len(getattr(update.effective_message, "text", "") or "") if update.effective_message else None,
     )
     await maybe_spawn_encounter_from_message(update, context)

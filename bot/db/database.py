@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import random
 from dataclasses import dataclass
@@ -26,7 +27,7 @@ SHOP_BONUS_CAP = 750
 SHOP_BONUS_RATE_PER_HOUR = 125
 SHOP_BONUS_CLAIM_INTERVAL_SECONDS = 3600
 SHOP_BONUS_CAP_SECONDS = 6 * 3600
-CHAT_ENCOUNTER_COOLDOWN_SECONDS = 2 * 60
+CHAT_ENCOUNTER_COOLDOWN_SECONDS = 3 * 3600
 CHAT_ENCOUNTER_MESSAGE_THRESHOLD = 10
 CHAT_ENCOUNTER_TIMEOUT_SECONDS = 5 * 60
 CHAT_ENCOUNTER_COUNTER_TTL_SECONDS = 7 * 24 * 60 * 60
@@ -1250,6 +1251,223 @@ class Database:
                 )
         return [_map_market_buy_request_summary(row) for row in rows]
 
+    async def get_market_sell_precheck_error(
+        self,
+        telegram_id: int,
+        username: Optional[str],
+        *,
+        user_pokemon_id: int,
+    ) -> Optional[str]:
+        """Return a user-facing reason when a pokemon cannot enter sell flow."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                seller_user_id = await self._ensure_user(conn, telegram_id, username)
+                active_count = int(
+                    await conn.fetchval(
+                        """
+                        SELECT COUNT(*)::int
+                        FROM market_listings
+                        WHERE seller_user_id = $1
+                          AND status = $2
+                        """,
+                        seller_user_id,
+                        MARKET_LISTING_STATUS_ACTIVE,
+                    )
+                    or 0
+                )
+                pokemon_row = await conn.fetchrow(
+                    """
+                    SELECT id, owner_user_id, is_locked, released_at
+                    FROM user_pokemon
+                    WHERE id = $1
+                    """,
+                    user_pokemon_id,
+                )
+                if not pokemon_row:
+                    return "Нельзя создать лот: экземпляр покемона не найден."
+                if int(pokemon_row["owner_user_id"]) != seller_user_id:
+                    return "Нельзя создать лот: этот покемон вам не принадлежит."
+                if pokemon_row["released_at"] is not None:
+                    return "Нельзя создать лот: этот покемон уже отпущен."
+                if bool(pokemon_row["is_locked"]):
+                    return "Нельзя создать лот: этот покемон заблокирован."
+                existing_listing = await conn.fetchval(
+                    """
+                    SELECT 1
+                    FROM market_listings
+                    WHERE pokemon_instance_id = $1
+                      AND status = $2
+                    LIMIT 1
+                    """,
+                    user_pokemon_id,
+                    MARKET_LISTING_STATUS_ACTIVE,
+                )
+                if existing_listing:
+                    return "Нельзя создать лот: этот покемон уже выставлен на рынок."
+                if active_count >= MARKET_MAX_ACTIVE_LISTINGS:
+                    return f"Нельзя создать лот: у вас уже заняты все {MARKET_MAX_ACTIVE_LISTINGS} слота продажи."
+                await self._ensure_user_balance(conn, seller_user_id, POKECOIN_CODE)
+                balance = await self._get_balance_for_update(conn, seller_user_id, POKECOIN_CODE)
+                if balance < 1:
+                    return "Нельзя создать лот: не хватает pokecoin даже на стартовую комиссию."
+        return None
+
+    async def get_market_buy_request_precheck_error(
+        self,
+        telegram_id: int,
+        username: Optional[str],
+        *,
+        pokemon_id: int,
+    ) -> Optional[str]:
+        """Return a user-facing reason when a pokemon cannot enter buy-request flow."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                requester_user_id = await self._ensure_user(conn, telegram_id, username)
+                active_count = int(
+                    await conn.fetchval(
+                        """
+                        SELECT COUNT(*)::int
+                        FROM market_buy_requests
+                        WHERE requester_user_id = $1
+                          AND status = $2
+                        """,
+                        requester_user_id,
+                        MARKET_REQUEST_STATUS_ACTIVE,
+                    )
+                    or 0
+                )
+                if active_count >= MARKET_MAX_ACTIVE_BUY_REQUESTS:
+                    return f"Нельзя создать заявку: у вас уже заняты все {MARKET_MAX_ACTIVE_BUY_REQUESTS} слотов заявок."
+                pokemon_exists = await conn.fetchval("SELECT 1 FROM pokemon_catalog WHERE id = $1", pokemon_id)
+                if not pokemon_exists:
+                    return "Нельзя создать заявку: покемон не найден."
+                duplicate_request = await conn.fetchval(
+                    """
+                    SELECT 1
+                    FROM market_buy_requests
+                    WHERE requester_user_id = $1
+                      AND pokemon_id = $2
+                      AND status = $3
+                    LIMIT 1
+                    """,
+                    requester_user_id,
+                    pokemon_id,
+                    MARKET_REQUEST_STATUS_ACTIVE,
+                )
+                if duplicate_request:
+                    return "Нельзя создать заявку: у вас уже есть активная заявка на этого покемона."
+                await self._ensure_user_balance(conn, requester_user_id, POKECOIN_CODE)
+                balance = await self._get_balance_for_update(conn, requester_user_id, POKECOIN_CODE)
+                if balance < 1:
+                    return "Нельзя создать заявку: у вас нет pokecoin для резерва."
+        return None
+
+    async def get_market_buy_listing_precheck_error(
+        self,
+        telegram_id: int,
+        username: Optional[str],
+        *,
+        listing_id: int,
+    ) -> Optional[str]:
+        """Return a user-facing reason when a listing cannot be purchased."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                buyer_user_id = await self._ensure_user(conn, telegram_id, username)
+                listing_row = await conn.fetchrow(
+                    """
+                    SELECT seller_user_id, status
+                    FROM market_listings
+                    WHERE id = $1
+                    """,
+                    listing_id,
+                )
+                if not listing_row:
+                    return "Этот лот уже удалён."
+
+                seller_user_id = int(listing_row["seller_user_id"])
+                if seller_user_id == buyer_user_id:
+                    return "Нельзя купить свой собственный лот."
+
+                status = str(listing_row["status"])
+                if status == MARKET_LISTING_STATUS_SOLD:
+                    return "Этот лот уже купили."
+                if status == MARKET_LISTING_STATUS_REMOVED:
+                    return "Этот лот уже снят с рынка."
+                if status == MARKET_LISTING_STATUS_EXPIRED:
+                    return "Срок этого лота истёк."
+        return None
+
+    async def get_market_request_fulfill_precheck_error(
+        self,
+        telegram_id: int,
+        username: Optional[str],
+        *,
+        request_id: int,
+        user_pokemon_id: int,
+    ) -> Optional[str]:
+        """Return a user-facing reason when a buy request cannot be fulfilled."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                seller_user_id = await self._ensure_user(conn, telegram_id, username)
+                request_row = await conn.fetchrow(
+                    """
+                    SELECT requester_user_id, pokemon_id, status
+                    FROM market_buy_requests
+                    WHERE id = $1
+                    """,
+                    request_id,
+                )
+                if not request_row:
+                    return "Заявка не найдена."
+
+                buyer_user_id = int(request_row["requester_user_id"])
+                if buyer_user_id == seller_user_id:
+                    return "Нельзя закрыть свою собственную заявку."
+
+                status = str(request_row["status"])
+                if status == MARKET_REQUEST_STATUS_FULFILLED:
+                    return "Эту заявку уже закрыл другой пользователь."
+                if status == MARKET_REQUEST_STATUS_CANCELED:
+                    return "Эту заявку уже отменили."
+
+                pokemon_row = await conn.fetchrow(
+                    """
+                    SELECT owner_user_id, pokemon_id, is_locked, released_at
+                    FROM user_pokemon
+                    WHERE id = $1
+                    """,
+                    user_pokemon_id,
+                )
+                if not pokemon_row:
+                    return "Экземпляр покемона не найден."
+                if int(pokemon_row["owner_user_id"]) != seller_user_id:
+                    return "Этот покемон вам не принадлежит."
+                if pokemon_row["released_at"] is not None:
+                    return "Этот покемон уже отпущен."
+                if bool(pokemon_row["is_locked"]):
+                    return "Этот покемон заблокирован."
+                if int(pokemon_row["pokemon_id"]) != int(request_row["pokemon_id"]):
+                    return "Этот покемон не подходит под заявку."
+
+                active_listing = await conn.fetchval(
+                    """
+                    SELECT 1
+                    FROM market_listings
+                    WHERE pokemon_instance_id = $1
+                      AND status = $2
+                    LIMIT 1
+                    """,
+                    user_pokemon_id,
+                    MARKET_LISTING_STATUS_ACTIVE,
+                )
+                if active_listing:
+                    return "Этот покемон уже выставлен на рынок."
+        return None
+
     async def create_market_listing(
         self,
         telegram_id: int,
@@ -1321,34 +1539,43 @@ class Database:
 
                 now = datetime.now(UTC)
                 await self._adjust_balance(conn, seller_user_id, POKECOIN_CODE, -commission_amount)
-                inserted = await conn.fetchrow(
-                    """
-                    INSERT INTO market_listings (
-                      seller_user_id,
-                      pokemon_instance_id,
-                      currency_id,
-                      price,
-                      status,
-                      listed_at,
-                      initial_commission_paid,
-                      daily_commission_amount,
-                      last_commission_at,
-                      next_commission_at,
-                      expires_at
+                try:
+                    inserted = await conn.fetchrow(
+                        """
+                        INSERT INTO market_listings (
+                          seller_user_id,
+                          pokemon_instance_id,
+                          currency_id,
+                          price,
+                          status,
+                          listed_at,
+                          initial_commission_paid,
+                          daily_commission_amount,
+                          last_commission_at,
+                          next_commission_at,
+                          expires_at
+                        )
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $6, $8, $9)
+                        RETURNING id
+                        """,
+                        seller_user_id,
+                        user_pokemon_id,
+                        await self._get_currency_id(conn, POKECOIN_CODE),
+                        price,
+                        MARKET_LISTING_STATUS_ACTIVE,
+                        now,
+                        commission_amount,
+                        now + timedelta(days=1),
+                        now + timedelta(days=MARKET_LISTING_LIFETIME_DAYS),
                     )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $6, $8, $9)
-                    RETURNING id
-                    """,
-                    seller_user_id,
-                    user_pokemon_id,
-                    await self._get_currency_id(conn, POKECOIN_CODE),
-                    price,
-                    MARKET_LISTING_STATUS_ACTIVE,
-                    now,
-                    commission_amount,
-                    now + timedelta(days=1),
-                    now + timedelta(days=MARKET_LISTING_LIFETIME_DAYS),
-                )
+                except asyncpg.UniqueViolationError as exc:
+                    logger.warning(
+                        "market_listing_create_conflict",
+                        seller_user_id=seller_user_id,
+                        user_pokemon_id=user_pokemon_id,
+                        error=str(exc),
+                    )
+                    raise ShopError("Этот покемон уже выставлен на рынок.") from exc
                 listing = await self._fetch_market_listing_summary(conn, int(inserted["id"]))
 
         logger.info(
@@ -1469,13 +1696,11 @@ class Database:
                     """
                     UPDATE market_listings
                     SET status = $2,
-                        purchaser_user_id = $3,
                         completed_at = NOW()
                     WHERE id = $1
                     """,
                     listing_id,
                     MARKET_LISTING_STATUS_SOLD,
-                    buyer_user_id,
                 )
                 listing = await self._fetch_market_listing_summary(conn, listing_id)
 
@@ -1529,31 +1754,56 @@ class Database:
                 if not pokemon_exists:
                     raise ShopError("Покемон для заявки не найден.")
 
+                duplicate_request = await conn.fetchval(
+                    """
+                    SELECT 1
+                    FROM market_buy_requests
+                    WHERE requester_user_id = $1
+                      AND pokemon_id = $2
+                      AND status = $3
+                    LIMIT 1
+                    """,
+                    requester_user_id,
+                    pokemon_id,
+                    MARKET_REQUEST_STATUS_ACTIVE,
+                )
+                if duplicate_request:
+                    raise ShopError("У вас уже есть активная заявка на этого покемона.")
+
                 await self._ensure_user_balance(conn, requester_user_id, POKECOIN_CODE)
                 balance = await self._get_balance_for_update(conn, requester_user_id, POKECOIN_CODE)
                 if balance < price:
                     raise InsufficientFundsError("Недостаточно pokecoin для заявки.")
 
                 await self._adjust_balance(conn, requester_user_id, POKECOIN_CODE, -price)
-                inserted = await conn.fetchrow(
-                    """
-                    INSERT INTO market_buy_requests (
-                      requester_user_id,
-                      pokemon_id,
-                      currency_id,
-                      price,
-                      reserved_amount,
-                      status
+                try:
+                    inserted = await conn.fetchrow(
+                        """
+                        INSERT INTO market_buy_requests (
+                          requester_user_id,
+                          pokemon_id,
+                          currency_id,
+                          price,
+                          reserved_amount,
+                          status
+                        )
+                        VALUES ($1, $2, $3, $4, $4, $5)
+                        RETURNING id
+                        """,
+                        requester_user_id,
+                        pokemon_id,
+                        await self._get_currency_id(conn, POKECOIN_CODE),
+                        price,
+                        MARKET_REQUEST_STATUS_ACTIVE,
                     )
-                    VALUES ($1, $2, $3, $4, $4, $5)
-                    RETURNING id
-                    """,
-                    requester_user_id,
-                    pokemon_id,
-                    await self._get_currency_id(conn, POKECOIN_CODE),
-                    price,
-                    MARKET_REQUEST_STATUS_ACTIVE,
-                )
+                except asyncpg.UniqueViolationError as exc:
+                    logger.warning(
+                        "market_buy_request_create_conflict",
+                        requester_user_id=requester_user_id,
+                        pokemon_id=pokemon_id,
+                        error=str(exc),
+                    )
+                    raise ShopError("У вас уже есть активная заявка на этого покемона.") from exc
                 request = await self._fetch_market_buy_request_summary(conn, int(inserted["id"]))
 
         logger.info(
@@ -1853,7 +2103,7 @@ class Database:
         """Record one group-chat message and spawn an encounter if the threshold is reached."""
         self._ensure_pool()
         if self.redis is not None:
-            cached_result = self._note_chat_message_via_redis(chat_id)
+            cached_result = await self._note_chat_message_via_redis(chat_id)
             if cached_result == "cooldown":
                 logger.info("chat_encounter_message_ignored", chat_id=chat_id, reason="redis_cooldown_not_ready")
                 return None
@@ -1892,8 +2142,8 @@ class Database:
                         active_encounter_id=state["active_encounter_id"],
                     )
                 if state["active_encounter_id"] is not None:
-                    self._set_active_encounter_cache(chat_id, int(state["active_encounter_id"]))
-                    self._clear_encounter_counter_cache(chat_id)
+                    await self._set_active_encounter_cache(chat_id, int(state["active_encounter_id"]))
+                    await self._clear_encounter_counter_cache(chat_id)
                     logger.info(
                         "chat_encounter_message_ignored",
                         chat_id=chat_id,
@@ -1907,8 +2157,8 @@ class Database:
                         CHAT_ENCOUNTER_COOLDOWN_SECONDS
                         - int((now - _normalize_timestamp(state["last_spawn_at"])).total_seconds()),
                     )
-                    self._set_encounter_cooldown_cache(chat_id, remaining_seconds)
-                    self._clear_encounter_counter_cache(chat_id)
+                    await self._set_encounter_cooldown_cache(chat_id, remaining_seconds)
+                    await self._clear_encounter_counter_cache(chat_id)
                     logger.info(
                         "chat_encounter_message_ignored",
                         chat_id=chat_id,
@@ -1957,7 +2207,7 @@ class Database:
                 if await self._expire_active_chat_encounter_if_due(conn, chat_id, now):
                     state = await self._fetch_chat_encounter_state(conn, chat_id, for_update=True)
                 if state["active_encounter_id"] is not None:
-                    self._set_active_encounter_cache(chat_id, int(state["active_encounter_id"]))
+                    await self._set_active_encounter_cache(chat_id, int(state["active_encounter_id"]))
                     return None
                 if not _chat_encounter_cooldown_ready(state["last_spawn_at"], now):
                     remaining_seconds = max(
@@ -1965,7 +2215,7 @@ class Database:
                         CHAT_ENCOUNTER_COOLDOWN_SECONDS
                         - int((now - _normalize_timestamp(state["last_spawn_at"])).total_seconds()),
                     )
-                    self._set_encounter_cooldown_cache(chat_id, remaining_seconds)
+                    await self._set_encounter_cooldown_cache(chat_id, remaining_seconds)
                     return None
 
                 return await self._spawn_chat_encounter(conn, chat_id, message_thread_id, now)
@@ -2021,7 +2271,7 @@ class Database:
                     datetime.now(UTC),
                     encounter_id,
                 )
-                self._clear_active_encounter_cache(int(row["chat_id"]))
+                await self._clear_active_encounter_cache(int(row["chat_id"]))
 
     async def get_active_chat_encounter(self, chat_id: int) -> Optional[ChatEncounter]:
         """Return the current active encounter for a chat, if any."""
@@ -2087,7 +2337,7 @@ class Database:
                     now,
                     encounter_id,
                 )
-                self._clear_active_encounter_cache(int(row["chat_id"]))
+                await self._clear_active_encounter_cache(int(row["chat_id"]))
                 return _map_chat_encounter(row)
 
     async def attempt_chat_encounter(
@@ -2155,7 +2405,7 @@ class Database:
                         now,
                         encounter.encounter_id,
                     )
-                    self._clear_active_encounter_cache(chat_id)
+                    await self._clear_active_encounter_cache(chat_id)
                     return ChatEncounterAttemptResult(status="expired", encounter=encounter)
 
                 user_id = await self._ensure_user(conn, telegram_id, username)
@@ -2253,7 +2503,7 @@ class Database:
                     now,
                     encounter.encounter_id,
                 )
-                self._clear_active_encounter_cache(chat_id)
+                await self._clear_active_encounter_cache(chat_id)
                 return ChatEncounterAttemptResult(
                     status="caught",
                     encounter=ChatEncounter(
@@ -2340,6 +2590,64 @@ class Database:
             image_credit_id=row["image_credit_id"],
             is_locked=bool(row["is_locked"]),
         )
+
+    async def get_user_pokemon_instances_for_species(
+        self,
+        telegram_id: int,
+        username: Optional[str],
+        *,
+        pokemon_id: int,
+        limit: int = 12,
+    ) -> list[CollectionEntry]:
+        """Load explicit owned instances for one species to avoid ambiguous duplicate actions."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                user_id = await self._ensure_user(conn, telegram_id, username)
+                rows = await conn.fetch(
+                    """
+                    SELECT
+                      pc.id AS pokemon_id,
+                      up.id AS sample_user_pokemon_id,
+                      pc.name,
+                      pc.rarity,
+                      pc.type,
+                      1::int AS quantity,
+                      pc.base_hp,
+                      pc.base_attack,
+                      pc.base_defense,
+                      pc.base_stamina,
+                      pc.image_credit_id,
+                      up.is_locked
+                    FROM user_pokemon up
+                    JOIN pokemon_catalog pc ON pc.id = up.pokemon_id
+                    WHERE up.owner_user_id = $1
+                      AND up.pokemon_id = $2
+                      AND up.released_at IS NULL
+                    ORDER BY up.is_locked ASC, up.id ASC
+                    LIMIT $3
+                    """,
+                    user_id,
+                    pokemon_id,
+                    limit,
+                )
+        return [
+            CollectionEntry(
+                pokemon_id=int(row["pokemon_id"]),
+                sample_user_pokemon_id=int(row["sample_user_pokemon_id"]),
+                name=str(row["name"]),
+                rarity=str(row["rarity"]),
+                pokemon_type=row["type"],
+                quantity=int(row["quantity"]),
+                base_hp=int(row["base_hp"]),
+                base_attack=int(row["base_attack"]),
+                base_defense=int(row["base_defense"]),
+                base_stamina=int(row["base_stamina"]),
+                image_credit_id=row["image_credit_id"],
+                is_locked=bool(row["is_locked"]),
+            )
+            for row in rows
+        ]
 
     async def toggle_user_pokemon_lock(
         self,
@@ -3096,9 +3404,9 @@ class Database:
             now,
             int(encounter_row["id"]),
         )
-        self._set_encounter_cooldown_cache(chat_id, CHAT_ENCOUNTER_COOLDOWN_SECONDS)
-        self._set_active_encounter_cache(chat_id, int(encounter_row["id"]))
-        self._clear_encounter_counter_cache(chat_id)
+        await self._set_encounter_cooldown_cache(chat_id, CHAT_ENCOUNTER_COOLDOWN_SECONDS)
+        await self._set_active_encounter_cache(chat_id, int(encounter_row["id"]))
+        await self._clear_encounter_counter_cache(chat_id)
         merged_row = {
             **dict(encounter_row),
             "name": pokemon_row["name"],
@@ -3145,7 +3453,7 @@ class Database:
                 chat_id,
                 now,
             )
-            self._clear_active_encounter_cache(chat_id)
+            await self._clear_active_encounter_cache(chat_id)
             return True
         if _normalize_timestamp(encounter_row["expires_at"]) > now:
             return False
@@ -3170,10 +3478,13 @@ class Database:
             chat_id,
             now,
         )
-        self._clear_active_encounter_cache(chat_id)
+        await self._clear_active_encounter_cache(chat_id)
         return True
 
-    def _note_chat_message_via_redis(self, chat_id: int) -> str | int | None:
+    async def _note_chat_message_via_redis(self, chat_id: int) -> str | int | None:
+        return await asyncio.to_thread(self._note_chat_message_via_redis_sync, chat_id)
+
+    def _note_chat_message_via_redis_sync(self, chat_id: int) -> str | int | None:
         if self.redis is None:
             return None
         try:
@@ -3345,7 +3656,10 @@ class Database:
             raise ShopError("Заявка не найдена.")
         return _map_market_buy_request_summary(row)
 
-    def _set_encounter_cooldown_cache(self, chat_id: int, remaining_seconds: int) -> None:
+    async def _set_encounter_cooldown_cache(self, chat_id: int, remaining_seconds: int) -> None:
+        await asyncio.to_thread(self._set_encounter_cooldown_cache_sync, chat_id, remaining_seconds)
+
+    def _set_encounter_cooldown_cache_sync(self, chat_id: int, remaining_seconds: int) -> None:
         if self.redis is None or remaining_seconds <= 0:
             return
         try:
@@ -3353,7 +3667,10 @@ class Database:
         except RedisError as exc:
             logger.warning("chat_encounter_redis_write_failed", chat_id=chat_id, key="cooldown", error=str(exc))
 
-    def _set_active_encounter_cache(self, chat_id: int, encounter_id: int) -> None:
+    async def _set_active_encounter_cache(self, chat_id: int, encounter_id: int) -> None:
+        await asyncio.to_thread(self._set_active_encounter_cache_sync, chat_id, encounter_id)
+
+    def _set_active_encounter_cache_sync(self, chat_id: int, encounter_id: int) -> None:
         if self.redis is None:
             return
         try:
@@ -3365,7 +3682,10 @@ class Database:
         except RedisError as exc:
             logger.warning("chat_encounter_redis_write_failed", chat_id=chat_id, key="active", error=str(exc))
 
-    def _clear_active_encounter_cache(self, chat_id: int) -> None:
+    async def _clear_active_encounter_cache(self, chat_id: int) -> None:
+        await asyncio.to_thread(self._clear_active_encounter_cache_sync, chat_id)
+
+    def _clear_active_encounter_cache_sync(self, chat_id: int) -> None:
         if self.redis is None:
             return
         try:
@@ -3373,7 +3693,10 @@ class Database:
         except RedisError as exc:
             logger.warning("chat_encounter_redis_write_failed", chat_id=chat_id, key="active", error=str(exc))
 
-    def _clear_encounter_counter_cache(self, chat_id: int) -> None:
+    async def _clear_encounter_counter_cache(self, chat_id: int) -> None:
+        await asyncio.to_thread(self._clear_encounter_counter_cache_sync, chat_id)
+
+    def _clear_encounter_counter_cache_sync(self, chat_id: int) -> None:
         if self.redis is None:
             return
         try:

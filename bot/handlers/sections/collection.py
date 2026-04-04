@@ -20,6 +20,7 @@ from bot.navigation.context import extract_context
 from bot.navigation.router import NavigationRouter, parse_callback_data
 from bot.navigation.session import MenuSession, session_store
 from bot.handlers.sections.market import build_market_entry_payload, resolve_market_card_action
+from bot.ui.html import display_name, escape_html
 from bot.ui.menu import build_back_button
 from bot.ui.pokemon_cards import (
     EXTRA_CARD_SECTION,
@@ -109,12 +110,39 @@ COLLECTION_ROUTE_SECTIONS = [
     "cd10",
     "cd11",
     "cd12",
+    "cei1",
+    "cei2",
+    "cei3",
+    "cei4",
+    "cei5",
+    "cei6",
+    "cei7",
+    "cei8",
+    "cei9",
+    "cei10",
+    "cei11",
+    "cei12",
     "cfr_L",
     "cfr_E",
     "cfr_R",
     "cfr_C",
     *[f"cft_{code}" for code in COLLECTION_TYPE_CODES.values()],
 ]
+
+COLLECTION_INSTANCE_SELECT_ROUTES = {
+    "cei1": 0,
+    "cei2": 1,
+    "cei3": 2,
+    "cei4": 3,
+    "cei5": 4,
+    "cei6": 5,
+    "cei7": 6,
+    "cei8": 7,
+    "cei9": 8,
+    "cei10": 9,
+    "cei11": 10,
+    "cei12": 11,
+}
 
 
 def register_collection_routes(router: NavigationRouter) -> None:
@@ -211,6 +239,10 @@ async def collection_handler(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
         if section.startswith("cd"):
             await _handle_collection_detail(update, context, session, section)
+            return
+
+        if section in COLLECTION_INSTANCE_SELECT_ROUTES:
+            await _handle_collection_instance_select(update, context, session, section)
             return
 
         db = _get_db(context)
@@ -322,12 +354,10 @@ def _get_db(context: ContextTypes.DEFAULT_TYPE) -> Optional[Database]:
 
 def _display_user(update: Optional[Update]) -> str:
     if update and update.effective_user:
-        username = getattr(update.effective_user, "username", None)
-        if username:
-            return f"@{username}"
-        first_name = getattr(update.effective_user, "first_name", None)
-        if first_name:
-            return first_name
+        return display_name(
+            getattr(update.effective_user, "username", None),
+            getattr(update.effective_user, "first_name", None),
+        )
     return "тренер"
 
 
@@ -419,7 +449,7 @@ def _render_collection_text(user_label: str, collection_page: CollectionPage, sc
 
 def _render_collection_screen_text(user_label: str, collection_page: CollectionPage) -> str:
     lines = [
-        f"📦 {user_label}, ваша коллекция (страница {collection_page.current_page} / {collection_page.total_pages}):",
+        f"📦 {escape_html(user_label)}, ваша коллекция (страница {collection_page.current_page} / {collection_page.total_pages}):",
         "",
     ]
     if collection_page.entries:
@@ -446,7 +476,7 @@ def _render_filter_screen_text(user_label: str, filter_state: CollectionFilterSt
     duplicates_summary = "включено" if filter_state.duplicates_only else "выключено"
     return "\n".join(
         [
-            f"⚙️ {user_label}, настройки фильтров:",
+            f"⚙️ {escape_html(user_label)}, настройки фильтров:",
             f"💎 По редкости: {rarity_summary}",
             f"🌈 По стихиям: {type_summary}",
             f"🧬 Только дубликаты: {duplicates_summary}",
@@ -578,8 +608,68 @@ async def _handle_collection_detail(
     if not entry_payloads or not isinstance(entry_payloads, list) or index >= len(entry_payloads):
         raise ValueError("Collection detail is no longer available")
     entry = CollectionEntry.from_payload(entry_payloads[index])
+    if entry.quantity > 1:
+        db = _get_db(context)
+        if db:
+            instances = await db.get_user_pokemon_instances_for_species(
+                session.user_id,
+                update.effective_user.username if update.effective_user else None,
+                pokemon_id=entry.pokemon_id,
+            )
+            if len(instances) > 1:
+                await _send_collection_instance_picker(context, session, entry, instances)
+                logger.info(
+                    "collection_instance_picker_sent",
+                    user_id=session.user_id,
+                    pokemon_id=entry.pokemon_id,
+                    instance_count=len(instances),
+                )
+                return
     await _send_collection_card(context, session, entry, _display_user(update))
     logger.info("collection_detail_sent", user_id=session.user_id, pokemon_id=entry.pokemon_id, index=index + 1)
+
+
+async def _send_collection_instance_picker(
+    context: ContextTypes.DEFAULT_TYPE,
+    session: MenuSession,
+    summary_entry: CollectionEntry,
+    instances: list[CollectionEntry],
+) -> Message:
+    message = await context.bot.send_message(
+        chat_id=session.chat_id,
+        text=_render_instance_picker_text(summary_entry, instances),
+        parse_mode="HTML",
+        message_thread_id=session.message_thread_id,
+    )
+    picker_session_id = session_store.create_session(
+        chat_id=session.chat_id,
+        message_id=message.message_id,
+        user_id=session.user_id,
+        message_thread_id=session.message_thread_id,
+        data={"collection_instance_entries": [entry.as_session_payload() for entry in instances]},
+    )
+    await message.edit_reply_markup(reply_markup=_build_instance_picker_keyboard(picker_session_id, instances))
+    return message
+
+
+async def _handle_collection_instance_select(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    session: MenuSession,
+    section: str,
+) -> None:
+    index = COLLECTION_INSTANCE_SELECT_ROUTES[section]
+    payloads = session.data.get("collection_instance_entries")
+    if not isinstance(payloads, list) or index >= len(payloads):
+        raise ValueError("Collection instance selection is no longer available")
+    entry = CollectionEntry.from_payload(payloads[index])
+    await _send_collection_card(context, session, entry, _display_user(update))
+    logger.info(
+        "collection_instance_selected",
+        user_id=session.user_id,
+        pokemon_id=entry.pokemon_id,
+        user_pokemon_id=entry.sample_user_pokemon_id,
+    )
 
 
 async def _send_collection_card(
@@ -640,12 +730,15 @@ async def _send_collection_card(
 async def _handle_release_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE, session: MenuSession) -> None:
     query = update.callback_query
     user_pokemon_id = session.data.get("release_user_pokemon_id")
-    pokemon_name = str(session.data.get("release_pokemon_name") or "покемон")
-    rarity = str(session.data.get("release_rarity") or "Common")
     if user_pokemon_id is None:
         raise ValueError("Release payload is missing")
 
-    reward = POKEMON_RELEASE_REWARDS.get(rarity, 32)
+    entry = await _load_owned_card_entry(update, context, session)
+    if not entry:
+        await query.answer("Карточка больше недоступна.", show_alert=False)
+        return
+
+    reward = POKEMON_RELEASE_REWARDS.get(entry.rarity, 32)
     next_session_id = _create_session(session, dict(session.data))
     await _edit_collection_message(
         query,
@@ -654,7 +747,7 @@ async def _handle_release_prompt(update: Update, context: ContextTypes.DEFAULT_T
             [
                 "🕊 <b>Отпустить покемона?</b>",
                 "",
-                f"Покемон: <b>{pokemon_name}</b>",
+                f"Покемон: <b>{escape_html(entry.name)}</b>",
                 f"Экземпляр: <code>{int(user_pokemon_id)}</code>",
                 f"Награда: 🪙 <b>{reward}</b>",
             ]
@@ -798,8 +891,8 @@ async def _handle_release_confirm(update: Update, context: ContextTypes.DEFAULT_
             [
                 "✅ <b>Покемон отпущен</b>",
                 "",
-                f"Покемон: <b>{result.name}</b>",
-                f"Редкость: <b>{result.rarity}</b>",
+                f"Покемон: <b>{escape_html(result.name)}</b>",
+                f"Редкость: <b>{escape_html(result.rarity)}</b>",
                 f"Получено: 🪙 <b>{result.reward_amount}</b>",
             ]
         ),
@@ -858,13 +951,41 @@ def _render_extra_actions_text(entry: CollectionEntry, *, status_text: Optional[
     lines = [
         "⚙️ <b>Дополнительно</b>",
         "",
-        f"Покемон: <b>{entry.name}</b>",
+        f"Покемон: <b>{escape_html(entry.name)}</b>",
         f"Экземпляр: <code>{entry.sample_user_pokemon_id}</code>",
         lock_line,
     ]
     if status_text:
         lines.extend(["", status_text])
     return "\n".join(lines)
+
+
+def _render_instance_picker_text(summary_entry: CollectionEntry, instances: list[CollectionEntry]) -> str:
+    lines = [
+        "🧬 <b>Выберите экземпляр покемона</b>",
+        "",
+        f"Покемон: <b>{escape_html(summary_entry.name)}</b>",
+        f"Найдено экземпляров: <b>{len(instances)}</b>",
+        "",
+    ]
+    for index, entry in enumerate(instances, start=1):
+        lock_marker = " 🔒" if entry.is_locked else ""
+        lines.append(f"{index}. <code>{entry.sample_user_pokemon_id}</code>{lock_marker}")
+    return "\n".join(lines)
+
+
+def _build_instance_picker_keyboard(session_id: str, instances: list[CollectionEntry]) -> InlineKeyboardMarkup:
+    keyboard: list[list[InlineKeyboardButton]] = []
+    for route, index in COLLECTION_INSTANCE_SELECT_ROUTES.items():
+        if index >= len(instances):
+            break
+        entry = instances[index]
+        label = f"#{entry.sample_user_pokemon_id}"
+        if entry.is_locked:
+            label += " 🔒"
+        keyboard.append([InlineKeyboardButton(label, callback_data=f"menu:{route}:{session_id}")])
+    keyboard.extend(build_back_button(session_id).inline_keyboard)
+    return InlineKeyboardMarkup(keyboard)
 
 
 def _build_extra_actions_keyboard(session_id: str, is_locked: bool) -> InlineKeyboardMarkup:

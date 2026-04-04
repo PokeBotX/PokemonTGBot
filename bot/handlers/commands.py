@@ -23,6 +23,7 @@ from bot.handlers.sections.profile import (
 )
 from bot.handlers.sections.shop import show_shop_screen, SHOP_VIEW_ITEMS, SHOP_VIEW_POKEMON
 from bot.handlers.sections.info import show_info_screen
+from bot.ui.html import display_name, escape_html
 from bot.ui.menu import build_main_menu_keyboard
 from bot.ui.menu import build_back_button
 from bot.ui.messages import get_main_menu_text, get_section_placeholder
@@ -251,7 +252,7 @@ async def changename_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     session_store.clear_pending_input(chat_id=update.effective_chat.id, user_id=update.effective_user.id)
     await update.effective_chat.send_message(
-        f"✅ Ник сохранён: <b>{saved_nickname}</b>",
+        f"✅ Ник сохранён: <b>{escape_html(saved_nickname)}</b>",
         parse_mode="HTML",
         message_thread_id=getattr(update.effective_message, "message_thread_id", None),
     )
@@ -369,7 +370,10 @@ async def _show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, *,
         )
         
         # Get username for mention
-        username = update.effective_user.username or update.effective_user.first_name or "тренер"
+        username = display_name(
+            getattr(update.effective_user, "username", None),
+            getattr(update.effective_user, "first_name", None),
+        )
         
         # Send menu message with temporary session_id
         sent_message = await update.effective_chat.send_message(

@@ -1,10 +1,34 @@
 """Unit tests for session management."""
-import pytest
-import time
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-from bot.navigation.session import MenuSession, SessionStore
+from bot.navigation.session import PendingInput, SessionStore
+
+
+class FakeRedis:
+    def __init__(self) -> None:
+        self.store: dict[str, str] = {}
+        self.closed = False
+
+    def setex(self, key: str, ttl: int, value: str) -> None:
+        self.store[key] = value
+
+    def get(self, key: str):
+        return self.store.get(key)
+
+    def delete(self, key: str) -> None:
+        self.store.pop(key, None)
+
+    def set(self, key: str, value: str, ex: int | None = None, nx: bool = False) -> None:
+        if nx and key in self.store:
+            return
+        self.store[key] = value
+
+    def exists(self, key: str) -> bool:
+        return key in self.store
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def test_create_session():
@@ -190,3 +214,38 @@ def test_delete_session():
     
     # Session should be gone
     assert store.get_session(session_id) is None
+
+
+def test_session_store_redis_backend_roundtrip() -> None:
+    store = SessionStore()
+    store._redis = FakeRedis()
+
+    session_id = store.create_session(chat_id=5, message_id=10, user_id=15)
+    session = store.get_session(session_id)
+
+    assert session is not None
+    assert session.chat_id == 5
+    assert session.message_id == 10
+    store.delete_session(session_id)
+    assert store.get_session(session_id) is None
+
+
+def test_pending_input_redis_backend_roundtrip() -> None:
+    store = SessionStore()
+    store._redis = FakeRedis()
+
+    store.set_pending_input(
+        action="cover_search",
+        chat_id=5,
+        user_id=15,
+        source_message_id=99,
+        data={"query": "pikachu"},
+    )
+    pending = store.get_pending_input(chat_id=5, user_id=15)
+
+    assert isinstance(pending, PendingInput)
+    assert pending.action == "cover_search"
+    assert pending.data["query"] == "pikachu"
+
+    store.clear_pending_input(chat_id=5, user_id=15)
+    assert store.get_pending_input(chat_id=5, user_id=15) is None

@@ -5,6 +5,7 @@ from telegram.ext import ContextTypes
 from telegram.error import TelegramError, BadRequest
 
 from bot.navigation.session import MenuSession, session_store
+from bot.ui.html import display_name
 from bot.ui.menu import build_main_menu_keyboard
 from bot.ui.messages import get_main_menu_text
 
@@ -26,7 +27,10 @@ async def back_to_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     
     try:
         # Get username for mention
-        username = update.effective_user.username or update.effective_user.first_name or "тренер"
+        username = display_name(
+            getattr(update.effective_user, "username", None),
+            getattr(update.effective_user, "first_name", None),
+        )
         if query.message and _is_photo_message(query.message):
             sent_message = await context.bot.send_message(
                 chat_id=session.chat_id,

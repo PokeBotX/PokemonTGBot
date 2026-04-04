@@ -44,6 +44,26 @@ def test_render_pokemon_card_caption_omits_optional_lines_when_missing() -> None
     assert "Тип: <b>unknown</b>" in caption
 
 
+def test_render_pokemon_card_caption_escapes_html_fields() -> None:
+    caption = render_pokemon_card_caption(
+        PokemonCardData(
+            pokemon_id=25,
+            name="Pika<b>chu</b>",
+            rarity="Rare<script>",
+            pokemon_type="electric&fire",
+            base_hp=35,
+            base_attack=55,
+            base_defense=40,
+            base_stamina=90,
+            trainer_label='@ash<&>',
+        )
+    )
+    assert "Pika&lt;b&gt;chu&lt;/b&gt;" in caption
+    assert "Rare&lt;script&gt;" in caption
+    assert "electric&amp;fire" in caption
+    assert "@ash&lt;&amp;&gt;" in caption
+
+
 def test_build_pokemon_card_keyboard_can_include_market_button() -> None:
     keyboard = build_pokemon_card_keyboard("session-1", include_market_button=True)
     assert keyboard.inline_keyboard[0][0].text == "🏪 Рынок"

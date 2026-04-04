@@ -11,17 +11,18 @@ from telegram.ext import ContextTypes
 
 from bot.db.database import (
     Database,
-    ShopError,
-    MarketBrowsePage,
-    MarketBrowseState,
     MarketBuyRequestSummary,
     MarketListingSummary,
+    MarketBrowsePage,
+    MarketBrowseState,
     MARKET_SORT_CHEAPEST,
     MARKET_SORT_NEWEST,
+    ShopError,
 )
 from bot.navigation.context import extract_context
 from bot.navigation.router import NavigationRouter, parse_callback_data
 from bot.navigation.session import MenuSession, PendingInput, session_store
+from bot.ui.html import display_name, escape_html
 from bot.ui.menu import build_back_button
 
 logger = structlog.get_logger()
@@ -259,11 +260,15 @@ async def market_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, ses
             return
 
         if section == MARKET_ROUTE_START_SELL_PRICE:
-            await _handle_market_start_sell_price(query, session)
+            if not db:
+                raise ValueError("Database is required for sell-price flow")
+            await _handle_market_start_sell_price(query, session, db)
             return
 
         if section == MARKET_ROUTE_START_BUY_PRICE:
-            await _handle_market_start_buy_price(query, session)
+            if not db:
+                raise ValueError("Database is required for buy-price flow")
+            await _handle_market_start_buy_price(query, session, db)
             return
 
         if section == MARKET_ROUTE_CONFIRM_SELL:
@@ -419,6 +424,15 @@ async def market_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, ses
             user_id=session.user_id,
         )
         await query.answer(f"⚠️ {e}", show_alert=False)
+    except ValueError as e:
+        logger.warning(
+            "market_handler_error",
+            section=section,
+            error="stale_view",
+            error_message=str(e),
+            user_id=session.user_id,
+        )
+        await query.answer("⚠️ Экран устарел, откройте рынок заново.", show_alert=False)
     except BadRequest as e:
         logger.warning(
             "market_handler_error",
@@ -564,6 +578,14 @@ async def _handle_market_confirm_buy(query, session: MenuSession, db: Database) 
     if listing_id is None:
         raise ValueError("Buy confirmation payload is missing")
     listing_price = session.data.get("market_selected_listing_price")
+    precheck_error = await db.get_market_buy_listing_precheck_error(
+        session.user_id,
+        query.from_user.username if getattr(query, "from_user", None) else None,
+        listing_id=int(listing_id),
+    )
+    if precheck_error:
+        await query.answer(f"⚠️ {precheck_error}", show_alert=False)
+        return
     if listing_price is not None and getattr(query, "from_user", None):
         shop_view = await db.get_shop_view(query.from_user.id, query.from_user.username)
         if shop_view.pokecoin_balance < int(listing_price):
@@ -634,10 +656,14 @@ async def _handle_market_card_entry(query, session: MenuSession) -> None:
     )
 
 
-async def _handle_market_start_sell_price(query, session: MenuSession) -> None:
+async def _handle_market_start_sell_price(query, session: MenuSession, db: Database) -> None:
     action = str(session.data.get("market_entry_action") or "")
     if action != MARKET_CARD_ACTION_SELL:
         raise ValueError("Sell-price flow requires owned pokemon entry")
+    sell_block_reason = await _get_market_sell_block_reason(query, session, db)
+    if sell_block_reason:
+        await query.answer(f"⚠️ {sell_block_reason}", show_alert=False)
+        return
     session_store.set_pending_input(
         action=MARKET_PENDING_ACTION_SELL_PRICE,
         chat_id=session.chat_id,
@@ -665,10 +691,14 @@ async def _handle_market_start_sell_price(query, session: MenuSession) -> None:
     logger.info("market_sell_price_requested", session_id=next_session_id, user_id=session.user_id)
 
 
-async def _handle_market_start_buy_price(query, session: MenuSession) -> None:
+async def _handle_market_start_buy_price(query, session: MenuSession, db: Database) -> None:
     action = str(session.data.get("market_entry_action") or "")
     if action != MARKET_CARD_ACTION_REQUEST:
         raise ValueError("Buy-price flow requires request entry")
+    request_block_reason = await _get_market_buy_request_block_reason(query, session, db)
+    if request_block_reason:
+        await query.answer(f"⚠️ {request_block_reason}", show_alert=False)
+        return
     session_store.set_pending_input(
         action=MARKET_PENDING_ACTION_BUY_PRICE,
         chat_id=session.chat_id,
@@ -769,6 +799,17 @@ async def _handle_market_sell_price_input(
     if not entry:
         await update.effective_chat.send_message(
             "⚠️ Экземпляр покемона не найден.",
+            message_thread_id=getattr(update.effective_message, "message_thread_id", None),
+        )
+        return
+    sell_block_reason = await _get_market_sell_block_reason_from_context(
+        update,
+        db,
+        user_pokemon_id=user_pokemon_id,
+    )
+    if sell_block_reason:
+        await update.effective_chat.send_message(
+            f"⚠️ {sell_block_reason}",
             message_thread_id=getattr(update.effective_message, "message_thread_id", None),
         )
         return
@@ -883,6 +924,17 @@ async def _handle_market_buy_price_input(
     if not entry:
         await update.effective_chat.send_message(
             "⚠️ Покемон не найден.",
+            message_thread_id=getattr(update.effective_message, "message_thread_id", None),
+        )
+        return
+    request_block_reason = await _get_market_buy_request_block_reason_from_context(
+        update,
+        db,
+        pokemon_id=pokemon_id,
+    )
+    if request_block_reason:
+        await update.effective_chat.send_message(
+            f"⚠️ {request_block_reason}",
             message_thread_id=getattr(update.effective_message, "message_thread_id", None),
         )
         return
@@ -1052,7 +1104,6 @@ async def _handle_market_fulfill_select(query, session: MenuSession, db: Databas
         raise ValueError("Request fulfillment target is unavailable")
 
     request_id = int(request_ids[index])
-    selected_pokemon_id = pokemon_ids[index]
     requests = await db.get_sellable_market_buy_requests(
         session.user_id,
         query.from_user.username if getattr(query, "from_user", None) else None,
@@ -1084,6 +1135,15 @@ async def _handle_market_confirm_fulfill(query, session: MenuSession, db: Databa
     user_pokemon_id = session.data.get("market_selected_request_pokemon_id")
     if request_id is None or user_pokemon_id is None:
         raise ValueError("Fulfillment confirmation payload is missing")
+    precheck_error = await db.get_market_request_fulfill_precheck_error(
+        session.user_id,
+        query.from_user.username if getattr(query, "from_user", None) else None,
+        request_id=int(request_id),
+        user_pokemon_id=int(user_pokemon_id),
+    )
+    if precheck_error:
+        await query.answer(f"⚠️ {precheck_error}", show_alert=False)
+        return
 
     result = await db.fulfill_market_buy_request(
         session.user_id,
@@ -1098,7 +1158,7 @@ async def _handle_market_confirm_fulfill(query, session: MenuSession, db: Databa
             [
                 "✅ <b>Заявка закрыта</b>",
                 "",
-                f"Покемон: <b>{result.request.name}</b>",
+                f"Покемон: <b>{escape_html(result.request.name)}</b>",
                 f"Цена: 🪙 <b>{result.price}</b>",
                 f"Экземпляр: <code>{result.transferred_user_pokemon_id}</code>",
             ]
@@ -1124,7 +1184,7 @@ def _render_market_card_entry_text(
         lines = [
             "🏪 <b>Рынок</b>",
             "",
-            f"Вы готовите продажу покемона <b>{pokemon_name}</b> <code>#{pokemon_id}</code>.",
+            f"Вы готовите продажу покемона <b>{escape_html(pokemon_name)}</b> <code>#{pokemon_id}</code>.",
             (f"Экземпляр: <code>{user_pokemon_id}</code>" if user_pokemon_id is not None else ""),
             "",
             "Следующий шаг для этого сценария: создание лота на продажу.",
@@ -1133,7 +1193,7 @@ def _render_market_card_entry_text(
         lines = [
             "🏪 <b>Рынок</b>",
             "",
-            f"Вы готовите заявку на покупку покемона <b>{pokemon_name}</b> <code>#{pokemon_id}</code>.",
+            f"Вы готовите заявку на покупку покемона <b>{escape_html(pokemon_name)}</b> <code>#{pokemon_id}</code>.",
             "",
             "Следующий шаг для этого сценария: создание заявки на покупку.",
         ]
@@ -1154,7 +1214,7 @@ def _render_market_sell_confirmation_text(
         [
             "🏪 <b>Подтверждение лота</b>",
             "",
-            f"Покемон: <b>{pokemon_name}</b> <code>#{pokemon_id}</code>",
+            f"Покемон: <b>{escape_html(pokemon_name)}</b> <code>#{pokemon_id}</code>",
             f"Экземпляр: <code>{user_pokemon_id}</code>",
             f"Цена: 🪙 <b>{price}</b>",
             f"Стартовая комиссия: 🪙 <b>{commission}</b>",
@@ -1169,9 +1229,9 @@ def _render_market_buy_confirmation_text(entry: MarketListingSummary, current_ba
         [
             "🏪 <b>Подтверждение покупки</b>",
             "",
-            f"Покемон: <b>{entry.name}</b> <code>#{entry.pokemon_id}</code>",
+            f"Покемон: <b>{escape_html(entry.name)}</b> <code>#{entry.pokemon_id}</code>",
             f"Экземпляр: <code>{entry.user_pokemon_id}</code>",
-            f"Продавец: <b>{entry.seller_label or 'тренер'}</b>",
+            f"Продавец: <b>{escape_html(entry.seller_label or 'тренер')}</b>",
             f"Цена: 🪙 <b>{entry.price}</b>",
             f"Ваш баланс: 🪙 <b>{current_balance}</b>",
             f"Хватает на покупку: <b>{'да' if current_balance >= entry.price else 'нет'}</b>",
@@ -1182,7 +1242,7 @@ def _render_market_buy_confirmation_text(entry: MarketListingSummary, current_ba
 def _render_market_root_text(user_label: str) -> str:
     return "\n".join(
         [
-            f"🏪 <b>{user_label}, рынок открыт</b>",
+            f"🏪 <b>{escape_html(user_label)}, рынок открыт</b>",
             "",
             "Здесь можно покупать покемонов за <b>pokecoin</b>,",
             "закрывать чужие заявки и управлять своими лотами.",
@@ -1194,7 +1254,7 @@ def _render_market_root_text(user_label: str) -> str:
 
 def _render_market_buy_text(user_label: str, page: MarketBrowsePage) -> str:
     lines = [
-        f"🏪 <b>{user_label}, активные лоты</b> <code>({page.current_page}/{page.total_pages})</code>",
+        f"🏪 <b>{escape_html(user_label)}, активные лоты</b> <code>({page.current_page}/{page.total_pages})</code>",
         "",
     ]
     if page.entries:
@@ -1209,7 +1269,7 @@ def _render_market_buy_text(user_label: str, page: MarketBrowsePage) -> str:
             f"Найдено лотов: <b>{page.total_entries}</b>",
             f"Сортировка: <b>{'сначала дешёвые' if page.filter_state.sort_mode == MARKET_SORT_CHEAPEST else 'сначала новые'}</b>",
             (
-                f"Редкости: <b>{', '.join(page.filter_state.rarities)}</b>"
+                f"Редкости: <b>{escape_html(', '.join(page.filter_state.rarities))}</b>"
                 if page.filter_state.rarities
                 else "Редкости: <b>все</b>"
             ),
@@ -1226,29 +1286,29 @@ def _render_market_listing_line(index: int, entry: MarketListingSummary) -> str:
         "Rare": "🟢",
         "Common": "⚪️",
     }.get(entry.rarity, "⚪️")
-    seller = entry.seller_label or "тренер"
+    seller = escape_html(entry.seller_label or "тренер")
     return (
-        f"<b>{index}.</b> {rarity_marker} <b>{entry.name}</b> "
+        f"<b>{index}.</b> {rarity_marker} <b>{escape_html(entry.name)}</b> "
         f"[id: {entry.pokemon_id}] | экз: {entry.user_pokemon_id} | 🪙 <b>{entry.price}</b> | {seller}"
     )
 
 
 def _render_my_market_listings_text(user_label: str, listings: list[MarketListingSummary]) -> str:
-    lines = [f"📦 <b>{user_label}, ваши лоты</b>", ""]
+    lines = [f"📦 <b>{escape_html(user_label)}, ваши лоты</b>", ""]
     if not listings:
         lines.append("У вас пока нет активных лотов.")
     else:
         for index, entry in enumerate(listings, start=1):
             rarity_marker = _market_rarity_marker(entry.rarity)
             lines.append(
-                f"{index}. {rarity_marker} <b>{entry.name}</b> [id: {entry.pokemon_id}] | "
+                f"{index}. {rarity_marker} <b>{escape_html(entry.name)}</b> [id: {entry.pokemon_id}] | "
                 f"экз: {entry.user_pokemon_id} | 🪙 <b>{entry.price}</b> | дней осталось: <b>{entry.days_remaining}</b>"
             )
     return "\n".join(lines)
 
 
 def _render_my_market_requests_text(user_label: str, requests: list[MarketBuyRequestSummary]) -> str:
-    lines = [f"🧾 <b>{user_label}, ваши заявки</b>", ""]
+    lines = [f"🧾 <b>{escape_html(user_label)}, ваши заявки</b>", ""]
     if not requests:
         lines.append("У вас пока нет активных заявок.")
     else:
@@ -1260,7 +1320,7 @@ def _render_my_market_requests_text(user_label: str, requests: list[MarketBuyReq
                 "Common": "⚪️",
             }.get(entry.rarity, "⚪️")
             lines.append(
-                f"{index}. {rarity_marker} <b>{entry.name}</b> [id: {entry.pokemon_id}] | 🪙 <b>{entry.price}</b>"
+                f"{index}. {rarity_marker} <b>{escape_html(entry.name)}</b> [id: {entry.pokemon_id}] | 🪙 <b>{entry.price}</b>"
             )
     return "\n".join(lines)
 
@@ -1390,7 +1450,7 @@ def _render_market_buy_request_confirmation_text(
         [
             "🏪 <b>Подтверждение заявки</b>",
             "",
-            f"Покемон: <b>{pokemon_name}</b> <code>#{pokemon_id}</code>",
+            f"Покемон: <b>{escape_html(pokemon_name)}</b> <code>#{pokemon_id}</code>",
             f"Цена заявки: 🪙 <b>{price}</b>",
             f"Ваш баланс: 🪙 <b>{balance}</b>",
             f"Хватает на резерв: <b>{'да' if enough_for_request else 'нет'}</b>",
@@ -1408,15 +1468,15 @@ def _build_market_buy_request_confirmation_keyboard(session_id: str) -> InlineKe
 
 
 def _render_market_sell_requests_text(user_label: str, requests: list[MarketBuyRequestSummary]) -> str:
-    lines = [f"📤 <b>{user_label}, доступные заявки</b>", ""]
+    lines = [f"📤 <b>{escape_html(user_label)}, доступные заявки</b>", ""]
     if not requests:
         lines.append("Сейчас нет чужих заявок, которые вы можете закрыть.")
     else:
         for index, entry in enumerate(requests, start=1):
             rarity_marker = _market_rarity_marker(entry.rarity)
             lines.append(
-                f"{index}. {rarity_marker} <b>{entry.name}</b> [id: {entry.pokemon_id}] | "
-                f"🪙 <b>{entry.price}</b> | покупатель: <b>{entry.requester_label or 'тренер'}</b>"
+                f"{index}. {rarity_marker} <b>{escape_html(entry.name)}</b> [id: {entry.pokemon_id}] | "
+                f"🪙 <b>{entry.price}</b> | покупатель: <b>{escape_html(entry.requester_label or 'тренер')}</b>"
             )
     return "\n".join(lines)
 
@@ -1444,9 +1504,9 @@ def _render_market_fulfill_confirmation_text(entry: MarketBuyRequestSummary, use
         [
             "🏪 <b>Подтверждение продажи по заявке</b>",
             "",
-            f"Покемон: <b>{entry.name}</b> <code>#{entry.pokemon_id}</code>",
+            f"Покемон: <b>{escape_html(entry.name)}</b> <code>#{entry.pokemon_id}</code>",
             f"Ваш экземпляр: <code>{user_pokemon_id}</code>",
-            f"Покупатель: <b>{entry.requester_label or 'тренер'}</b>",
+            f"Покупатель: <b>{escape_html(entry.requester_label or 'тренер')}</b>",
             f"Цена: 🪙 <b>{entry.price}</b>",
         ]
     )
@@ -1548,13 +1608,65 @@ async def _edit_market_message_by_ids(
 
 def _display_user(update: Optional[Update]) -> str:
     if update and update.effective_user:
-        username = getattr(update.effective_user, "username", None)
-        if username:
-            return f"@{username}"
-        first_name = getattr(update.effective_user, "first_name", None)
-        if first_name:
-            return first_name
+        return display_name(
+            getattr(update.effective_user, "username", None),
+            getattr(update.effective_user, "first_name", None),
+        )
     return "тренер"
+
+
+async def _get_market_sell_block_reason(query, session: MenuSession, db: Database) -> str | None:
+    username = getattr(getattr(query, "from_user", None), "username", None)
+    user_pokemon_id = session.data.get("market_entry_user_pokemon_id")
+    if user_pokemon_id is None:
+        return "Нельзя создать лот: экран устарел."
+    return await db.get_market_sell_precheck_error(
+        session.user_id,
+        username,
+        user_pokemon_id=int(user_pokemon_id),
+    )
+
+
+async def _get_market_buy_request_block_reason(query, session: MenuSession, db: Database) -> str | None:
+    username = getattr(getattr(query, "from_user", None), "username", None)
+    pokemon_id = session.data.get("market_entry_pokemon_id")
+    if pokemon_id is None:
+        return "Нельзя создать заявку: экран устарел."
+    return await db.get_market_buy_request_precheck_error(
+        session.user_id,
+        username,
+        pokemon_id=int(pokemon_id),
+    )
+
+
+async def _get_market_sell_block_reason_from_context(
+    update: Update,
+    db: Database,
+    *,
+    user_pokemon_id: int,
+) -> str | None:
+    if not update.effective_user:
+        return "Рынок временно недоступен."
+    return await db.get_market_sell_precheck_error(
+        update.effective_user.id,
+        update.effective_user.username,
+        user_pokemon_id=user_pokemon_id,
+    )
+
+
+async def _get_market_buy_request_block_reason_from_context(
+    update: Update,
+    db: Database,
+    *,
+    pokemon_id: int,
+) -> str | None:
+    if not update.effective_user:
+        return "Рынок временно недоступен."
+    return await db.get_market_buy_request_precheck_error(
+        update.effective_user.id,
+        update.effective_user.username,
+        pokemon_id=pokemon_id,
+    )
 
 
 def _get_db(context: ContextTypes.DEFAULT_TYPE) -> Optional[Database]:

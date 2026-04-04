@@ -224,7 +224,94 @@ async def test_single_spin_sends_reward_card() -> None:
     reward_session = session_store.get_session(reward_session_id)
     assert reward_session is not None
     assert reward_session.message_id == sent_reward.message_id
+    assert "shop_reward" in reward_session.data
+    reward_button_texts = [
+        button.text
+        for row in reward_markup.inline_keyboard
+        for button in row
+    ]
+    assert "📘 Полная карточка" in reward_button_texts
     assert "🎟 @ash" in update.callback_query.edit_message_text.call_args.kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_shop_reward_card_caption_is_compact() -> None:
+    session = MenuSession("session-compact", 1, 100, None, 1)
+    db = AsyncMock()
+    db.spin_gacha = AsyncMock(
+        return_value=SpinResult(
+            rewards=[
+                PokemonReward(
+                    user_pokemon_id=10,
+                    pokemon_id=25,
+                    name="Pikachu",
+                    rarity="Rare",
+                    pokemon_type="electric",
+                    base_hp=35,
+                    base_attack=55,
+                    base_defense=40,
+                    base_stamina=90,
+                    image_credit_id=None,
+                )
+            ],
+            spent_amount=500,
+            shop_view=_shop_view(2000),
+        )
+    )
+    context = _make_context(db)
+    sent_reward = AsyncMock(spec=Message)
+    sent_reward.message_id = 777
+    sent_reward.edit_reply_markup = AsyncMock()
+    context.application.bot.send_photo = AsyncMock(return_value=sent_reward)
+    update = _make_update("shop_spin_1", session)
+
+    await shop_handler(update, context, session)
+
+    caption = context.application.bot.send_photo.call_args.kwargs["caption"]
+    assert "Тип:" not in caption
+    assert "HP:" not in caption
+    assert "ATK:" not in caption
+    assert "ID экземпляра:" not in caption
+
+
+@pytest.mark.asyncio
+async def test_shop_reward_full_card_button_sends_full_owned_card() -> None:
+    reward = PokemonReward(
+        user_pokemon_id=10,
+        pokemon_id=25,
+        name="Pikachu",
+        rarity="Rare",
+        pokemon_type="electric",
+        base_hp=35,
+        base_attack=55,
+        base_defense=40,
+        base_stamina=90,
+        image_credit_id=None,
+    )
+    session = MenuSession(
+        "session-reward-card",
+        1,
+        100,
+        None,
+        1,
+        data={"shop_reward": reward.as_session_payload()},
+    )
+    db = AsyncMock()
+    context = _make_context(db)
+    sent_card = AsyncMock(spec=Message)
+    sent_card.message_id = 778
+    sent_card.edit_reply_markup = AsyncMock()
+    context.application.bot.send_photo = AsyncMock(return_value=sent_card)
+    update = _make_update("shop_card", session)
+
+    await shop_handler(update, context, session)
+
+    assert context.application.bot.send_photo.called
+    full_caption = context.application.bot.send_photo.call_args.kwargs["caption"]
+    assert "HP:" in full_caption
+    assert "ID покемона:" in full_caption
+    assert sent_card.edit_reply_markup.called
+    update.callback_query.answer.assert_awaited_with("Карточка открыта.", show_alert=False)
 
 
 @pytest.mark.asyncio

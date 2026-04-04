@@ -50,6 +50,8 @@ DB_INIT_SCHEMA = os.getenv("DB_INIT_SCHEMA", "false").lower() == "true"
 DB_SCHEMA_PATH = os.getenv("DB_SCHEMA_PATH", "sql/schema.sql")
 REDIS_ENABLED = os.getenv("REDIS_ENABLED", "false").lower() == "true"
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+SESSION_REDIS_ENABLED = os.getenv("SESSION_REDIS_ENABLED", "false").lower() == "true"
+DROP_PENDING_UPDATES = os.getenv("DROP_PENDING_UPDATES", "false").lower() == "true"
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN not set in .env")
 
@@ -90,11 +92,20 @@ async def run_market_maintenance_job(context) -> None:
 
 async def post_init(application: Application) -> None:
     """Prepare bot state for local polling."""
+    logger.info(
+        "startup_config",
+        mode="polling",
+        db_enabled=DB_ENABLED,
+        redis_enabled=REDIS_ENABLED,
+        session_redis_enabled=SESSION_REDIS_ENABLED,
+        drop_pending_updates=DROP_PENDING_UPDATES,
+        db_init_schema=DB_INIT_SCHEMA,
+    )
     session_store.disable_redis()
-    if REDIS_ENABLED:
+    if REDIS_ENABLED and SESSION_REDIS_ENABLED:
         session_store.configure_redis(REDIS_URL)
         application.bot_data["redis_url"] = REDIS_URL
-        logger.info("redis_ready", redis_url=REDIS_URL)
+        logger.info("redis_ready", redis_url=REDIS_URL, mode="session_store")
 
     if DB_ENABLED:
         db = Database()
@@ -102,6 +113,8 @@ async def post_init(application: Application) -> None:
         if DB_INIT_SCHEMA:
             await db.init_schema(DB_SCHEMA_PATH)
         application.bot_data["db"] = db
+        if getattr(db, "redis", None) is not None:
+            application.bot_data["redis_url"] = REDIS_URL
         maintenance_stats = await db.process_market_listing_maintenance()
         if any(maintenance_stats.values()):
             logger.info("market_maintenance_cycle", **maintenance_stats)
@@ -114,7 +127,7 @@ async def post_init(application: Application) -> None:
                 name="market-maintenance",
             )
 
-    await application.bot.delete_webhook(drop_pending_updates=True)
+    await application.bot.delete_webhook(drop_pending_updates=DROP_PENDING_UPDATES)
     await application.bot.set_my_commands([
         BotCommand("menu", "Открыть главное меню"),
         BotCommand("shop", "Открыть магазин"),
@@ -125,7 +138,13 @@ async def post_init(application: Application) -> None:
         BotCommand("search", "Поиск покемона по имени"),
         BotCommand("info", "Открыть информацию"),
     ])
-    logger.info("bot_ready", mode="polling")
+    logger.info(
+        "bot_ready",
+        mode="polling",
+        drop_pending_updates=DROP_PENDING_UPDATES,
+        db_connected=bool(application.bot_data.get("db")) if isinstance(application.bot_data, dict) else False,
+        redis_configured=bool(application.bot_data.get("redis_url")) if isinstance(application.bot_data, dict) else False,
+    )
 
 
 async def post_shutdown(application: Application) -> None:
@@ -175,7 +194,10 @@ def main() -> None:
     """Run bot in local long polling mode."""
     app = build_application()
     logger.info("bot_starting", mode="polling")
-    app.run_polling(allowed_updates=["message", "callback_query"], drop_pending_updates=True)
+    app.run_polling(
+        allowed_updates=["message", "callback_query"],
+        drop_pending_updates=DROP_PENDING_UPDATES,
+    )
 
 
 if __name__ == "__main__":
