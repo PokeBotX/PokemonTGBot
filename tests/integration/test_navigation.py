@@ -254,3 +254,23 @@ async def test_wrong_action_type(mock_callback_update):
     
     # Should show error
     assert update.callback_query.answer.called
+
+
+@pytest.mark.asyncio
+async def test_handler_text_answer_is_not_overridden_by_empty_preanswer(mock_callback_update):
+    async def answering_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, session: MenuSession) -> None:
+        await update.callback_query.answer("⚠️ Причина отказа", show_alert=False)
+
+    navigation_router.register("answering", answering_handler)
+    session_id = session_store.create_session(
+        chat_id=12345,
+        message_id=100,
+        user_id=12345,
+    )
+    update = mock_callback_update(f"menu:answering:{session_id}")
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+
+    await handle_callback_query(update, context)
+
+    assert update.callback_query.answer.call_count == 1
+    assert update.callback_query.answer.call_args.args[0] == "⚠️ Причина отказа"

@@ -53,6 +53,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     """
     query = update.callback_query
     
+    original_answer = query.answer
+
     try:
         await _sync_user_with_db(update, context)
 
@@ -155,20 +157,30 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             )
             return
         
-        # Answer callback query (Telegram requirement) - after all validations
-        logger.info(
-            "callback_answer_start",
-            section=callback_data.section,
-            session_id=callback_data.session_id,
-            user_id=update.effective_user.id,
-        )
-        await query.answer()
-        logger.info(
-            "callback_answer_done",
-            section=callback_data.section,
-            session_id=callback_data.session_id,
-            user_id=update.effective_user.id,
-        )
+        answered = False
+        async def tracked_answer(*args, **kwargs):
+            nonlocal answered
+            answered = True
+            logger.info(
+                "callback_answer_start",
+                section=callback_data.section,
+                session_id=callback_data.session_id,
+                user_id=update.effective_user.id,
+                has_text=bool(args),
+                show_alert=bool(kwargs.get("show_alert", False)),
+            )
+            result = await original_answer(*args, **kwargs)
+            logger.info(
+                "callback_answer_done",
+                section=callback_data.section,
+                session_id=callback_data.session_id,
+                user_id=update.effective_user.id,
+                has_text=bool(args),
+                show_alert=bool(kwargs.get("show_alert", False)),
+            )
+            return result
+
+        query.answer = tracked_answer
         
         # Route to section handler
         handler = navigation_router.get_handler(callback_data.section)
@@ -196,6 +208,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             user_id=update.effective_user.id,
         )
         await handler(update, context, session)
+        if not answered:
+            await tracked_answer()
         logger.info(
             "callback_handler_done",
             section=callback_data.section,
@@ -219,5 +233,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             logger.info("callback_error_answer_start", callback_data=query.data if query else None)
             await query.answer(ERROR_INVALID_CALLBACK, show_alert=True)
             logger.info("callback_error_answer_done", callback_data=query.data if query else None)
-        except:
+        except Exception:
             pass  # Best effort
+    finally:
+        query.answer = original_answer
