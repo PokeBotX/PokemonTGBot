@@ -2,6 +2,7 @@
 import pytest
 from unittest.mock import AsyncMock, Mock
 from telegram import Update, User, Chat, CallbackQuery, Message
+from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
 from bot.handlers.navigation import handle_callback_query
@@ -269,8 +270,13 @@ async def test_handler_text_answer_is_not_overridden_by_empty_preanswer(mock_cal
     )
     update = mock_callback_update(f"menu:answering:{session_id}")
     context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    update.callback_query.answer.side_effect = [
+        True,
+        BadRequest("Query is too old and response timeout expired or query ID is invalid"),
+    ]
 
     await handle_callback_query(update, context)
 
-    assert update.callback_query.answer.call_count == 1
-    assert update.callback_query.answer.call_args.args[0] == "⚠️ Причина отказа"
+    assert update.callback_query.answer.call_count == 2
+    assert update.callback_query.answer.await_args_list[0].args[0] == "⚠️ Причина отказа"
+    assert update.callback_query.answer.await_args_list[1].args == (None,)

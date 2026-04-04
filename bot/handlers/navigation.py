@@ -1,6 +1,7 @@
 """Navigation callback query handler."""
 import structlog
 from telegram import Update
+from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
 from bot.navigation.context import extract_context
@@ -40,6 +41,53 @@ async def _sync_user_with_db(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
 
 
+async def _answer_callback(
+    query,
+    *,
+    section: str | None,
+    session_id: str | None,
+    user_id: int | None,
+    text: str | None = None,
+    show_alert: bool = False,
+) -> bool:
+    """Answer a callback query and log the outcome.
+
+    Returns True when Telegram accepted the answer. Returns False when the
+    callback was likely already answered/expired and the failure can be ignored.
+    """
+    logger.info(
+        "callback_answer_start",
+        section=section,
+        session_id=session_id,
+        user_id=user_id,
+        has_text=bool(text),
+        show_alert=show_alert,
+    )
+    try:
+        await query.answer(text, show_alert=show_alert)
+    except TelegramError as exc:
+        logger.info(
+            "callback_answer_skipped",
+            section=section,
+            session_id=session_id,
+            user_id=user_id,
+            has_text=bool(text),
+            show_alert=show_alert,
+            error=str(exc),
+        )
+        return False
+
+    logger.info(
+        "callback_answer_done",
+        section=section,
+        session_id=session_id,
+        user_id=user_id,
+        has_text=bool(text),
+        show_alert=show_alert,
+    )
+    return True
+
+
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Handle all callback queries from inline buttons.
@@ -52,8 +100,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     5. Handle errors gracefully
     """
     query = update.callback_query
-    
-    original_answer = query.answer
 
     try:
         await _sync_user_with_db(update, context)
@@ -157,31 +203,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             )
             return
         
-        answered = False
-        async def tracked_answer(*args, **kwargs):
-            nonlocal answered
-            answered = True
-            logger.info(
-                "callback_answer_start",
-                section=callback_data.section,
-                session_id=callback_data.session_id,
-                user_id=update.effective_user.id,
-                has_text=bool(args),
-                show_alert=bool(kwargs.get("show_alert", False)),
-            )
-            result = await original_answer(*args, **kwargs)
-            logger.info(
-                "callback_answer_done",
-                section=callback_data.section,
-                session_id=callback_data.session_id,
-                user_id=update.effective_user.id,
-                has_text=bool(args),
-                show_alert=bool(kwargs.get("show_alert", False)),
-            )
-            return result
-
-        query.answer = tracked_answer
-        
         # Route to section handler
         handler = navigation_router.get_handler(callback_data.section)
         if not handler:
@@ -208,8 +229,12 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             user_id=update.effective_user.id,
         )
         await handler(update, context, session)
-        if not answered:
-            await tracked_answer()
+        await _answer_callback(
+            query,
+            section=callback_data.section,
+            session_id=callback_data.session_id,
+            user_id=update.effective_user.id,
+        )
         logger.info(
             "callback_handler_done",
             section=callback_data.section,
@@ -235,5 +260,3 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             logger.info("callback_error_answer_done", callback_data=query.data if query else None)
         except Exception:
             pass  # Best effort
-    finally:
-        query.answer = original_answer
