@@ -2560,7 +2560,13 @@ class Database:
                   pc.name,
                   pc.rarity,
                   pc.type,
-                  1::int AS quantity,
+                  (
+                    SELECT COUNT(*)
+                    FROM user_pokemon up_count
+                    WHERE up_count.owner_user_id = up.owner_user_id
+                      AND up_count.pokemon_id = up.pokemon_id
+                      AND up_count.released_at IS NULL
+                  )::int AS quantity,
                   pc.base_hp,
                   pc.base_attack,
                   pc.base_defense,
@@ -2605,19 +2611,19 @@ class Database:
             async with conn.transaction():
                 user_id = await self._ensure_user(conn, telegram_id, username)
                 rows = await conn.fetch(
-                    """
-                    SELECT
-                      pc.id AS pokemon_id,
-                      up.id AS sample_user_pokemon_id,
-                      pc.name,
-                      pc.rarity,
-                      pc.type,
-                      1::int AS quantity,
-                      pc.base_hp,
-                      pc.base_attack,
-                      pc.base_defense,
-                      pc.base_stamina,
-                      pc.image_credit_id,
+                """
+                SELECT
+                  pc.id AS pokemon_id,
+                  up.id AS sample_user_pokemon_id,
+                  pc.name,
+                  pc.rarity,
+                  pc.type,
+                  COUNT(*) OVER (PARTITION BY up.owner_user_id, up.pokemon_id)::int AS quantity,
+                  pc.base_hp,
+                  pc.base_attack,
+                  pc.base_defense,
+                  pc.base_stamina,
+                  pc.image_credit_id,
                       up.is_locked
                     FROM user_pokemon up
                     JOIN pokemon_catalog pc ON pc.id = up.pokemon_id

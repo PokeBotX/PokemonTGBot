@@ -1,6 +1,6 @@
 """Unit tests for database helpers."""
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -58,3 +58,97 @@ async def test_note_chat_message_via_redis_uses_counter_and_sets_ttl() -> None:
     assert result == 1
     assert db.redis.values["encounter:count:777"] == 1
     assert db.redis.ttls["encounter:count:777"] == CHAT_ENCOUNTER_COUNTER_TTL_SECONDS
+
+
+class _AcquireContext:
+    def __init__(self, conn) -> None:
+        self.conn = conn
+
+    async def __aenter__(self):
+        return self.conn
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _FakePool:
+    def __init__(self, conn) -> None:
+        self.conn = conn
+
+    def acquire(self):
+        return _AcquireContext(self.conn)
+
+
+@pytest.mark.asyncio
+async def test_get_user_pokemon_entry_counts_owned_duplicates() -> None:
+    db = Database()
+    conn = AsyncMock()
+    conn.fetchrow = AsyncMock(
+        return_value={
+            "pokemon_id": 743,
+            "sample_user_pokemon_id": 1001,
+            "name": "Ribombee",
+            "rarity": "Epic",
+            "type": "fairy",
+            "quantity": 2,
+            "base_hp": 60,
+            "base_attack": 55,
+            "base_defense": 60,
+            "base_stamina": 124,
+            "image_credit_id": None,
+            "is_locked": False,
+        }
+    )
+    db.pool = _FakePool(conn)
+
+    entry = await db.get_user_pokemon_entry(1001)
+
+    assert entry is not None
+    assert entry.quantity == 2
+    assert "SELECT COUNT(*)" in conn.fetchrow.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_get_user_pokemon_instances_for_species_propagates_total_quantity() -> None:
+    db = Database()
+    conn = Mock()
+    conn.transaction = Mock(return_value=_AcquireContext(None))
+    conn.fetch = AsyncMock(
+        return_value=[
+            {
+                "pokemon_id": 743,
+                "sample_user_pokemon_id": 1001,
+                "name": "Ribombee",
+                "rarity": "Epic",
+                "type": "fairy",
+                "quantity": 2,
+                "base_hp": 60,
+                "base_attack": 55,
+                "base_defense": 60,
+                "base_stamina": 124,
+                "image_credit_id": None,
+                "is_locked": False,
+            },
+            {
+                "pokemon_id": 743,
+                "sample_user_pokemon_id": 1002,
+                "name": "Ribombee",
+                "rarity": "Epic",
+                "type": "fairy",
+                "quantity": 2,
+                "base_hp": 60,
+                "base_attack": 55,
+                "base_defense": 60,
+                "base_stamina": 124,
+                "image_credit_id": None,
+                "is_locked": True,
+            },
+        ]
+    )
+    db.pool = _FakePool(conn)
+    db._ensure_user = AsyncMock(return_value=77)
+
+    entries = await db.get_user_pokemon_instances_for_species(12345, "ash", pokemon_id=743)
+
+    assert [entry.quantity for entry in entries] == [2, 2]
+    assert "COUNT(*) OVER" in conn.fetch.call_args.args[0]
