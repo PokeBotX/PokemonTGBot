@@ -773,12 +773,13 @@ async def _handle_extra_actions_prompt(update: Update, context: ContextTypes.DEF
         await query.answer("Карточка больше недоступна.", show_alert=False)
         return
 
+    source_url = await _resolve_entry_source_url(db, entry)
     next_session_id = _create_session(session, dict(session.data))
     await _edit_collection_message(
         query,
         session,
         _render_extra_actions_text(entry),
-        _build_extra_actions_keyboard(next_session_id, entry.is_locked),
+        _build_extra_actions_keyboard(next_session_id, entry.is_locked, source_url=source_url),
     )
 
 
@@ -821,11 +822,12 @@ async def _handle_lock_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     next_session_id = _create_session(session, dict(session.data))
     status_text = "🔒 Покемон залочен." if result.is_locked else "🔓 Покемон разблокирован."
+    source_url = await _resolve_entry_source_url(db, entry)
     await _edit_collection_message(
         query,
         session,
         _render_extra_actions_text(entry, status_text=status_text),
-        _build_extra_actions_keyboard(next_session_id, result.is_locked),
+        _build_extra_actions_keyboard(next_session_id, result.is_locked, source_url=source_url),
     )
     await query.answer(status_text, show_alert=False)
 
@@ -858,11 +860,12 @@ async def _handle_set_cover(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
     next_session_id = _create_session(session, dict(session.data))
     status_text = f"🖼 Обложка обновлена: <b>{entry.name}</b>."
+    source_url = await _resolve_entry_source_url(db, entry)
     await _edit_collection_message(
         query,
         session,
         _render_extra_actions_text(entry, status_text=status_text),
-        _build_extra_actions_keyboard(next_session_id, entry.is_locked),
+        _build_extra_actions_keyboard(next_session_id, entry.is_locked, source_url=source_url),
     )
     await query.answer("Обложка обновлена.", show_alert=False)
 
@@ -916,6 +919,19 @@ async def _load_owned_card_entry(
     if not entry:
         return None
     return entry
+
+
+async def _resolve_entry_source_url(db: Database, entry: CollectionEntry) -> Optional[str]:
+    if entry.image_credit_id is None:
+        return None
+    image_credit = await db.get_image_credit(int(entry.image_credit_id))
+    source = getattr(image_credit, "source", None) if image_credit else None
+    if not isinstance(source, str):
+        return None
+    source = source.strip()
+    if not source.startswith(("http://", "https://")):
+        return None
+    return source
 
 
 async def _edit_collection_card_message(query, session: MenuSession, entry: CollectionEntry) -> None:
@@ -988,15 +1004,16 @@ def _build_instance_picker_keyboard(session_id: str, instances: list[CollectionE
     return InlineKeyboardMarkup(keyboard)
 
 
-def _build_extra_actions_keyboard(session_id: str, is_locked: bool) -> InlineKeyboardMarkup:
+def _build_extra_actions_keyboard(session_id: str, is_locked: bool, *, source_url: Optional[str] = None) -> InlineKeyboardMarkup:
     lock_label = "🔓 Разлочить" if is_locked else "🔒 Залочить"
-    return InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton(lock_label, callback_data=f"menu:pkl:{session_id}")],
-            [InlineKeyboardButton("🖼 На обложку", callback_data=f"menu:pkv:{session_id}")],
-            [InlineKeyboardButton("🔙 К карточке", callback_data=f"menu:pkb:{session_id}")],
-        ]
-    )
+    rows = [
+        [InlineKeyboardButton(lock_label, callback_data=f"menu:pkl:{session_id}")],
+        [InlineKeyboardButton("🖼 На обложку", callback_data=f"menu:pkv:{session_id}")],
+    ]
+    if source_url:
+        rows.append([InlineKeyboardButton("🔗 Источник", url=source_url)])
+    rows.append([InlineKeyboardButton("🔙 К карточке", callback_data=f"menu:pkb:{session_id}")])
+    return InlineKeyboardMarkup(rows)
 
 
 def _render_collection_card_caption(entry: CollectionEntry, user_label: Optional[str] = None) -> str:

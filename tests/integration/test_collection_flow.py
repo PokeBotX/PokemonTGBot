@@ -586,3 +586,60 @@ async def test_collection_extra_actions_set_cover_updates_profile_cover() -> Non
     assert query.edit_message_text.called
     text = query.edit_message_text.call_args.kwargs["text"]
     assert "Обложка обновлена" in text
+
+
+@pytest.mark.asyncio
+async def test_collection_extra_actions_shows_source_button_when_available() -> None:
+    session = MenuSession(
+        session_id="collection-extra-session",
+        chat_id=12345,
+        message_id=240,
+        user_id=12345,
+        message_thread_id=None,
+        data={
+            "release_user_pokemon_id": 250,
+            "release_pokemon_name": "Pikachu",
+            "release_rarity": "Rare",
+        },
+    )
+
+    user = Mock(spec=User)
+    user.id = 12345
+    user.username = "ash"
+
+    query = AsyncMock(spec=CallbackQuery)
+    query.data = f"menu:pkm:{session.session_id}"
+    query.message = Mock(spec=Message)
+    query.message.photo = []
+    query.edit_message_text = AsyncMock()
+    query.answer = AsyncMock()
+
+    update = Mock(spec=Update)
+    update.callback_query = query
+    update.effective_user = user
+
+    db = AsyncMock()
+    entry = _entry(25, "Pikachu", "Rare", "electric", 1)
+    entry.image_credit_id = 55
+    db.get_user_pokemon_entry = AsyncMock(return_value=entry)
+    db.get_image_credit = AsyncMock(
+        return_value=SimpleNamespace(
+            image_credit_id=55,
+            storage_bucket="pokemon-assets",
+            object_key="pokemon/Pikachu/image.png",
+            content_type="image/png",
+            source="https://example.com/source",
+        )
+    )
+
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = Mock()
+    context.application.bot_data = {"db": db}
+
+    await collection_handler(update, context, session)
+
+    keyboard = query.edit_message_text.call_args.kwargs["reply_markup"]
+    button_texts = [button.text for row in keyboard.inline_keyboard for button in row]
+    assert "🔗 Источник" in button_texts
+    source_button = next(button for row in keyboard.inline_keyboard for button in row if button.text == "🔗 Источник")
+    assert source_button.url == "https://example.com/source"
