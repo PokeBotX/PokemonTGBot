@@ -10,7 +10,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
 from bot.db import Database
-from bot.db.database import MARKET_MAINTENANCE_INTERVAL_SECONDS
+from bot.db.database import MARKET_MAINTENANCE_INTERVAL_SECONDS, TRADE_MAINTENANCE_INTERVAL_SECONDS
 from bot.utils.logging import setup_logging
 from bot.handlers.chat_activity import group_message_activity_handler
 from bot.handlers.commands import (
@@ -27,6 +27,9 @@ from bot.handlers.commands import (
     sellprice_command,
     shop_command,
     start_command,
+    trade_command,
+    tradeadd_command,
+    traderemove_command,
 )
 from bot.handlers.navigation import handle_callback_query
 from bot.navigation.router import navigation_router
@@ -35,6 +38,7 @@ from bot.navigation.router import navigation_router
 from bot.handlers.sections.shop import register_shop_routes
 from bot.handlers.sections.market import register_market_routes
 from bot.handlers.sections.profile import handle_profile_text_input, register_profile_routes
+from bot.handlers.sections.trade import register_trade_routes, run_trade_maintenance_job
 from bot.handlers.sections.games import games_handler
 from bot.handlers.sections.collection import register_collection_routes
 from bot.handlers.sections.updates import updates_handler
@@ -129,6 +133,7 @@ def register_routes() -> None:
     register_collection_routes(navigation_router)
     register_profile_routes(navigation_router)
     register_market_routes(navigation_router)
+    register_trade_routes(navigation_router)
     navigation_router.register("games", games_handler)
     navigation_router.register("updates", updates_handler)
     navigation_router.register("chat", chat_handler)
@@ -151,6 +156,7 @@ async def setup_bot_commands(application: Application) -> None:
         BotCommand("collection", "Открыть коллекцию"),
         BotCommand("find", "Поиск покемона в чате"),
         BotCommand("search", "Поиск покемона по имени"),
+        BotCommand("trade", "Создать обмен в чате"),
         BotCommand("info", "Открыть информацию"),
     ]
     
@@ -225,6 +231,9 @@ async def lifespan(app: FastAPI):
     bot_app.add_handler(CommandHandler("items", items_command))
     bot_app.add_handler(CommandHandler("find", find_command))
     bot_app.add_handler(CommandHandler("search", search_command))
+    bot_app.add_handler(CommandHandler("trade", trade_command))
+    bot_app.add_handler(CommandHandler("tradeadd", tradeadd_command))
+    bot_app.add_handler(CommandHandler("traderemove", traderemove_command))
     bot_app.add_handler(CommandHandler("changename", changename_command))
     bot_app.add_handler(CommandHandler("sellprice", sellprice_command))
     bot_app.add_handler(CommandHandler("buyprice", buyprice_command))
@@ -274,6 +283,12 @@ async def lifespan(app: FastAPI):
                 interval=MARKET_MAINTENANCE_INTERVAL_SECONDS,
                 first=MARKET_MAINTENANCE_INTERVAL_SECONDS,
                 name="market-maintenance",
+            )
+            bot_app.job_queue.run_repeating(
+                run_trade_maintenance_job,
+                interval=TRADE_MAINTENANCE_INTERVAL_SECONDS,
+                first=TRADE_MAINTENANCE_INTERVAL_SECONDS,
+                name="trade-maintenance",
             )
     logger.info("runtime_dependency_state", **_build_health_payload())
     

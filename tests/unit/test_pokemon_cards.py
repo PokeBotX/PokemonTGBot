@@ -74,12 +74,15 @@ def test_build_pokemon_card_keyboard_can_include_release_button() -> None:
     keyboard = build_pokemon_card_keyboard(
         "session-2",
         include_market_button=True,
+        include_trade_button=True,
         include_release_button=True,
     )
     labels = [button.text for row in keyboard.inline_keyboard for button in row]
     callbacks = [button.callback_data for row in keyboard.inline_keyboard for button in row]
     assert "🏪 Рынок" in labels
+    assert "🤝 Добавить в обмен" in labels
     assert "🕊 Отпустить" in labels
+    assert "menu:tca:session-2" in callbacks
     assert "menu:pkr:session-2" in callbacks
 
 

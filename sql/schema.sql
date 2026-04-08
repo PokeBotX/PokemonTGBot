@@ -135,6 +135,41 @@ CREATE TABLE IF NOT EXISTS "market_buy_requests" (
   "cancel_reason" varchar(32)
 );
 
+CREATE TABLE IF NOT EXISTS "trade_sessions" (
+  "id" bigserial PRIMARY KEY,
+  "chat_id" bigint NOT NULL,
+  "message_thread_id" bigint,
+  "request_message_id" bigint,
+  "active_message_id" bigint,
+  "initiator_user_id" bigint NOT NULL,
+  "target_user_id" bigint NOT NULL,
+  "status" varchar(16) NOT NULL DEFAULT 'pending',
+  "pending_expires_at" timestamptz NOT NULL,
+  "trade_expires_at" timestamptz,
+  "initiator_ready" boolean NOT NULL DEFAULT false,
+  "target_ready" boolean NOT NULL DEFAULT false,
+  "created_at" timestamptz NOT NULL DEFAULT NOW(),
+  "updated_at" timestamptz NOT NULL DEFAULT NOW(),
+  "accepted_at" timestamptz,
+  "canceled_at" timestamptz,
+  "completed_at" timestamptz,
+  "cancel_reason" varchar(32)
+);
+
+CREATE TABLE IF NOT EXISTS "trade_user_links" (
+  "user_id" bigint PRIMARY KEY,
+  "trade_id" bigint NOT NULL,
+  "created_at" timestamptz NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS "trade_offer_items" (
+  "trade_id" bigint NOT NULL,
+  "user_id" bigint NOT NULL,
+  "user_pokemon_id" bigint NOT NULL UNIQUE,
+  "created_at" timestamptz NOT NULL DEFAULT NOW(),
+  PRIMARY KEY ("trade_id", "user_pokemon_id")
+);
+
 CREATE TABLE IF NOT EXISTS "chat_encounters" (
   "id" bigserial PRIMARY KEY,
   "chat_id" bigint NOT NULL,
@@ -202,6 +237,18 @@ CREATE INDEX IF NOT EXISTS market_buy_requests_pokemon_status_idx
 CREATE UNIQUE INDEX IF NOT EXISTS market_buy_requests_active_requester_pokemon_idx
   ON "market_buy_requests" ("requester_user_id", "pokemon_id")
   WHERE status = 'active';
+
+CREATE INDEX IF NOT EXISTS trade_sessions_status_pending_expires_idx
+  ON "trade_sessions" ("status", "pending_expires_at");
+
+CREATE INDEX IF NOT EXISTS trade_sessions_status_trade_expires_idx
+  ON "trade_sessions" ("status", "trade_expires_at");
+
+CREATE INDEX IF NOT EXISTS trade_sessions_chat_id_status_idx
+  ON "trade_sessions" ("chat_id", "status", "created_at" DESC);
+
+CREATE INDEX IF NOT EXISTS trade_offer_items_trade_id_user_id_idx
+  ON "trade_offer_items" ("trade_id", "user_id", "created_at");
 
 CREATE INDEX IF NOT EXISTS users_lower_tg_username_idx
   ON "users" (lower("tg_username"));
@@ -377,6 +424,39 @@ END $$;
 
 DO $$
 BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'trade_sessions_status_valid'
+  ) THEN
+    ALTER TABLE "trade_sessions"
+      ADD CONSTRAINT "trade_sessions_status_valid"
+      CHECK ("status" IN ('pending', 'active', 'rejected', 'canceled', 'expired', 'completed'));
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'trade_sessions_not_self_trade'
+  ) THEN
+    ALTER TABLE "trade_sessions"
+      ADD CONSTRAINT "trade_sessions_not_self_trade"
+      CHECK ("initiator_user_id" <> "target_user_id");
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'trade_offer_items_user_unique_per_trade'
+  ) THEN
+    ALTER TABLE "trade_offer_items"
+      ADD CONSTRAINT "trade_offer_items_user_unique_per_trade"
+      UNIQUE ("trade_id", "user_id", "user_pokemon_id");
+  END IF;
+END $$;
+
+DO $$
+BEGIN
   IF EXISTS (
     SELECT 1
     FROM pg_constraint
@@ -487,6 +567,104 @@ BEGIN
     ALTER TABLE "user_settings"
       ADD FOREIGN KEY ("user_id")
       REFERENCES "users" ("id")
+      DEFERRABLE INITIALLY IMMEDIATE;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'trade_sessions_initiator_user_id_fkey'
+  ) THEN
+    ALTER TABLE "trade_sessions"
+      ADD FOREIGN KEY ("initiator_user_id")
+      REFERENCES "users" ("id")
+      DEFERRABLE INITIALLY IMMEDIATE;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'trade_sessions_target_user_id_fkey'
+  ) THEN
+    ALTER TABLE "trade_sessions"
+      ADD FOREIGN KEY ("target_user_id")
+      REFERENCES "users" ("id")
+      DEFERRABLE INITIALLY IMMEDIATE;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'trade_user_links_user_id_fkey'
+  ) THEN
+    ALTER TABLE "trade_user_links"
+      ADD FOREIGN KEY ("user_id")
+      REFERENCES "users" ("id")
+      DEFERRABLE INITIALLY IMMEDIATE;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'trade_user_links_trade_id_fkey'
+  ) THEN
+    ALTER TABLE "trade_user_links"
+      ADD FOREIGN KEY ("trade_id")
+      REFERENCES "trade_sessions" ("id")
+      DEFERRABLE INITIALLY IMMEDIATE;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'trade_offer_items_trade_id_fkey'
+  ) THEN
+    ALTER TABLE "trade_offer_items"
+      ADD FOREIGN KEY ("trade_id")
+      REFERENCES "trade_sessions" ("id")
+      DEFERRABLE INITIALLY IMMEDIATE;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'trade_offer_items_user_id_fkey'
+  ) THEN
+    ALTER TABLE "trade_offer_items"
+      ADD FOREIGN KEY ("user_id")
+      REFERENCES "users" ("id")
+      DEFERRABLE INITIALLY IMMEDIATE;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'trade_offer_items_user_pokemon_id_fkey'
+  ) THEN
+    ALTER TABLE "trade_offer_items"
+      ADD FOREIGN KEY ("user_pokemon_id")
+      REFERENCES "user_pokemon" ("id")
       DEFERRABLE INITIALLY IMMEDIATE;
   END IF;
 END $$;

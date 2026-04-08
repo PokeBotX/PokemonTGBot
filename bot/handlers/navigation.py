@@ -18,6 +18,19 @@ from bot.ui.messages import (
 logger = structlog.get_logger()
 
 
+def _session_allows_user(session, user_id: int) -> bool:
+    """Return True when the session belongs to the user or explicitly allows them."""
+    if user_id == session.user_id:
+        return True
+    allowed_user_ids = session.data.get("allowed_user_ids")
+    if not isinstance(allowed_user_ids, list):
+        return False
+    try:
+        return int(user_id) in {int(value) for value in allowed_user_ids}
+    except (TypeError, ValueError):
+        return False
+
+
 async def _sync_user_with_db(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Create or update user in DB if DB integration is enabled."""
     application = getattr(context, "application", None)
@@ -153,7 +166,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             return
         
         # Check if user is trying to use someone else's button
-        if update.effective_user.id != session.user_id:
+        if not _session_allows_user(session, update.effective_user.id):
             logger.info(
                 "callback_wrong_user_answer_start",
                 session_id=callback_data.session_id,

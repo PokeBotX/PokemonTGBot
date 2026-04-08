@@ -394,6 +394,12 @@ async def _send_encounter_card(
     viewer_user_id: Optional[int] = None,
     owner_user_id: Optional[int] = None,
 ) -> Message:
+    db = _get_db(context)
+    has_active_trade = bool(
+        viewer_user_id is not None
+        and db
+        and await db.get_active_trade_for_user(viewer_user_id, None)
+    )
     message = await send_pokemon_card(
         context,
         chat_id=source_message.chat.id,
@@ -438,6 +444,7 @@ async def _send_encounter_card(
             reply_markup=build_pokemon_card_keyboard(
                 session_id,
                 include_market_button=True,
+                include_trade_button=viewer_is_owner and has_active_trade,
                 include_release_button=viewer_is_owner,
                 include_extra_button=viewer_is_owner,
             )

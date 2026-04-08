@@ -589,6 +589,8 @@ async def _handle_reward_full_card(
         base_stamina=int(reward_payload["base_stamina"]),
         image_credit_id=reward_payload.get("image_credit_id"),
     )
+    db = _get_db(context)
+    has_active_trade = bool(db and await db.get_active_trade_for_user(session.user_id, None))
     message = await send_pokemon_card(
         context,
         chat_id=session.chat_id,
@@ -627,6 +629,7 @@ async def _handle_reward_full_card(
         reply_markup=build_pokemon_card_keyboard(
             card_session_id,
             include_market_button=True,
+            include_trade_button=has_active_trade,
             include_release_button=True,
             include_extra_button=True,
         )

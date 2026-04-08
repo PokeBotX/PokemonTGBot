@@ -7,7 +7,7 @@ from telegram import BotCommand
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
 from bot.db import Database
-from bot.db.database import MARKET_MAINTENANCE_INTERVAL_SECONDS
+from bot.db.database import MARKET_MAINTENANCE_INTERVAL_SECONDS, TRADE_MAINTENANCE_INTERVAL_SECONDS
 from bot.handlers.chat_activity import group_message_activity_handler
 from bot.handlers.commands import (
     buyprice_command,
@@ -23,6 +23,9 @@ from bot.handlers.commands import (
     sellprice_command,
     shop_command,
     start_command,
+    trade_command,
+    tradeadd_command,
+    traderemove_command,
 )
 from bot.handlers.sections.chat_encounters import handle_encounter_callback
 from bot.handlers.navigation import handle_callback_query
@@ -34,6 +37,7 @@ from bot.handlers.sections.info import info_handler
 from bot.handlers.sections.market import register_market_routes
 from bot.handlers.sections.profile import handle_profile_text_input, register_profile_routes
 from bot.handlers.sections.shop import register_shop_routes
+from bot.handlers.sections.trade import register_trade_routes, run_trade_maintenance_job
 from bot.handlers.sections.support import support_handler
 from bot.handlers.sections.updates import updates_handler
 from bot.navigation.router import navigation_router
@@ -68,6 +72,7 @@ def register_routes() -> None:
     register_collection_routes(navigation_router)
     register_profile_routes(navigation_router)
     register_market_routes(navigation_router)
+    register_trade_routes(navigation_router)
     navigation_router.register("games", games_handler)
     navigation_router.register("updates", updates_handler)
     navigation_router.register("chat", chat_handler)
@@ -126,6 +131,12 @@ async def post_init(application: Application) -> None:
                 first=MARKET_MAINTENANCE_INTERVAL_SECONDS,
                 name="market-maintenance",
             )
+            application.job_queue.run_repeating(
+                run_trade_maintenance_job,
+                interval=TRADE_MAINTENANCE_INTERVAL_SECONDS,
+                first=TRADE_MAINTENANCE_INTERVAL_SECONDS,
+                name="trade-maintenance",
+            )
 
     await application.bot.delete_webhook(drop_pending_updates=DROP_PENDING_UPDATES)
     await application.bot.set_my_commands([
@@ -136,6 +147,7 @@ async def post_init(application: Application) -> None:
         BotCommand("collection", "Открыть коллекцию"),
         BotCommand("find", "Поиск покемона в чате"),
         BotCommand("search", "Поиск покемона по имени"),
+        BotCommand("trade", "Создать обмен в чате"),
         BotCommand("info", "Открыть информацию"),
     ])
     logger.info(
@@ -172,6 +184,9 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("items", items_command))
     application.add_handler(CommandHandler("find", find_command))
     application.add_handler(CommandHandler("search", search_command))
+    application.add_handler(CommandHandler("trade", trade_command))
+    application.add_handler(CommandHandler("tradeadd", tradeadd_command))
+    application.add_handler(CommandHandler("traderemove", traderemove_command))
     application.add_handler(CommandHandler("changename", changename_command))
     application.add_handler(CommandHandler("sellprice", sellprice_command))
     application.add_handler(CommandHandler("buyprice", buyprice_command))

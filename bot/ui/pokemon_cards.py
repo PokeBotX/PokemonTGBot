@@ -20,6 +20,7 @@ FALLBACK_IMAGE_PATH = Path("image.png")
 MARKET_CARD_SECTION = "mce"
 RELEASE_CARD_SECTION = "pkr"
 EXTRA_CARD_SECTION = "pkm"
+TRADE_CARD_SECTION = "tca"
 
 
 @dataclass(slots=True)
@@ -171,6 +172,7 @@ def build_pokemon_card_keyboard(
     session_id: str,
     *,
     include_market_button: bool = False,
+    include_trade_button: bool = False,
     include_release_button: bool = False,
     include_extra_button: bool = False,
 ) -> InlineKeyboardMarkup:
@@ -178,6 +180,8 @@ def build_pokemon_card_keyboard(
     rows: list[list[InlineKeyboardButton]] = []
     if include_market_button:
         rows.append([InlineKeyboardButton("🏪 Рынок", callback_data=f"menu:{MARKET_CARD_SECTION}:{session_id}")])
+    if include_trade_button:
+        rows.append([InlineKeyboardButton("🤝 Добавить в обмен", callback_data=f"menu:{TRADE_CARD_SECTION}:{session_id}")])
     if include_release_button:
         rows.append([InlineKeyboardButton("🕊 Отпустить", callback_data=f"menu:{RELEASE_CARD_SECTION}:{session_id}")])
     if include_extra_button:

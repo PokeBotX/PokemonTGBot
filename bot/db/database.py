@@ -55,6 +55,16 @@ MARKET_LISTING_STATUS_EXPIRED = "expired"
 MARKET_REQUEST_STATUS_ACTIVE = "active"
 MARKET_REQUEST_STATUS_FULFILLED = "fulfilled"
 MARKET_REQUEST_STATUS_CANCELED = "canceled"
+TRADE_STATUS_PENDING = "pending"
+TRADE_STATUS_ACTIVE = "active"
+TRADE_STATUS_REJECTED = "rejected"
+TRADE_STATUS_CANCELED = "canceled"
+TRADE_STATUS_EXPIRED = "expired"
+TRADE_STATUS_COMPLETED = "completed"
+TRADE_PENDING_TTL_SECONDS = 2 * 60
+TRADE_ACTIVE_TTL_SECONDS = 10 * 60
+TRADE_MAX_OFFERS_PER_SIDE = 6
+TRADE_MAINTENANCE_INTERVAL_SECONDS = 30
 MARKET_SORT_NEWEST = "newest"
 MARKET_SORT_CHEAPEST = "cheapest"
 POKEMON_RELEASE_REWARDS = {
@@ -578,6 +588,77 @@ class ChatEncounterAttemptResult:
     catcher_user_id: Optional[int] = None
     catcher_label: Optional[str] = None
     already_attempted: bool = False
+
+
+@dataclass(slots=True)
+class TradeOfferLine:
+    """One pokemon currently offered in a trade."""
+
+    user_pokemon_id: int
+    pokemon_id: int
+    name: str
+    rarity: str
+
+
+@dataclass(slots=True)
+class TradeParticipantState:
+    """Per-user state in one trade session."""
+
+    user_id: int
+    telegram_id: int
+    username: Optional[str]
+    nickname: Optional[str]
+    label: str
+    is_ready: bool
+    offers: list[TradeOfferLine]
+
+
+@dataclass(slots=True)
+class TradeSessionSummary:
+    """Shared read model for one pending or active trade."""
+
+    trade_id: int
+    chat_id: int
+    message_thread_id: Optional[int]
+    request_message_id: Optional[int]
+    active_message_id: Optional[int]
+    status: str
+    pending_expires_at: Optional[datetime]
+    trade_expires_at: Optional[datetime]
+    created_at: datetime
+    accepted_at: Optional[datetime]
+    canceled_at: Optional[datetime]
+    completed_at: Optional[datetime]
+    cancel_reason: Optional[str]
+    initiator: TradeParticipantState
+    target: TradeParticipantState
+
+    @property
+    def message_id(self) -> Optional[int]:
+        return self.active_message_id or self.request_message_id
+
+    def participant_for_telegram_id(self, telegram_id: int) -> Optional[TradeParticipantState]:
+        if self.initiator.telegram_id == telegram_id:
+            return self.initiator
+        if self.target.telegram_id == telegram_id:
+            return self.target
+        return None
+
+
+@dataclass(slots=True)
+class TradeReadyToggleResult:
+    """Outcome of toggling ready state in an active trade."""
+
+    trade: TradeSessionSummary
+    completed: bool = False
+
+
+@dataclass(slots=True)
+class TradeMaintenanceResult:
+    """Expired trade projections that should be reflected in Telegram."""
+
+    expired_requests: list[TradeSessionSummary]
+    expired_active_trades: list[TradeSessionSummary]
 
 
 class Database:
@@ -2101,6 +2182,422 @@ class Database:
 
         return stats
 
+    async def resolve_trade_target_by_username(self, username: str) -> tuple[int, Optional[str], Optional[str]]:
+        """Resolve a known Telegram username for /trade @username."""
+        normalized = username.strip().lstrip("@").lower()
+        if not normalized:
+            raise ShopError("Укажите username после /trade.")
+
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT tg_user_id, tg_username, nickname
+                FROM users
+                WHERE lower(tg_username) = $1
+                """,
+                normalized,
+            )
+        if not row:
+            raise ShopError("Я пока не знаю этого пользователя. Он должен хотя бы раз воспользоваться ботом.")
+        return int(row["tg_user_id"]), row["tg_username"], row["nickname"]
+
+    async def get_active_trade_for_user(
+        self,
+        telegram_id: int,
+        username: Optional[str],
+    ) -> Optional[TradeSessionSummary]:
+        """Return the active accepted trade for a user, if present."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await self._ensure_user(conn, telegram_id, username)
+                user_id = await self._get_user_id_by_telegram_id(conn, telegram_id)
+                trade_id = await self._get_linked_trade_id(conn, user_id)
+                if trade_id is None:
+                    return None
+                trade = await self._fetch_trade_summary(conn, trade_id)
+                return trade if trade.status == TRADE_STATUS_ACTIVE else None
+
+    async def create_trade_request(
+        self,
+        *,
+        initiator_telegram_id: int,
+        initiator_username: Optional[str],
+        target_telegram_id: int,
+        target_username: Optional[str],
+        chat_id: int,
+        message_thread_id: Optional[int],
+    ) -> TradeSessionSummary:
+        """Create a pending trade request between two users."""
+        if initiator_telegram_id == target_telegram_id:
+            raise ShopError("Нельзя предложить обмен самому себе.")
+
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                initiator_user_id = await self._ensure_user(conn, initiator_telegram_id, initiator_username)
+                target_user_id = await self._ensure_user(conn, target_telegram_id, target_username)
+                await self._ensure_trade_user_available(
+                    conn,
+                    initiator_user_id,
+                    own_message="У вас уже есть активный или ожидающий трейд.",
+                )
+                await self._ensure_trade_user_available(
+                    conn,
+                    target_user_id,
+                    own_message="У этого пользователя уже есть активный или ожидающий трейд.",
+                )
+                inserted = await conn.fetchrow(
+                    """
+                    INSERT INTO trade_sessions (
+                      chat_id,
+                      message_thread_id,
+                      initiator_user_id,
+                      target_user_id,
+                      status,
+                      pending_expires_at
+                    )
+                    VALUES (
+                      $1,
+                      $2,
+                      $3,
+                      $4,
+                      $5,
+                      NOW() + make_interval(secs => $6)
+                    )
+                    RETURNING id
+                    """,
+                    chat_id,
+                    message_thread_id,
+                    initiator_user_id,
+                    target_user_id,
+                    TRADE_STATUS_PENDING,
+                    TRADE_PENDING_TTL_SECONDS,
+                )
+                trade_id = int(inserted["id"])
+                try:
+                    await conn.executemany(
+                        """
+                        INSERT INTO trade_user_links (user_id, trade_id)
+                        VALUES ($1, $2)
+                        """,
+                        [
+                            (initiator_user_id, trade_id),
+                            (target_user_id, trade_id),
+                        ],
+                    )
+                except asyncpg.UniqueViolationError as exc:
+                    raise ShopError("Один из участников уже занят другим трейдом.") from exc
+                trade = await self._fetch_trade_summary(conn, trade_id)
+
+        logger.info(
+            "trade_request_created",
+            trade_id=trade.trade_id,
+            initiator_telegram_id=initiator_telegram_id,
+            target_telegram_id=target_telegram_id,
+            chat_id=chat_id,
+        )
+        return trade
+
+    async def attach_trade_request_message(self, trade_id: int, message_id: int) -> None:
+        """Persist Telegram message id for a pending trade request."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE trade_sessions
+                SET request_message_id = $2,
+                    updated_at = NOW()
+                WHERE id = $1
+                """,
+                trade_id,
+                message_id,
+            )
+
+    async def accept_trade_request(self, trade_id: int, actor_telegram_id: int) -> TradeSessionSummary:
+        """Accept a pending trade request as the targeted user."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                actor_user_id = await self._get_user_id_by_telegram_id(conn, actor_telegram_id)
+                row = await conn.fetchrow(
+                    """
+                    SELECT *
+                    FROM trade_sessions
+                    WHERE id = $1
+                    FOR UPDATE
+                    """,
+                    trade_id,
+                )
+                if not row:
+                    raise ShopError("Трейд не найден.")
+                if str(row["status"]) != TRADE_STATUS_PENDING:
+                    raise ShopError("Эта заявка уже не активна.")
+                if int(row["target_user_id"]) != actor_user_id:
+                    raise ShopError("Только второй участник может принять этот трейд.")
+                if row["pending_expires_at"] is not None and _normalize_timestamp(row["pending_expires_at"]) <= datetime.now(UTC):
+                    await self._close_trade(conn, trade_id, status=TRADE_STATUS_EXPIRED, cancel_reason="request_expired")
+                    raise ShopError("Заявка на трейд уже истекла.")
+                await conn.execute(
+                    """
+                    UPDATE trade_sessions
+                    SET status = $2,
+                        accepted_at = NOW(),
+                        trade_expires_at = NOW() + make_interval(secs => $3),
+                        active_message_id = COALESCE(active_message_id, request_message_id),
+                        updated_at = NOW()
+                    WHERE id = $1
+                    """,
+                    trade_id,
+                    TRADE_STATUS_ACTIVE,
+                    TRADE_ACTIVE_TTL_SECONDS,
+                )
+                trade = await self._fetch_trade_summary(conn, trade_id)
+        logger.info("trade_request_accepted", trade_id=trade_id, actor_telegram_id=actor_telegram_id)
+        return trade
+
+    async def cancel_trade(
+        self,
+        trade_id: int,
+        actor_telegram_id: int,
+        *,
+        cancel_reason: str = "canceled",
+    ) -> TradeSessionSummary:
+        """Cancel a pending or active trade as one of its participants."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                actor_user_id = await self._get_user_id_by_telegram_id(conn, actor_telegram_id)
+                trade = await self._fetch_trade_summary(conn, trade_id)
+                if actor_user_id not in {trade.initiator.user_id, trade.target.user_id}:
+                    raise ShopError("Нельзя отменить чужой трейд.")
+                if trade.status not in {TRADE_STATUS_PENDING, TRADE_STATUS_ACTIVE}:
+                    raise ShopError("Этот трейд уже не активен.")
+                await self._close_trade(conn, trade_id, status=TRADE_STATUS_CANCELED, cancel_reason=cancel_reason)
+                closed = await self._fetch_trade_summary(conn, trade_id)
+        logger.info("trade_canceled", trade_id=trade_id, actor_telegram_id=actor_telegram_id, cancel_reason=cancel_reason)
+        return closed
+
+    async def add_trade_offer_pokemon(
+        self,
+        *,
+        telegram_id: int,
+        username: Optional[str],
+        user_pokemon_id: int,
+    ) -> TradeSessionSummary:
+        """Add one pokemon instance to the caller's active trade side."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await self._ensure_user(conn, telegram_id, username)
+                user_id = await self._get_user_id_by_telegram_id(conn, telegram_id)
+                trade_row = await self._fetch_active_trade_row_for_user(conn, user_id, for_update=True)
+                trade_id = int(trade_row["id"])
+                await self._ensure_trade_mutable(trade_row)
+                offered_count = await conn.fetchval(
+                    """
+                    SELECT COUNT(*)::int
+                    FROM trade_offer_items
+                    WHERE trade_id = $1 AND user_id = $2
+                    """,
+                    trade_id,
+                    user_id,
+                )
+                if int(offered_count or 0) >= TRADE_MAX_OFFERS_PER_SIDE:
+                    raise ShopError(f"В одной стороне трейда можно держать максимум {TRADE_MAX_OFFERS_PER_SIDE} покемонов.")
+
+                pokemon_row = await conn.fetchrow(
+                    """
+                    SELECT owner_user_id, is_locked, released_at
+                    FROM user_pokemon
+                    WHERE id = $1
+                    FOR UPDATE
+                    """,
+                    user_pokemon_id,
+                )
+                if not pokemon_row or int(pokemon_row["owner_user_id"]) != user_id:
+                    raise ShopError("Нельзя добавить в трейд чужого покемона.")
+                if pokemon_row["released_at"] is not None:
+                    raise ShopError("Нельзя добавить в трейд отпущенного покемона.")
+                if bool(pokemon_row["is_locked"]):
+                    raise ShopError("Нельзя добавить в трейд заблокированного покемона.")
+
+                active_listing = await conn.fetchval(
+                    """
+                    SELECT 1
+                    FROM market_listings
+                    WHERE pokemon_instance_id = $1
+                      AND status = $2
+                    LIMIT 1
+                    """,
+                    user_pokemon_id,
+                    MARKET_LISTING_STATUS_ACTIVE,
+                )
+                if active_listing:
+                    raise ShopError("Сначала снимите этого покемона с рынка.")
+                try:
+                    await conn.execute(
+                        """
+                        INSERT INTO trade_offer_items (trade_id, user_id, user_pokemon_id)
+                        VALUES ($1, $2, $3)
+                        """,
+                        trade_id,
+                        user_id,
+                        user_pokemon_id,
+                    )
+                except asyncpg.UniqueViolationError as exc:
+                    raise ShopError("Этот покемон уже участвует в трейде.") from exc
+                await conn.execute(
+                    """
+                    UPDATE trade_sessions
+                    SET initiator_ready = FALSE,
+                        target_ready = FALSE,
+                        updated_at = NOW()
+                    WHERE id = $1
+                    """,
+                    trade_id,
+                )
+                trade = await self._fetch_trade_summary(conn, trade_id)
+        logger.info("trade_offer_added", trade_id=trade.trade_id, telegram_id=telegram_id, user_pokemon_id=user_pokemon_id)
+        return trade
+
+    async def remove_trade_offer_pokemon(
+        self,
+        *,
+        telegram_id: int,
+        username: Optional[str],
+        user_pokemon_id: int,
+    ) -> TradeSessionSummary:
+        """Remove one pokemon instance from the caller's active trade side."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await self._ensure_user(conn, telegram_id, username)
+                user_id = await self._get_user_id_by_telegram_id(conn, telegram_id)
+                trade_row = await self._fetch_active_trade_row_for_user(conn, user_id, for_update=True)
+                trade_id = int(trade_row["id"])
+                await self._ensure_trade_mutable(trade_row)
+                deleted = await conn.execute(
+                    """
+                    DELETE FROM trade_offer_items
+                    WHERE trade_id = $1
+                      AND user_id = $2
+                      AND user_pokemon_id = $3
+                    """,
+                    trade_id,
+                    user_id,
+                    user_pokemon_id,
+                )
+                if deleted.endswith("0"):
+                    raise ShopError("Этот покемон сейчас не добавлен в трейд.")
+                await conn.execute(
+                    """
+                    UPDATE trade_sessions
+                    SET initiator_ready = FALSE,
+                        target_ready = FALSE,
+                        updated_at = NOW()
+                    WHERE id = $1
+                    """,
+                    trade_id,
+                )
+                trade = await self._fetch_trade_summary(conn, trade_id)
+        logger.info("trade_offer_removed", trade_id=trade.trade_id, telegram_id=telegram_id, user_pokemon_id=user_pokemon_id)
+        return trade
+
+    async def toggle_trade_ready(
+        self,
+        *,
+        telegram_id: int,
+        username: Optional[str],
+    ) -> TradeReadyToggleResult:
+        """Toggle ready state and complete the trade when both are ready."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await self._ensure_user(conn, telegram_id, username)
+                user_id = await self._get_user_id_by_telegram_id(conn, telegram_id)
+                trade_row = await self._fetch_active_trade_row_for_user(conn, user_id, for_update=True)
+                trade_id = int(trade_row["id"])
+                if trade_row["trade_expires_at"] is not None and _normalize_timestamp(trade_row["trade_expires_at"]) <= datetime.now(UTC):
+                    await self._close_trade(conn, trade_id, status=TRADE_STATUS_EXPIRED, cancel_reason="trade_expired")
+                    raise ShopError("Этот трейд уже истёк.")
+
+                is_initiator = int(trade_row["initiator_user_id"]) == user_id
+                ready_column = "initiator_ready" if is_initiator else "target_ready"
+                next_ready = not bool(trade_row[ready_column])
+                await conn.execute(
+                    f"""
+                    UPDATE trade_sessions
+                    SET {ready_column} = $2,
+                        updated_at = NOW()
+                    WHERE id = $1
+                    """,
+                    trade_id,
+                    next_ready,
+                )
+                flags = await conn.fetchrow(
+                    """
+                    SELECT initiator_ready, target_ready
+                    FROM trade_sessions
+                    WHERE id = $1
+                    """,
+                    trade_id,
+                )
+                if bool(flags["initiator_ready"]) and bool(flags["target_ready"]):
+                    before_complete = await self._fetch_trade_summary(conn, trade_id)
+                    await self._complete_trade(conn, trade_id, before_complete)
+                    before_complete.status = TRADE_STATUS_COMPLETED
+                    before_complete.completed_at = datetime.now(UTC)
+                    logger.info("trade_completed", trade_id=trade_id, telegram_id=telegram_id)
+                    return TradeReadyToggleResult(trade=before_complete, completed=True)
+
+                trade = await self._fetch_trade_summary(conn, trade_id)
+        logger.info("trade_ready_toggled", trade_id=trade.trade_id, telegram_id=telegram_id, ready=next_ready)
+        return TradeReadyToggleResult(trade=trade, completed=False)
+
+    async def process_trade_maintenance(self) -> TradeMaintenanceResult:
+        """Expire stale pending requests and active trades."""
+        self._ensure_pool()
+        expired_requests: list[TradeSessionSummary] = []
+        expired_active_trades: list[TradeSessionSummary] = []
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                request_rows = await conn.fetch(
+                    """
+                    SELECT id
+                    FROM trade_sessions
+                    WHERE status = $1
+                      AND pending_expires_at <= NOW()
+                    FOR UPDATE
+                    """,
+                    TRADE_STATUS_PENDING,
+                )
+                for row in request_rows:
+                    trade_id = int(row["id"])
+                    expired_requests.append(await self._fetch_trade_summary(conn, trade_id))
+                    await self._close_trade(conn, trade_id, status=TRADE_STATUS_EXPIRED, cancel_reason="request_expired")
+
+                active_rows = await conn.fetch(
+                    """
+                    SELECT id
+                    FROM trade_sessions
+                    WHERE status = $1
+                      AND trade_expires_at <= NOW()
+                    FOR UPDATE
+                    """,
+                    TRADE_STATUS_ACTIVE,
+                )
+                for row in active_rows:
+                    trade_id = int(row["id"])
+                    expired_active_trades.append(await self._fetch_trade_summary(conn, trade_id))
+                    await self._close_trade(conn, trade_id, status=TRADE_STATUS_EXPIRED, cancel_reason="trade_expired")
+
+        return TradeMaintenanceResult(
+            expired_requests=expired_requests,
+            expired_active_trades=expired_active_trades,
+        )
+
     async def note_chat_message(self, chat_id: int, message_thread_id: Optional[int]) -> Optional[ChatEncounter]:
         """Record one group-chat message and spawn an encounter if the threshold is reached."""
         self._ensure_pool()
@@ -2970,6 +3467,286 @@ class Database:
         )
         return SpinResult(rewards=rewards, spent_amount=total_cost, shop_view=shop_view)
 
+    async def _get_linked_trade_id(self, conn: asyncpg.Connection, user_id: int) -> Optional[int]:
+        trade_id = await conn.fetchval(
+            """
+            SELECT trade_id
+            FROM trade_user_links
+            WHERE user_id = $1
+            """,
+            user_id,
+        )
+        return int(trade_id) if trade_id is not None else None
+
+    async def _ensure_trade_user_available(
+        self,
+        conn: asyncpg.Connection,
+        user_id: int,
+        *,
+        own_message: str,
+    ) -> None:
+        linked_trade_id = await self._get_linked_trade_id(conn, user_id)
+        if linked_trade_id is not None:
+            raise ShopError(own_message)
+
+    async def _fetch_active_trade_row_for_user(
+        self,
+        conn: asyncpg.Connection,
+        user_id: int,
+        *,
+        for_update: bool = False,
+    ) -> asyncpg.Record:
+        lock_clause = " FOR UPDATE" if for_update else ""
+        row = await conn.fetchrow(
+            (
+                """
+                SELECT ts.*
+                FROM trade_user_links tul
+                JOIN trade_sessions ts ON ts.id = tul.trade_id
+                WHERE tul.user_id = $1
+                  AND ts.status = $2
+                """
+                + lock_clause
+            ),
+            user_id,
+            TRADE_STATUS_ACTIVE,
+        )
+        if not row:
+            raise ShopError("У вас нет активного трейда.")
+        return row
+
+    async def _ensure_trade_mutable(self, trade_row: asyncpg.Record) -> None:
+        if str(trade_row["status"]) != TRADE_STATUS_ACTIVE:
+            raise ShopError("Этот трейд уже не активен.")
+        if bool(trade_row["initiator_ready"]) or bool(trade_row["target_ready"]):
+            raise ShopError("Нельзя менять состав трейда, пока кто-то в статусе готов.")
+        expires_at = trade_row["trade_expires_at"]
+        if expires_at is not None and _normalize_timestamp(expires_at) <= datetime.now(UTC):
+            raise ShopError("Этот трейд уже истёк.")
+
+    async def _fetch_trade_summary(self, conn: asyncpg.Connection, trade_id: int) -> TradeSessionSummary:
+        row = await conn.fetchrow(
+            """
+            SELECT
+              ts.id,
+              ts.chat_id,
+              ts.message_thread_id,
+              ts.request_message_id,
+              ts.active_message_id,
+              ts.status,
+              ts.pending_expires_at,
+              ts.trade_expires_at,
+              ts.created_at,
+              ts.accepted_at,
+              ts.canceled_at,
+              ts.completed_at,
+              ts.cancel_reason,
+              ts.initiator_user_id,
+              ts.target_user_id,
+              ts.initiator_ready,
+              ts.target_ready,
+              iu.tg_user_id AS initiator_tg_user_id,
+              iu.tg_username AS initiator_tg_username,
+              iu.nickname AS initiator_nickname,
+              tu.tg_user_id AS target_tg_user_id,
+              tu.tg_username AS target_tg_username,
+              tu.nickname AS target_nickname
+            FROM trade_sessions ts
+            JOIN users iu ON iu.id = ts.initiator_user_id
+            JOIN users tu ON tu.id = ts.target_user_id
+            WHERE ts.id = $1
+            """,
+            trade_id,
+        )
+        if not row:
+            raise ShopError("Трейд не найден.")
+
+        offer_rows = await conn.fetch(
+            """
+            SELECT
+              toi.user_id,
+              toi.user_pokemon_id,
+              pc.id AS pokemon_id,
+              pc.name,
+              pc.rarity
+            FROM trade_offer_items toi
+            JOIN user_pokemon up ON up.id = toi.user_pokemon_id
+            JOIN pokemon_catalog pc ON pc.id = up.pokemon_id
+            WHERE toi.trade_id = $1
+            ORDER BY toi.created_at ASC, toi.user_pokemon_id ASC
+            """,
+            trade_id,
+        )
+
+        initiator_offers: list[TradeOfferLine] = []
+        target_offers: list[TradeOfferLine] = []
+        initiator_user_id = int(row["initiator_user_id"])
+        target_user_id = int(row["target_user_id"])
+        for offer in offer_rows:
+            line = TradeOfferLine(
+                user_pokemon_id=int(offer["user_pokemon_id"]),
+                pokemon_id=int(offer["pokemon_id"]),
+                name=str(offer["name"]),
+                rarity=str(offer["rarity"]),
+            )
+            if int(offer["user_id"]) == initiator_user_id:
+                initiator_offers.append(line)
+            else:
+                target_offers.append(line)
+
+        initiator = TradeParticipantState(
+            user_id=initiator_user_id,
+            telegram_id=int(row["initiator_tg_user_id"]),
+            username=row["initiator_tg_username"],
+            nickname=row["initiator_nickname"],
+            label=_resolve_trade_user_label(row["initiator_nickname"], row["initiator_tg_username"], int(row["initiator_tg_user_id"])),
+            is_ready=bool(row["initiator_ready"]),
+            offers=initiator_offers,
+        )
+        target = TradeParticipantState(
+            user_id=target_user_id,
+            telegram_id=int(row["target_tg_user_id"]),
+            username=row["target_tg_username"],
+            nickname=row["target_nickname"],
+            label=_resolve_trade_user_label(row["target_nickname"], row["target_tg_username"], int(row["target_tg_user_id"])),
+            is_ready=bool(row["target_ready"]),
+            offers=target_offers,
+        )
+        return TradeSessionSummary(
+            trade_id=int(row["id"]),
+            chat_id=int(row["chat_id"]),
+            message_thread_id=row["message_thread_id"],
+            request_message_id=row["request_message_id"],
+            active_message_id=row["active_message_id"],
+            status=str(row["status"]),
+            pending_expires_at=_normalize_optional_timestamp(row["pending_expires_at"]),
+            trade_expires_at=_normalize_optional_timestamp(row["trade_expires_at"]),
+            created_at=_normalize_timestamp(row["created_at"]),
+            accepted_at=_normalize_optional_timestamp(row["accepted_at"]),
+            canceled_at=_normalize_optional_timestamp(row["canceled_at"]),
+            completed_at=_normalize_optional_timestamp(row["completed_at"]),
+            cancel_reason=row["cancel_reason"],
+            initiator=initiator,
+            target=target,
+        )
+
+    async def _close_trade(
+        self,
+        conn: asyncpg.Connection,
+        trade_id: int,
+        *,
+        status: str,
+        cancel_reason: Optional[str] = None,
+    ) -> None:
+        should_mark_canceled = status in {
+            TRADE_STATUS_CANCELED,
+            TRADE_STATUS_REJECTED,
+            TRADE_STATUS_EXPIRED,
+        }
+        await conn.execute(
+            """
+            UPDATE trade_sessions
+            SET status = $2,
+                cancel_reason = $3,
+                canceled_at = CASE
+                  WHEN $4 THEN NOW()
+                  ELSE canceled_at
+                END,
+                updated_at = NOW()
+            WHERE id = $1
+            """,
+            trade_id,
+            status,
+            cancel_reason,
+            should_mark_canceled,
+        )
+        await conn.execute("DELETE FROM trade_offer_items WHERE trade_id = $1", trade_id)
+        await conn.execute("DELETE FROM trade_user_links WHERE trade_id = $1", trade_id)
+
+    async def _complete_trade(
+        self,
+        conn: asyncpg.Connection,
+        trade_id: int,
+        summary: TradeSessionSummary,
+    ) -> None:
+        offer_rows = await conn.fetch(
+            """
+            SELECT
+              toi.user_id,
+              toi.user_pokemon_id,
+              up.owner_user_id,
+              up.is_locked,
+              up.released_at
+            FROM trade_offer_items toi
+            JOIN user_pokemon up ON up.id = toi.user_pokemon_id
+            WHERE toi.trade_id = $1
+            ORDER BY toi.created_at ASC, toi.user_pokemon_id ASC
+            FOR UPDATE OF up, toi
+            """,
+            trade_id,
+        )
+        initiator_ids = {offer.user_pokemon_id for offer in summary.initiator.offers}
+        target_ids = {offer.user_pokemon_id for offer in summary.target.offers}
+        valid_ids = initiator_ids | target_ids
+        if valid_ids != {int(row["user_pokemon_id"]) for row in offer_rows}:
+            raise ShopError("Состав трейда устарел. Откройте его заново.")
+        for row in offer_rows:
+            owner_user_id = int(row["owner_user_id"])
+            user_pokemon_id = int(row["user_pokemon_id"])
+            if user_pokemon_id in initiator_ids and owner_user_id != summary.initiator.user_id:
+                raise ShopError("Один из ваших покемонов больше вам не принадлежит.")
+            if user_pokemon_id in target_ids and owner_user_id != summary.target.user_id:
+                raise ShopError("Один из покемонов второй стороны больше ей не принадлежит.")
+            if row["released_at"] is not None or bool(row["is_locked"]):
+                raise ShopError("Один из покемонов больше недоступен для трейда.")
+            active_listing = await conn.fetchval(
+                """
+                SELECT 1
+                FROM market_listings
+                WHERE pokemon_instance_id = $1
+                  AND status = $2
+                LIMIT 1
+                """,
+                user_pokemon_id,
+                MARKET_LISTING_STATUS_ACTIVE,
+            )
+            if active_listing:
+                raise ShopError("Один из покемонов уже выставлен на рынок.")
+
+        if initiator_ids:
+            await conn.execute(
+                """
+                UPDATE user_pokemon
+                SET owner_user_id = $2
+                WHERE id = ANY($1::bigint[])
+                """,
+                list(initiator_ids),
+                summary.target.user_id,
+            )
+        if target_ids:
+            await conn.execute(
+                """
+                UPDATE user_pokemon
+                SET owner_user_id = $2
+                WHERE id = ANY($1::bigint[])
+                """,
+                list(target_ids),
+                summary.initiator.user_id,
+            )
+        await conn.execute(
+            """
+            UPDATE trade_sessions
+            SET status = $2,
+                completed_at = NOW(),
+                updated_at = NOW()
+            WHERE id = $1
+            """,
+            trade_id,
+            TRADE_STATUS_COMPLETED,
+        )
+        await conn.execute("DELETE FROM trade_offer_items WHERE trade_id = $1", trade_id)
+        await conn.execute("DELETE FROM trade_user_links WHERE trade_id = $1", trade_id)
+
     def _ensure_pool(self) -> None:
         if not self.pool:
             raise ShopUnavailableError("Database is not connected")
@@ -3743,6 +4520,26 @@ def _normalize_timestamp(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
+
+def _normalize_optional_timestamp(value: Optional[datetime]) -> Optional[datetime]:
+    if value is None:
+        return None
+    return _normalize_timestamp(value)
+
+
+def _resolve_trade_user_label(
+    nickname: Optional[str],
+    username: Optional[str],
+    telegram_id: int,
+) -> str:
+    if nickname:
+        return str(nickname)
+    if username:
+        normalized = str(username).lstrip("@")
+        if normalized:
+            return f"@{normalized}"
+    return f"id:{telegram_id}"
 
 
 def _resolve_roll_rarity(epic_counter: int, legendary_counter: int) -> str:

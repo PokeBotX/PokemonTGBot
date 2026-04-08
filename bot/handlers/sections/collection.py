@@ -679,6 +679,8 @@ async def _send_collection_card(
     user_label: Optional[str] = None,
 ) -> Message:
     logger.info("collection_send_card_start", user_id=session.user_id, pokemon_id=entry.pokemon_id)
+    db = _get_db(context)
+    has_active_trade = bool(db and await db.get_active_trade_for_user(session.user_id, None))
     message = await send_pokemon_card(
         context,
         chat_id=session.chat_id,
@@ -719,6 +721,7 @@ async def _send_collection_card(
         reply_markup=build_pokemon_card_keyboard(
             detail_session_id,
             include_market_button=True,
+            include_trade_button=has_active_trade,
             include_release_button=True,
             include_extra_button=True,
         )
@@ -785,11 +788,12 @@ async def _handle_extra_actions_prompt(update: Update, context: ContextTypes.DEF
 
 async def _handle_card_return(update: Update, context: ContextTypes.DEFAULT_TYPE, session: MenuSession) -> None:
     query = update.callback_query
+    db = _get_db(context)
     entry = await _load_owned_card_entry(update, context, session)
     if not entry:
         await query.answer("Карточка больше недоступна.", show_alert=False)
         return
-    await _edit_collection_card_message(query, session, entry)
+    await _edit_collection_card_message(query, session, entry, db)
 
 
 async def _handle_lock_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE, session: MenuSession) -> None:
@@ -934,7 +938,12 @@ async def _resolve_entry_source_url(db: Database, entry: CollectionEntry) -> Opt
     return source
 
 
-async def _edit_collection_card_message(query, session: MenuSession, entry: CollectionEntry) -> None:
+async def _edit_collection_card_message(
+    query,
+    session: MenuSession,
+    entry: CollectionEntry,
+    db: Optional[Database],
+) -> None:
     next_session_id = _create_session(
         session,
         build_market_entry_payload(
@@ -956,6 +965,7 @@ async def _edit_collection_card_message(query, session: MenuSession, entry: Coll
         build_pokemon_card_keyboard(
             next_session_id,
             include_market_button=True,
+            include_trade_button=bool(db and await db.get_active_trade_for_user(session.user_id, None)),
             include_release_button=True,
             include_extra_button=True,
         ),

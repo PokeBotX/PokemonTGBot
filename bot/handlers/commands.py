@@ -15,6 +15,11 @@ from bot.handlers.sections.market import (
     handle_market_price_command,
     show_market_screen,
 )
+from bot.handlers.sections.trade import (
+    handle_trade_add_command,
+    handle_trade_remove_command,
+    start_trade_request,
+)
 from bot.handlers.sections.profile import (
     _display_profile_owner,
     _display_self_profile_owner,
@@ -272,6 +277,77 @@ async def buyprice_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if await _maybe_show_first_entry_guide(update, context):
         return
     await handle_market_price_command(update, context, action=MARKET_PENDING_ACTION_BUY_PRICE)
+
+
+async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /trade command for starting a trade request in chats."""
+    await _sync_user_with_db(update, context)
+    if await _maybe_show_first_entry_guide(update, context):
+        return
+    application = getattr(context, "application", None)
+    db = application.bot_data.get("db") if application else None
+    if not db or not update.effective_user or not update.effective_chat or not update.effective_message:
+        return
+    if update.effective_chat.type not in {"group", "supergroup"}:
+        await update.effective_chat.send_message(
+            "⚠️ Команда /trade доступна только в чатах.",
+            message_thread_id=getattr(update.effective_message, "message_thread_id", None),
+        )
+        return
+
+    target_user = None
+    reply_to = getattr(update.effective_message, "reply_to_message", None)
+    if reply_to and getattr(reply_to, "from_user", None) and not getattr(reply_to.from_user, "is_bot", False):
+        target_user = reply_to.from_user
+    else:
+        argument = _extract_command_argument(update.effective_message.text or "")
+        if argument:
+            try:
+                target_tg_id, target_username, _target_nickname = await db.resolve_trade_target_by_username(argument)
+            except ShopError as exc:
+                await update.effective_chat.send_message(
+                    f"⚠️ {exc}",
+                    message_thread_id=getattr(update.effective_message, "message_thread_id", None),
+                )
+                return
+            target_user = type("TradeTarget", (), {"id": target_tg_id, "username": target_username})()
+
+    if target_user is None:
+        await update.effective_chat.send_message(
+            "⚠️ Используйте /trade в ответ на сообщение пользователя или как <code>/trade @username</code>.",
+            parse_mode="HTML",
+            message_thread_id=getattr(update.effective_message, "message_thread_id", None),
+        )
+        return
+
+    try:
+        await start_trade_request(
+            update,
+            context,
+            target_telegram_id=int(target_user.id),
+            target_username=getattr(target_user, "username", None),
+        )
+    except ShopError as exc:
+        await update.effective_chat.send_message(
+            f"⚠️ {exc}",
+            message_thread_id=getattr(update.effective_message, "message_thread_id", None),
+        )
+
+
+async def tradeadd_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /tradeadd command."""
+    await _sync_user_with_db(update, context)
+    if await _maybe_show_first_entry_guide(update, context):
+        return
+    await handle_trade_add_command(update, context)
+
+
+async def traderemove_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /traderemove command."""
+    await _sync_user_with_db(update, context)
+    if await _maybe_show_first_entry_guide(update, context):
+        return
+    await handle_trade_remove_command(update, context)
 
 
 async def section_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
