@@ -296,21 +296,21 @@ async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     target_user = None
-    reply_to = getattr(update.effective_message, "reply_to_message", None)
-    if reply_to and getattr(reply_to, "from_user", None) and not getattr(reply_to.from_user, "is_bot", False):
-        target_user = reply_to.from_user
+    argument = _extract_command_argument(update.effective_message.text or "")
+    if argument:
+        try:
+            target_tg_id, target_username, _target_nickname = await db.resolve_trade_target_by_username(argument)
+        except ShopError as exc:
+            await update.effective_chat.send_message(
+                f"⚠️ {exc}",
+                message_thread_id=getattr(update.effective_message, "message_thread_id", None),
+            )
+            return
+        target_user = type("TradeTarget", (), {"id": target_tg_id, "username": target_username})()
     else:
-        argument = _extract_command_argument(update.effective_message.text or "")
-        if argument:
-            try:
-                target_tg_id, target_username, _target_nickname = await db.resolve_trade_target_by_username(argument)
-            except ShopError as exc:
-                await update.effective_chat.send_message(
-                    f"⚠️ {exc}",
-                    message_thread_id=getattr(update.effective_message, "message_thread_id", None),
-                )
-                return
-            target_user = type("TradeTarget", (), {"id": target_tg_id, "username": target_username})()
+        reply_to = getattr(update.effective_message, "reply_to_message", None)
+        if reply_to and getattr(reply_to, "from_user", None) and not getattr(reply_to.from_user, "is_bot", False):
+            target_user = reply_to.from_user
 
     if target_user is None:
         await update.effective_chat.send_message(

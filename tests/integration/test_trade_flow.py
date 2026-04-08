@@ -203,6 +203,61 @@ async def test_trade_command_creates_request_by_username() -> None:
 
 
 @pytest.mark.asyncio
+async def test_trade_command_prefers_explicit_username_over_reply_target() -> None:
+    actor = Mock(spec=User)
+    actor.id = 111
+    actor.username = "ash"
+
+    reply_target = Mock(spec=User)
+    reply_target.id = 333
+    reply_target.username = "brock"
+    reply_target.is_bot = False
+
+    chat = Mock(spec=Chat)
+    chat.id = -1001
+    chat.type = "supergroup"
+
+    reply_message = Mock(spec=Message)
+    reply_message.from_user = reply_target
+    reply_message.message_id = 41
+
+    message = Mock(spec=Message)
+    message.message_id = 42
+    message.chat = chat
+    message.from_user = actor
+    message.reply_to_message = reply_message
+    message.message_thread_id = 777
+    message.text = "/trade @misty"
+
+    sent_message = Mock(spec=Message)
+    sent_message.message_id = 500
+    sent_message.edit_reply_markup = AsyncMock()
+    chat.send_message = AsyncMock(return_value=sent_message)
+
+    update = Mock(spec=Update)
+    update.effective_user = actor
+    update.effective_chat = chat
+    update.effective_message = message
+
+    db = AsyncMock()
+    db.get_or_create_user_status = AsyncMock(return_value=(1, False))
+    db.consume_start_guide_flag = AsyncMock(return_value=False)
+    db.resolve_trade_target_by_username = AsyncMock(return_value=(222, "misty", None))
+    db.create_trade_request = AsyncMock(return_value=_trade_summary())
+    db.attach_trade_request_message = AsyncMock()
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+
+    await trade_command(update, context)
+
+    assert db.resolve_trade_target_by_username.called
+    assert db.create_trade_request.called
+    assert db.create_trade_request.call_args.kwargs["target_telegram_id"] == 222
+
+
+@pytest.mark.asyncio
 async def test_trade_accept_callback_renders_active_trade() -> None:
     session = MenuSession(
         session_id="trade-pending",
