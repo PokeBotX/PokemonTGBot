@@ -339,6 +339,11 @@ def _render_items_shop_text(user_label: str, shop_view: ShopView) -> str:
         f"🟡 Ultraball: 💵{ULTRABALL_PRICE}",
         f"🟣 Masterball: 💵{MASTERBALL_PRICE}",
         "",
+        "🎒 Ваши покеболы:",
+        "⚪️ Pokéball: ∞",
+        f"🟡 Ultraball: {shop_view.ultraball_quantity}",
+        f"🟣 Masterball: {shop_view.masterball_quantity}",
+        "",
         f"👛 Ваш баланс: 💵{shop_view.balance}",
     ])
 

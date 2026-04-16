@@ -156,10 +156,17 @@ async def show_collection_screen(
     context: ContextTypes.DEFAULT_TYPE,
     filter_state: Optional[CollectionFilterState] = None,
     screen: str = COLLECTION_VIEW_MAIN,
+    owner_telegram_id: Optional[int] = None,
+    owner_username: Optional[str] = None,
+    owner_label: Optional[str] = None,
+    read_only: bool = False,
 ) -> Message:
     """Send a fresh collection message for direct commands like /collection."""
     msg_context = extract_context(update)
     db = _get_db(context)
+    target_telegram_id = int(owner_telegram_id or msg_context.user_id)
+    target_username = owner_username if owner_telegram_id is not None else (update.effective_user.username if update.effective_user else None)
+    target_label = owner_label or _display_user(update)
 
     if not db:
         text = "📦 <b>Коллекция временно недоступна</b>\n\nБаза данных не подключена."
@@ -178,16 +185,26 @@ async def show_collection_screen(
         return sent_message
 
     active_filter_state = filter_state or CollectionFilterState()
-    logger.info("collection_command_fetch_start", screen=screen, user_id=msg_context.user_id)
+    logger.info(
+        "collection_command_fetch_start",
+        screen=screen,
+        user_id=msg_context.user_id,
+        owner_telegram_id=target_telegram_id,
+    )
     collection_page = await db.get_collection_page(
-        msg_context.user_id,
-        update.effective_user.username if update.effective_user else None,
+        target_telegram_id,
+        target_username,
         active_filter_state,
     )
-    logger.info("collection_command_fetch_done", screen=screen, user_id=msg_context.user_id)
+    logger.info(
+        "collection_command_fetch_done",
+        screen=screen,
+        user_id=msg_context.user_id,
+        owner_telegram_id=target_telegram_id,
+    )
 
     sent_message = await update.effective_chat.send_message(
-        text=_render_collection_text(_display_user(update), collection_page, screen),
+        text=_render_collection_text(target_label, collection_page, screen, read_only=read_only),
         parse_mode="HTML",
         message_thread_id=msg_context.message_thread_id,
     )
@@ -196,7 +213,14 @@ async def show_collection_screen(
         message_id=sent_message.message_id,
         user_id=msg_context.user_id,
         message_thread_id=msg_context.message_thread_id,
-        data=_collection_session_data(collection_page, screen),
+        data=_collection_session_data(
+            collection_page,
+            screen,
+            owner_telegram_id=target_telegram_id,
+            owner_username=target_username,
+            owner_label=target_label,
+            read_only=read_only,
+        ),
     )
     await sent_message.edit_reply_markup(
         reply_markup=_build_collection_keyboard(session_id, collection_page, screen)
@@ -296,18 +320,25 @@ async def collection_handler(update: Update, context: ContextTypes.DEFAULT_TYPE,
             screen = COLLECTION_VIEW_FILTERS
 
         logger.info("collection_db_fetch_start", section=section, user_id=session.user_id, screen=screen)
-        collection_page = await db.get_collection_page(
-            session.user_id,
-            update.effective_user.username if update.effective_user else None,
-            filter_state,
-        )
+        owner_telegram_id, owner_username, owner_label, read_only = _collection_owner_from_session(session, update)
+        collection_page = await db.get_collection_page(owner_telegram_id, owner_username, filter_state)
         logger.info("collection_db_fetch_done", section=section, user_id=session.user_id, screen=screen)
-        next_session_id = _create_session(session, _collection_session_data(collection_page, screen))
+        next_session_id = _create_session(
+            session,
+            _collection_session_data(
+                collection_page,
+                screen,
+                owner_telegram_id=owner_telegram_id,
+                owner_username=owner_username,
+                owner_label=owner_label,
+                read_only=read_only,
+            ),
+        )
         logger.info("collection_edit_start", section=section, user_id=session.user_id, screen=screen)
         await _edit_collection_message(
             query,
             session,
-            _render_collection_text(_display_user(update), collection_page, screen),
+            _render_collection_text(owner_label, collection_page, screen, read_only=read_only),
             _build_collection_keyboard(next_session_id, collection_page, screen),
         )
         logger.info("collection_edit_done", section=section, user_id=session.user_id, screen=screen)
@@ -361,12 +392,41 @@ def _display_user(update: Optional[Update]) -> str:
     return "тренер"
 
 
-def _collection_session_data(collection_page: CollectionPage, screen: str) -> dict[str, object]:
+def _collection_session_data(
+    collection_page: CollectionPage,
+    screen: str,
+    *,
+    owner_telegram_id: Optional[int] = None,
+    owner_username: Optional[str] = None,
+    owner_label: Optional[str] = None,
+    read_only: bool = False,
+) -> dict[str, object]:
     return {
         "collection_screen": screen,
         "collection_filters": collection_page.filter_state.to_session_payload(),
         "collection_entries": [entry.as_session_payload() for entry in collection_page.entries],
+        "collection_owner_telegram_id": owner_telegram_id,
+        "collection_owner_username": owner_username,
+        "collection_owner_label": owner_label,
+        "collection_read_only": read_only,
     }
+
+
+def _collection_owner_from_session(
+    session: MenuSession,
+    update: Optional[Update] = None,
+) -> tuple[int, Optional[str], str, bool]:
+    owner_id = session.data.get("collection_owner_telegram_id")
+    owner_username = session.data.get("collection_owner_username")
+    owner_label = session.data.get("collection_owner_label")
+    read_only = bool(session.data.get("collection_read_only", False))
+    if not isinstance(owner_id, int):
+        owner_id = session.user_id
+    if not isinstance(owner_username, str):
+        owner_username = None
+    if not isinstance(owner_label, str) or not owner_label:
+        owner_label = _display_user(update)
+    return owner_id, owner_username, owner_label, read_only
 
 
 def _create_session(session: MenuSession, data: Optional[dict[str, object]] = None) -> str:
@@ -441,15 +501,22 @@ def _type_emoji(pokemon_type: str) -> str:
     }.get(pokemon_type, "•")
 
 
-def _render_collection_text(user_label: str, collection_page: CollectionPage, screen: str) -> str:
+def _render_collection_text(
+    user_label: str,
+    collection_page: CollectionPage,
+    screen: str,
+    *,
+    read_only: bool = False,
+) -> str:
     if screen == COLLECTION_VIEW_FILTERS:
         return _render_filter_screen_text(user_label, collection_page.filter_state)
-    return _render_collection_screen_text(user_label, collection_page)
+    return _render_collection_screen_text(user_label, collection_page, read_only=read_only)
 
 
-def _render_collection_screen_text(user_label: str, collection_page: CollectionPage) -> str:
+def _render_collection_screen_text(user_label: str, collection_page: CollectionPage, *, read_only: bool = False) -> str:
+    possessive = "коллекция" if read_only else "ваша коллекция"
     lines = [
-        f"📦 {escape_html(user_label)}, ваша коллекция (страница {collection_page.current_page} / {collection_page.total_pages}):",
+        f"📦 {escape_html(user_label)}, {possessive} (страница {collection_page.current_page} / {collection_page.total_pages}):",
         "",
     ]
     if collection_page.entries:
@@ -608,12 +675,13 @@ async def _handle_collection_detail(
     if not entry_payloads or not isinstance(entry_payloads, list) or index >= len(entry_payloads):
         raise ValueError("Collection detail is no longer available")
     entry = CollectionEntry.from_payload(entry_payloads[index])
+    owner_telegram_id, owner_username, owner_label, read_only = _collection_owner_from_session(session, update)
     if entry.quantity > 1:
         db = _get_db(context)
         if db:
             instances = await db.get_user_pokemon_instances_for_species(
-                session.user_id,
-                update.effective_user.username if update.effective_user else None,
+                owner_telegram_id,
+                owner_username,
                 pokemon_id=entry.pokemon_id,
             )
             if len(instances) > 1:
@@ -621,11 +689,12 @@ async def _handle_collection_detail(
                 logger.info(
                     "collection_instance_picker_sent",
                     user_id=session.user_id,
+                    owner_telegram_id=owner_telegram_id,
                     pokemon_id=entry.pokemon_id,
                     instance_count=len(instances),
                 )
                 return
-    await _send_collection_card(context, session, entry, _display_user(update))
+    await _send_collection_card(context, session, entry, owner_label, read_only=read_only)
     logger.info("collection_detail_sent", user_id=session.user_id, pokemon_id=entry.pokemon_id, index=index + 1)
 
 
@@ -646,7 +715,13 @@ async def _send_collection_instance_picker(
         message_id=message.message_id,
         user_id=session.user_id,
         message_thread_id=session.message_thread_id,
-        data={"collection_instance_entries": [entry.as_session_payload() for entry in instances]},
+        data={
+            "collection_instance_entries": [entry.as_session_payload() for entry in instances],
+            "collection_owner_telegram_id": session.data.get("collection_owner_telegram_id"),
+            "collection_owner_username": session.data.get("collection_owner_username"),
+            "collection_owner_label": session.data.get("collection_owner_label"),
+            "collection_read_only": bool(session.data.get("collection_read_only", False)),
+        },
     )
     await message.edit_reply_markup(reply_markup=_build_instance_picker_keyboard(picker_session_id, instances))
     return message
@@ -663,7 +738,8 @@ async def _handle_collection_instance_select(
     if not isinstance(payloads, list) or index >= len(payloads):
         raise ValueError("Collection instance selection is no longer available")
     entry = CollectionEntry.from_payload(payloads[index])
-    await _send_collection_card(context, session, entry, _display_user(update))
+    _owner_telegram_id, _owner_username, owner_label, read_only = _collection_owner_from_session(session, update)
+    await _send_collection_card(context, session, entry, owner_label, read_only=read_only)
     logger.info(
         "collection_instance_selected",
         user_id=session.user_id,
@@ -677,10 +753,12 @@ async def _send_collection_card(
     session: MenuSession,
     entry: CollectionEntry,
     user_label: Optional[str] = None,
+    *,
+    read_only: bool = False,
 ) -> Message:
     logger.info("collection_send_card_start", user_id=session.user_id, pokemon_id=entry.pokemon_id)
     db = _get_db(context)
-    has_active_trade = bool(db and await db.get_active_trade_for_user(session.user_id, None))
+    has_active_trade = bool((not read_only) and db and await db.get_active_trade_for_user(session.user_id, None))
     message = await send_pokemon_card(
         context,
         chat_id=session.chat_id,
@@ -720,10 +798,10 @@ async def _send_collection_card(
     await message.edit_reply_markup(
         reply_markup=build_pokemon_card_keyboard(
             detail_session_id,
-            include_market_button=True,
+            include_market_button=not read_only,
             include_trade_button=has_active_trade,
-            include_release_button=True,
-            include_extra_button=True,
+            include_release_button=not read_only,
+            include_extra_button=not read_only,
         )
     )
     logger.info("collection_send_card_done", user_id=session.user_id, pokemon_id=entry.pokemon_id)

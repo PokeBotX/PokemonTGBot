@@ -150,3 +150,26 @@ def test_render_shop_text_includes_status_and_counters() -> None:
     assert "🎲 - случайный персонаж: 💵500" in text
     assert "👛 Ваш баланс: 💵500" in text
     assert "Статус" in text
+
+
+def test_items_shop_text_shows_owned_ball_counts() -> None:
+    text = _render_shop_text(
+        ShopView(
+            user_id=1,
+            balance=500,
+            pokecoin_balance=0,
+            ultraball_quantity=2,
+            masterball_quantity=3,
+            epic_pity_counter=0,
+            legendary_pity_counter=0,
+            bonus_available=0,
+            bonus_ready_in_seconds=0,
+        ),
+        None,
+        SHOP_VIEW_ITEMS,
+        "@ash",
+    )
+
+    assert "⚪️ Обычный Pokéball: ∞" in text
+    assert "🟡 Ultraball: 2" in text
+    assert "🟣 Masterball: 3" in text

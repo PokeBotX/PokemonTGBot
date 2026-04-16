@@ -133,6 +133,65 @@ async def collection_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await _sync_user_with_db(update, context)
     if await _maybe_show_first_entry_guide(update, context):
         return
+    application = getattr(context, "application", None)
+    db = application.bot_data.get("db") if application else None
+    if not db or not update.effective_user:
+        await show_collection_screen(update, context)
+        return
+
+    message = update.effective_message
+    reply_to = getattr(message, "reply_to_message", None)
+    argument = _extract_command_argument(update.effective_message.text or "")
+
+    try:
+        if argument:
+            summary = await db.get_profile_summary_by_username(argument)
+            await show_collection_screen(
+                update,
+                context,
+                owner_telegram_id=summary.telegram_id,
+                owner_username=summary.tg_username,
+                owner_label=_display_profile_owner(summary),
+                read_only=(summary.telegram_id != update.effective_user.id),
+            )
+            return
+
+        if (
+            update.effective_chat
+            and update.effective_chat.type in {"group", "supergroup"}
+            and _should_use_profile_reply_target(message)
+            and reply_to
+            and getattr(reply_to, "from_user", None)
+            and not getattr(reply_to.from_user, "is_bot", False)
+        ):
+            target_user = reply_to.from_user
+            await db.get_or_create_user(target_user.id, target_user.username)
+            await show_collection_screen(
+                update,
+                context,
+                owner_telegram_id=target_user.id,
+                owner_username=target_user.username,
+                owner_label=display_name(
+                    getattr(target_user, "username", None),
+                    getattr(target_user, "first_name", None),
+                ),
+                read_only=(target_user.id != update.effective_user.id),
+            )
+            return
+    except ShopError as exc:
+        logger.warning(
+            "collection_command_error",
+            error="collection_lookup",
+            error_message=str(exc),
+            requester_id=update.effective_user.id if update.effective_user else None,
+            argument=argument or None,
+        )
+        await update.effective_chat.send_message(
+            f"⚠️ {exc}",
+            message_thread_id=getattr(update.effective_message, "message_thread_id", None),
+        )
+        return
+
     await show_collection_screen(update, context)
 
 

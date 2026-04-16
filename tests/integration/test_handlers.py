@@ -371,6 +371,88 @@ async def test_collection_command_sends_collection_section(mock_update):
 
 
 @pytest.mark.asyncio
+async def test_collection_command_opens_username_collection_in_supergroup(mock_update):
+    """Explicit @username target wins over reply context for /collection."""
+    requester = mock_update.effective_user
+    requester.id = 12345
+    requester.username = "ash"
+
+    reply_user = Mock(spec=User)
+    reply_user.id = 333
+    reply_user.username = "brock"
+    reply_user.is_bot = False
+
+    reply_message = Mock(spec=Message)
+    reply_message.message_id = 41
+    reply_message.from_user = reply_user
+
+    mock_update.effective_chat.id = -1001
+    mock_update.effective_chat.type = "supergroup"
+    mock_update.effective_message.text = "/collection @misty"
+    mock_update.effective_message.reply_to_message = reply_message
+    mock_update.effective_message.message_thread_id = 777
+
+    sent_message = Mock(spec=Message)
+    sent_message.message_id = 105
+    sent_message.edit_reply_markup = AsyncMock()
+    mock_update.effective_chat.send_message = AsyncMock(return_value=sent_message)
+
+    db = AsyncMock()
+    db.get_or_create_user_status = AsyncMock(return_value=(1, False))
+    db.consume_start_guide_flag = AsyncMock(return_value=False)
+    db.get_profile_summary_by_username = AsyncMock(
+        return_value=ProfileSummary(
+            user_id=2,
+            telegram_id=222,
+            tg_username="misty",
+            nickname=None,
+            language="ru",
+            created_at=__import__("datetime").datetime.now(__import__("datetime").UTC),
+            total_unique_owned=1,
+            total_catalog=1025,
+            total_unique_percent=1,
+            rarity_progress=(),
+            profile_pic_credit_id=None,
+            cover_pokemon_name=None,
+        )
+    )
+    db.get_collection_page = AsyncMock(
+        return_value=CollectionPage(
+            entries=[
+                CollectionEntry(
+                    pokemon_id=25,
+                    sample_user_pokemon_id=250,
+                    name="Pikachu",
+                    rarity="Rare",
+                    pokemon_type="electric",
+                    quantity=1,
+                    base_hp=35,
+                    base_attack=55,
+                    base_defense=40,
+                    base_stamina=90,
+                    image_credit_id=None,
+                )
+            ],
+            filter_state=CollectionFilterState(),
+            total_entries=1,
+            current_page=1,
+            total_pages=1,
+        )
+    )
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+
+    await collection_command(mock_update, context)
+
+    assert db.get_profile_summary_by_username.called
+    assert db.get_collection_page.call_args.args[:2] == (222, "misty")
+    text = mock_update.effective_chat.send_message.call_args.kwargs["text"]
+    assert "@misty, коллекция" in text
+
+
+@pytest.mark.asyncio
 async def test_profile_command_sends_profile_section(mock_update):
     """Test /profile command sends the profile screen."""
     sent_message = Mock(spec=Message)
