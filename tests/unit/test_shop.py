@@ -170,6 +170,6 @@ def test_items_shop_text_shows_owned_ball_counts() -> None:
         "@ash",
     )
 
-    assert "⚪️ Обычный Pokéball: ∞" in text
+    assert "⚪️ Pokéball: ∞" in text
     assert "🟡 Ultraball: 2" in text
     assert "🟣 Masterball: 3" in text
