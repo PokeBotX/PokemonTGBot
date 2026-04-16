@@ -46,10 +46,15 @@ class MenuSession:
         message_thread_id: Optional[int] = None,
     ) -> bool:
         """Check if session matches given context."""
+        thread_matches = (
+            self.message_thread_id == message_thread_id
+            or self.message_thread_id is None
+            or message_thread_id is None
+        )
         return (
             self.chat_id == chat_id
             and self.message_id == message_id
-            and self.message_thread_id == message_thread_id
+            and thread_matches
         )
 
     def to_json(self) -> str:

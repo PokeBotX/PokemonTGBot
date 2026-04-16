@@ -195,11 +195,16 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             query.message.message_id,
             msg_context.message_thread_id,
         ):
+            actual_message_id = getattr(query.message, "message_id", None)
             logger.info(
                 "callback_stale_answer_start",
                 session_id=callback_data.session_id,
                 expected_chat=session.chat_id,
                 actual_chat=msg_context.chat_id,
+                expected_message=session.message_id,
+                actual_message=actual_message_id,
+                expected_thread=session.message_thread_id,
+                actual_thread=msg_context.message_thread_id,
             )
             await query.answer(ERROR_STALE_MENU, show_alert=True)
             logger.info(
@@ -207,12 +212,20 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 session_id=callback_data.session_id,
                 expected_chat=session.chat_id,
                 actual_chat=msg_context.chat_id,
+                expected_message=session.message_id,
+                actual_message=actual_message_id,
+                expected_thread=session.message_thread_id,
+                actual_thread=msg_context.message_thread_id,
             )
             logger.warning(
                 "session_context_mismatch",
                 session_id=callback_data.session_id,
                 expected_chat=session.chat_id,
                 actual_chat=msg_context.chat_id,
+                expected_message=session.message_id,
+                actual_message=actual_message_id,
+                expected_thread=session.message_thread_id,
+                actual_thread=msg_context.message_thread_id,
             )
             return
         

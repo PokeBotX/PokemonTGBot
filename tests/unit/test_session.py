@@ -119,8 +119,12 @@ def test_session_matches_context():
     # Wrong message_id
     assert session.matches_context(12345, 999, 42) is False
     
-    # Wrong thread_id
+    # Wrong explicit thread_id is still a mismatch.
     assert session.matches_context(12345, 100, 99) is False
+
+    # Telegram may omit message_thread_id on callback messages; keep same
+    # chat/message usable instead of treating the menu as stale.
+    assert session.matches_context(12345, 100, None) is True
     
     # None vs None thread_id
     session_id2 = store.create_session(
