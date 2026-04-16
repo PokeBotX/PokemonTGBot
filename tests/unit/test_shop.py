@@ -126,7 +126,7 @@ def test_items_shop_keyboard_shows_both_item_buttons() -> None:
     )
     button_texts = [button.text for row in keyboard.inline_keyboard for button in row]
     assert "🟡 Ultraball: 💵200" in button_texts
-    assert "🟣 Masterball: 💵1000" in button_texts
+    assert "🟣 Masterball: 💵800" in button_texts
 
 
 def test_render_shop_text_includes_status_and_counters() -> None:
