@@ -1,3 +1,6 @@
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+
 type PokemonCardProps = {
   name: string;
   type: string;
@@ -7,23 +10,25 @@ type PokemonCardProps = {
 
 export function PokemonCard({ name, type, level, rarity }: PokemonCardProps) {
   return (
-    <div className="rounded-3xl border border-slate-800 bg-slate-900 p-5 shadow-lg">
-      <div className="flex items-start justify-between gap-4">
+    <Card className="border-slate-800 bg-slate-900 text-white shadow-lg">
+      <CardHeader className="flex flex-row items-start justify-between gap-4">
         <div>
           <p className="text-sm text-slate-400">{type}</p>
-          <h3 className="mt-1 text-xl font-bold">{name}</h3>
+          <CardTitle className="mt-1 text-xl">{name}</CardTitle>
         </div>
 
-        <span className="rounded-full bg-yellow-400 px-3 py-1 text-xs font-bold text-slate-950">
+        <Badge className="bg-yellow-400 text-slate-950 hover:bg-yellow-300">
           Lv. {level}
-        </span>
-      </div>
+        </Badge>
+      </CardHeader>
 
-      <div className="mt-4 rounded-2xl bg-slate-800 p-4 text-center text-5xl">
-        ⚡
-      </div>
+      <CardContent>
+        <div className="rounded-2xl bg-slate-800 p-4 text-center text-5xl">
+          ⚡
+        </div>
 
-      <p className="mt-4 text-sm text-slate-300">Редкость: {rarity}</p>
-    </div>
+        <p className="mt-4 text-sm text-slate-300">Редкость: {rarity}</p>
+      </CardContent>
+    </Card>
   );
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 
 import { getTelegramUser, getTelegramWebApp } from "@/lib/telegram";
 
@@ -12,15 +12,12 @@ type TelegramUserView = {
 };
 
 export function TelegramUserCard() {
-  const [user, setUser] = useState<TelegramUserView | null>(null);
+  const user = getTelegramUser() as TelegramUserView | null;
 
   useEffect(() => {
     const webApp = getTelegramWebApp();
-
     webApp?.ready();
     webApp?.expand();
-
-    setUser(getTelegramUser());
   }, []);
 
   const displayName = user

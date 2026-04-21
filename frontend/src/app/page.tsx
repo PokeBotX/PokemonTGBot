@@ -1,7 +1,8 @@
+import { AppShell } from "@/components/app-shell";
 import { PokemonCard } from "@/components/pokemon-card";
 import { ProfileCard } from "@/components/profile-card";
-import { AppShell } from "@/components/app-shell";
 import { TelegramUserCard } from "@/components/telegram-user-card";
+import { Button } from "@/components/ui/button";
 
 const pokemons = [
   {
@@ -40,7 +41,6 @@ export default function Home() {
 
       <TelegramUserCard />
 
-
       <ProfileCard />
 
       <div className="flex flex-col gap-4">
@@ -55,9 +55,9 @@ export default function Home() {
         ))}
       </div>
 
-      <button className="rounded-2xl bg-yellow-400 px-5 py-4 font-semibold text-slate-950">
+      <Button className="h-14 rounded-2xl bg-yellow-400 font-semibold text-slate-950 hover:bg-yellow-300">
         Открыть коллекцию
-      </button>
+      </Button>
     </AppShell>
   );
 }
