@@ -1,32 +1,8 @@
+import Link from "next/link";
+
 import { AppShell } from "@/components/app-shell";
-import { PokemonCard } from "@/components/pokemon-card";
-import { ProfileCard } from "@/components/profile-card";
 import { TelegramUserCard } from "@/components/telegram-user-card";
 import { Button } from "@/components/ui/button";
-
-const pokemons = [
-  {
-    id: 1,
-    name: "Pikachu",
-    type: "Electric",
-    level: 12,
-    rarity: "Rare",
-  },
-  {
-    id: 2,
-    name: "Bulbasaur",
-    type: "Grass",
-    level: 8,
-    rarity: "Common",
-  },
-  {
-    id: 3,
-    name: "Charmander",
-    type: "Fire",
-    level: 10,
-    rarity: "Uncommon",
-  },
-];
 
 export default function Home() {
   return (
@@ -41,23 +17,19 @@ export default function Home() {
 
       <TelegramUserCard />
 
-      <ProfileCard />
+      <div className="flex flex-col gap-3">
+        <Link href="/profile">
+          <Button className="h-14 w-full rounded-2xl bg-yellow-400 font-semibold text-slate-950 hover:bg-yellow-300">
+            Открыть профиль
+          </Button>
+        </Link>
 
-      <div className="flex flex-col gap-4">
-        {pokemons.map((pokemon) => (
-          <PokemonCard
-            key={pokemon.id}
-            name={pokemon.name}
-            type={pokemon.type}
-            level={pokemon.level}
-            rarity={pokemon.rarity}
-          />
-        ))}
+        <Link href="/collection">
+          <Button className="h-14 w-full rounded-2xl bg-slate-800 font-semibold text-white hover:bg-slate-700">
+            Открыть коллекцию
+          </Button>
+        </Link>
       </div>
-
-      <Button className="h-14 rounded-2xl bg-yellow-400 font-semibold text-slate-950 hover:bg-yellow-300">
-        Открыть коллекцию
-      </Button>
     </AppShell>
   );
 }
