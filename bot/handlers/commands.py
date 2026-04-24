@@ -514,7 +514,7 @@ async def _show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, *,
         sent_message = await update.effective_chat.send_message(
             text=get_main_menu_text(username),
             parse_mode="HTML",
-            reply_markup=build_main_menu_keyboard("temp"),
+            reply_markup=build_main_menu_keyboard("temp", chat_type=msg_context.chat_type),
             message_thread_id=msg_context.message_thread_id,
         )
         
@@ -528,7 +528,7 @@ async def _show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, *,
         
         # Update message with real session_id
         await sent_message.edit_reply_markup(
-            reply_markup=build_main_menu_keyboard(session_id)
+            reply_markup=build_main_menu_keyboard(session_id, chat_type=msg_context.chat_type)
         )
         
         logger.info(

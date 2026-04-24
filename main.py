@@ -1,11 +1,19 @@
 """PokéCollect Bot - FastAPI application with Telegram webhook."""
+import hashlib
+import hmac
+import json
 import os
-import structlog
+from datetime import UTC, datetime
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qsl
+
+import structlog
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request, Response, status
+from fastapi import FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
@@ -86,6 +94,14 @@ GROUP_ACTIVITY_FILTER = (
 bot_app: Application = None
 db: Database = None
 
+MINI_APP_AUTH_MAX_AGE_SECONDS = 24 * 60 * 60
+
+
+class TelegramAuthRequest(BaseModel):
+    """Request payload for Mini App Telegram auth handshake."""
+
+    initData: str
+
 
 def _build_health_payload() -> dict[str, object]:
     """Build a shallow operational health payload for runtime dependencies."""
@@ -112,6 +128,189 @@ def _build_health_payload() -> dict[str, object]:
 def _health_status_code(payload: dict[str, object]) -> int:
     """Choose HTTP status code for the health response."""
     return status.HTTP_200_OK if payload["status"] == "healthy" else status.HTTP_503_SERVICE_UNAVAILABLE
+
+
+def _telegram_webapp_secret_key(bot_token: str) -> bytes:
+    """Derive the Telegram Mini App secret key from the bot token."""
+    return hmac.new(b"WebAppData", bot_token.encode("utf-8"), hashlib.sha256).digest()
+
+
+def _validate_telegram_init_data(init_data: str) -> dict[str, Any]:
+    """Validate Telegram Mini App initData and return parsed payload."""
+    normalized = (init_data or "").strip()
+    if not normalized:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="initData is required",
+        )
+
+    parsed_pairs = dict(parse_qsl(normalized, keep_blank_values=True))
+    received_hash = parsed_pairs.pop("hash", None)
+    if not received_hash:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="initData hash is missing",
+        )
+
+    data_check_string = "\n".join(
+        f"{key}={value}" for key, value in sorted(parsed_pairs.items())
+    )
+    expected_hash = hmac.new(
+        _telegram_webapp_secret_key(TELEGRAM_BOT_TOKEN),
+        data_check_string.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+    if not hmac.compare_digest(expected_hash, received_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Telegram initData signature is invalid",
+        )
+
+    auth_date_raw = parsed_pairs.get("auth_date")
+    if not auth_date_raw:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="auth_date is missing from initData",
+        )
+
+    try:
+        auth_date = int(auth_date_raw)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="auth_date is invalid",
+        ) from exc
+
+    age_seconds = int(datetime.now(UTC).timestamp()) - auth_date
+    if age_seconds > MINI_APP_AUTH_MAX_AGE_SECONDS:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Telegram initData is too old",
+        )
+
+    user_payload: dict[str, Any] | None = None
+    user_raw = parsed_pairs.get("user")
+    if user_raw:
+        try:
+            loaded_user = json.loads(user_raw)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Telegram user payload is invalid JSON",
+            ) from exc
+        if not isinstance(loaded_user, dict):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Telegram user payload must be an object",
+            )
+        user_payload = loaded_user
+
+    return {
+        "auth_date": auth_date,
+        "query_id": parsed_pairs.get("query_id"),
+        "user": user_payload,
+        "raw": parsed_pairs,
+    }
+
+
+def _extract_mini_app_identity(telegram_payload: dict[str, Any]) -> tuple[int, str | None]:
+    """Extract required user identity from validated Telegram payload."""
+    user = telegram_payload.get("user")
+    if not isinstance(user, dict):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Telegram user payload is missing",
+        )
+
+    telegram_id = user.get("id")
+    if not isinstance(telegram_id, int):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Telegram user id is missing or invalid",
+        )
+
+    username = user.get("username")
+    if username is not None and not isinstance(username, str):
+        username = None
+
+    return telegram_id, username
+
+
+async def _build_mini_app_profile_payload(telegram_id: int, username: str | None) -> dict[str, Any]:
+    """Build the current user's Mini App profile response from DB read models."""
+    if not DB_ENABLED or db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database is not available for Mini App profile requests",
+        )
+
+    profile_summary = await db.get_profile_summary(telegram_id, username)
+    shop_view = await db.get_shop_view(telegram_id, username)
+
+    display_name = (
+        profile_summary.nickname
+        or profile_summary.tg_username
+        or "Тренер Pokémon"
+    )
+
+    return {
+        "id": profile_summary.user_id,
+        "telegramId": profile_summary.telegram_id,
+        "name": display_name,
+        "username": profile_summary.tg_username or "",
+        "pokemonCount": profile_summary.total_unique_owned,
+        "coins": shop_view.balance,
+        "language": profile_summary.language,
+        "completionPercent": profile_summary.total_unique_percent,
+        "totalCatalog": profile_summary.total_catalog,
+        "coverPokemonName": profile_summary.cover_pokemon_name,
+        "rarityProgress": [
+            {
+                "rarity": progress.rarity,
+                "ownedUnique": progress.owned_unique,
+                "totalCatalog": progress.total_catalog,
+                "percent": progress.percent,
+            }
+            for progress in profile_summary.rarity_progress
+        ],
+    }
+
+
+async def _build_mini_app_collection_payload(telegram_id: int, username: str | None) -> dict[str, Any]:
+    """Build the current user's Mini App collection response from DB read models."""
+    if not DB_ENABLED or db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database is not available for Mini App collection requests",
+        )
+
+    collection_page = await db.get_collection_page(telegram_id, username)
+    return {
+        "entries": [
+            {
+                "id": entry.pokemon_id,
+                "userPokemonId": entry.sample_user_pokemon_id,
+                "name": entry.name,
+                "type": entry.pokemon_type or "Unknown",
+                "level": 1,
+                "rarity": entry.rarity,
+                "quantity": entry.quantity,
+                "baseHp": entry.base_hp,
+                "baseAttack": entry.base_attack,
+                "baseDefense": entry.base_defense,
+                "baseStamina": entry.base_stamina,
+                "imageCreditId": entry.image_credit_id,
+                "isLocked": entry.is_locked,
+            }
+            for entry in collection_page.entries
+        ],
+        "pagination": {
+            "totalEntries": collection_page.total_entries,
+            "currentPage": collection_page.current_page,
+            "totalPages": collection_page.total_pages,
+        },
+    }
 
 
 async def run_market_maintenance_job(context) -> None:
@@ -326,6 +525,40 @@ async def health():
     """Operational health check for bot runtime and backing services."""
     payload = _build_health_payload()
     return JSONResponse(status_code=_health_status_code(payload), content=payload)
+
+
+@app.post("/auth/telegram")
+async def telegram_mini_app_auth(payload: TelegramAuthRequest):
+    """Validate Telegram Mini App initData and return the authenticated user snapshot."""
+    telegram_payload = _validate_telegram_init_data(payload.initData)
+    telegram_id, username = _extract_mini_app_identity(telegram_payload)
+
+    profile_payload: dict[str, Any] | None = None
+    if DB_ENABLED and db is not None:
+        profile_payload = await _build_mini_app_profile_payload(telegram_id, username)
+
+    return {
+        "authenticated": True,
+        "authDate": telegram_payload["auth_date"],
+        "telegramUser": telegram_payload["user"],
+        "profile": profile_payload,
+    }
+
+
+@app.get("/api/me")
+async def mini_app_me(x_telegram_init_data: str = Header(alias="X-Telegram-Init-Data")):
+    """Return the current Mini App profile using validated Telegram initData."""
+    telegram_payload = _validate_telegram_init_data(x_telegram_init_data)
+    telegram_id, username = _extract_mini_app_identity(telegram_payload)
+    return await _build_mini_app_profile_payload(telegram_id, username)
+
+
+@app.get("/api/collection")
+async def mini_app_collection(x_telegram_init_data: str = Header(alias="X-Telegram-Init-Data")):
+    """Return the current Mini App collection using validated Telegram initData."""
+    telegram_payload = _validate_telegram_init_data(x_telegram_init_data)
+    telegram_id, username = _extract_mini_app_identity(telegram_payload)
+    return await _build_mini_app_collection_payload(telegram_id, username)
 
 
 @app.post(WEBHOOK_PATH)

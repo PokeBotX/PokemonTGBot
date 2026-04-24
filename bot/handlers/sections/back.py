@@ -37,7 +37,10 @@ async def back_to_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 message_thread_id=session.message_thread_id,
                 text=get_main_menu_text(username),
                 parse_mode="HTML",
-                reply_markup=build_main_menu_keyboard("temp"),
+                reply_markup=build_main_menu_keyboard(
+                    "temp",
+                    chat_type=getattr(update.effective_chat, "type", None),
+                ),
             )
             new_session_id = session_store.create_session(
                 chat_id=session.chat_id,
@@ -45,7 +48,12 @@ async def back_to_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 user_id=session.user_id,
                 message_thread_id=session.message_thread_id,
             )
-            await sent_message.edit_reply_markup(reply_markup=build_main_menu_keyboard(new_session_id))
+            await sent_message.edit_reply_markup(
+                reply_markup=build_main_menu_keyboard(
+                    new_session_id,
+                    chat_type=getattr(update.effective_chat, "type", None),
+                )
+            )
             try:
                 await query.message.delete()
             except TelegramError:
@@ -60,7 +68,10 @@ async def back_to_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             await query.edit_message_text(
                 text=get_main_menu_text(username),
                 parse_mode="HTML",
-                reply_markup=build_main_menu_keyboard(new_session_id),
+                reply_markup=build_main_menu_keyboard(
+                    new_session_id,
+                    chat_type=getattr(update.effective_chat, "type", None),
+                ),
             )
         
         logger.info(

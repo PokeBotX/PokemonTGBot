@@ -1,17 +1,36 @@
 "use client";
 
+import { ErrorState } from "@/components/error-state";
+import { EmptyState } from "@/components/empty-state";
 import { PokemonCard } from "@/components/pokemon-card";
+import { PokemonListSkeleton } from "@/components/pokemon-list-skeleton";
 import { usePokemons } from "@/hooks/use-pokemons";
 
 export function PokemonList() {
   const { data, isLoading, isError } = usePokemons();
 
   if (isLoading) {
-    return <p className="text-slate-400">Загрузка покемонов...</p>;
+    return <PokemonListSkeleton />;
   }
 
   if (isError || !data) {
-    return <p className="text-red-300">Ошибка загрузки покемонов.</p>;
+    return (
+      <ErrorState
+        icon="⚠️"
+        title="Не удалось загрузить покемонов"
+        description="Попробуй обновить страницу чуть позже."
+      />
+    );
+  }
+
+  if (data.length === 0) {
+    return (
+      <EmptyState
+        icon="📦"
+        title="Покемонов пока нет"
+        description="Когда ты поймаешь первого покемона, он появится здесь."
+      />
+    );
   }
 
   return (
