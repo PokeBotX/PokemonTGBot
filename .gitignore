@@ -78,6 +78,12 @@ nohup.out
 .~lock*.xlsx#
 
 # Local MinIO
+
+# Frontend source libs must stay tracked even with the generic lib/ ignore above
+!frontend/src/lib/
+!frontend/src/lib/api.ts
+!frontend/src/lib/telegram.ts
+!frontend/src/lib/utils.ts
 data/minio/
 tools/minio/minio
 
