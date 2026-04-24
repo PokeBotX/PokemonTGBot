@@ -1,6 +1,11 @@
 """Unit tests for shared non-shop pokemon card helpers."""
 
-from bot.ui.pokemon_cards import PokemonCardData, build_pokemon_card_keyboard, render_pokemon_card_caption
+from bot.ui.pokemon_cards import (
+    PokemonCardData,
+    build_image_switch_label,
+    build_pokemon_card_keyboard,
+    render_pokemon_card_caption,
+)
 
 
 def test_render_pokemon_card_caption_renders_common_non_shop_fields() -> None:
@@ -97,3 +102,20 @@ def test_build_pokemon_card_keyboard_can_include_extra_button() -> None:
     callbacks = [button.callback_data for row in keyboard.inline_keyboard for button in row]
     assert "⚙️ Дополнительно" in labels
     assert "menu:pkm:session-3" in callbacks
+
+
+def test_build_image_switch_label_returns_counter_only_for_multiple_variants() -> None:
+    assert build_image_switch_label(2, 10) == "🖼 2/10"
+    assert build_image_switch_label(1, 1) is None
+    assert build_image_switch_label(None, 3) is None
+
+
+def test_build_pokemon_card_keyboard_can_include_image_switch_button() -> None:
+    keyboard = build_pokemon_card_keyboard(
+        "session-4",
+        image_switch_label="🖼 2/10",
+        include_market_button=True,
+    )
+    assert keyboard.inline_keyboard[0][0].text == "🖼 2/10"
+    assert keyboard.inline_keyboard[0][0].callback_data == "menu:pki:session-4"
+    assert keyboard.inline_keyboard[1][0].text == "🏪 Рынок"

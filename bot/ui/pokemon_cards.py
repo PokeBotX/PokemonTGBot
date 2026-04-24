@@ -7,11 +7,12 @@ from dataclasses import dataclass
 from io import BytesIO
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Optional
 from urllib.parse import quote
 from urllib.request import urlopen
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Message
 from telegram.ext import ContextTypes
 
 from bot.ui.html import escape_html
@@ -21,6 +22,9 @@ MARKET_CARD_SECTION = "mce"
 RELEASE_CARD_SECTION = "pkr"
 EXTRA_CARD_SECTION = "pkm"
 TRADE_CARD_SECTION = "tca"
+IMAGE_CARD_SECTION = "pki"
+CARD_KIND_OWNED = "owned"
+CARD_KIND_SEARCH = "search"
 
 
 @dataclass(slots=True)
@@ -39,6 +43,8 @@ class PokemonCardData:
     quantity: Optional[int] = None
     user_pokemon_id: Optional[int] = None
     image_credit_id: Optional[int] = None
+    image_variant_position: Optional[int] = None
+    image_variant_total: Optional[int] = None
     extra_lines: tuple[str, ...] = ()
 
 
@@ -90,13 +96,17 @@ async def _fetch_image_bytes_from_storage(
     image_credit = await db.get_image_credit(image_credit_id)
     if not image_credit:
         return None
+    storage_bucket = getattr(image_credit, "storage_bucket", None)
+    object_key = getattr(image_credit, "object_key", None)
+    if not isinstance(storage_bucket, str) or not isinstance(object_key, str):
+        return None
 
-    object_url = _build_object_url(image_credit.storage_bucket, image_credit.object_key)
+    object_url = _build_object_url(storage_bucket, object_key)
     try:
         image_bytes = await asyncio.to_thread(_fetch_remote_bytes, object_url)
     except Exception:
         return None
-    return image_bytes, Path(image_credit.object_key).name or "pokemon-image"
+    return image_bytes, Path(object_key).name or "pokemon-image"
 
 
 async def send_captioned_image(
@@ -168,9 +178,150 @@ async def send_pokemon_card(
     )
 
 
+async def edit_captioned_image(
+    query,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    caption: str,
+    reply_markup: Optional[InlineKeyboardMarkup] = None,
+    image_credit_id: Optional[int] = None,
+    image_path: Optional[Path] = None,
+) -> None:
+    """Edit an existing image/text message with refreshed media when available."""
+    message = getattr(query, "message", None)
+    if getattr(message, "photo", None):
+        if image_credit_id is not None:
+            remote_image = await _fetch_image_bytes_from_storage(context, image_credit_id)
+            if remote_image is not None:
+                image_bytes, filename = remote_image
+                file_obj = BytesIO(image_bytes)
+                file_obj.name = filename
+                await query.edit_message_media(
+                    media=InputMediaPhoto(media=file_obj, caption=caption, parse_mode="HTML"),
+                    reply_markup=reply_markup,
+                )
+                return
+
+        resolved_image = image_path or FALLBACK_IMAGE_PATH
+        if resolved_image.exists():
+            with resolved_image.open("rb") as image_file:
+                await query.edit_message_media(
+                    media=InputMediaPhoto(media=image_file, caption=caption, parse_mode="HTML"),
+                    reply_markup=reply_markup,
+                )
+                return
+
+        await query.edit_message_caption(
+            caption=caption,
+            parse_mode="HTML",
+            reply_markup=reply_markup,
+        )
+        return
+
+    await query.edit_message_text(
+        text=caption,
+        parse_mode="HTML",
+        reply_markup=reply_markup,
+    )
+
+
+async def edit_pokemon_card(
+    query,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    card: PokemonCardData,
+    reply_markup: Optional[InlineKeyboardMarkup] = None,
+    image_path: Optional[Path] = None,
+) -> None:
+    """Edit an existing shared non-shop pokemon card message."""
+    await edit_captioned_image(
+        query,
+        context,
+        caption=render_pokemon_card_caption(card),
+        reply_markup=reply_markup,
+        image_credit_id=card.image_credit_id,
+        image_path=image_path,
+    )
+
+
+def build_image_switch_label(position: Optional[int], total: Optional[int]) -> Optional[str]:
+    """Build the compact image-switch label for multi-art cards."""
+    if not isinstance(position, int) or not isinstance(total, int) or position < 1 or total <= 1:
+        return None
+    return f"🖼 {position}/{total}"
+
+
+def normalize_image_selection(image_selection) -> SimpleNamespace:
+    """Coerce DB/mock image selection objects into a stable shape for card rendering."""
+    image_credit_id = getattr(image_selection, "image_credit_id", None)
+    source_url = getattr(image_selection, "source_url", None)
+    position = getattr(image_selection, "position", 1)
+    total = getattr(image_selection, "total", 1)
+    if not isinstance(image_credit_id, int):
+        image_credit_id = None
+    if not isinstance(source_url, str):
+        source_url = None
+    if not isinstance(position, int) or position < 1:
+        position = 1
+    if not isinstance(total, int) or total < 1:
+        total = 1
+    return SimpleNamespace(
+        image_credit_id=image_credit_id,
+        source_url=source_url,
+        position=position,
+        total=total,
+        can_switch=total > 1,
+    )
+
+
+def build_owned_card_session_payload(
+    *,
+    pokemon_id: int,
+    user_pokemon_id: int,
+    user_label: Optional[str],
+    read_only: bool,
+) -> dict[str, object]:
+    """Serialize the minimum context needed to rebuild one owned/read-only card."""
+    return {
+        "card_kind": CARD_KIND_OWNED,
+        "card_pokemon_id": pokemon_id,
+        "card_user_pokemon_id": user_pokemon_id,
+        "card_user_label": user_label,
+        "card_read_only": read_only,
+    }
+
+
+def build_search_card_session_payload(
+    *,
+    pokemon_id: int,
+    name: str,
+    rarity: str,
+    pokemon_type: Optional[str],
+    base_hp: int,
+    base_attack: int,
+    base_defense: int,
+    base_stamina: int,
+    user_label: Optional[str],
+) -> dict[str, object]:
+    """Serialize catalog-card context so the card can be rebuilt after image switching."""
+    return {
+        "card_kind": CARD_KIND_SEARCH,
+        "card_pokemon_id": pokemon_id,
+        "card_name": name,
+        "card_rarity": rarity,
+        "card_pokemon_type": pokemon_type,
+        "card_base_hp": base_hp,
+        "card_base_attack": base_attack,
+        "card_base_defense": base_defense,
+        "card_base_stamina": base_stamina,
+        "card_user_label": user_label,
+    }
+
+
 def build_pokemon_card_keyboard(
     session_id: str,
     *,
+    image_switch_label: Optional[str] = None,
     include_market_button: bool = False,
     include_trade_button: bool = False,
     include_release_button: bool = False,
@@ -178,6 +329,8 @@ def build_pokemon_card_keyboard(
 ) -> InlineKeyboardMarkup:
     """Build a shared keyboard for non-shop pokemon cards."""
     rows: list[list[InlineKeyboardButton]] = []
+    if image_switch_label:
+        rows.append([InlineKeyboardButton(image_switch_label, callback_data=f"menu:{IMAGE_CARD_SECTION}:{session_id}")])
     if include_market_button:
         rows.append([InlineKeyboardButton("🏪 Рынок", callback_data=f"menu:{MARKET_CARD_SECTION}:{session_id}")])
     if include_trade_button:

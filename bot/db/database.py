@@ -416,6 +416,21 @@ class ImageCreditRecord:
 
 
 @dataclass(slots=True)
+class PokemonImageSelection:
+    """Resolved image state for one user's view of one pokemon species."""
+
+    pokemon_id: int
+    image_credit_id: Optional[int]
+    source_url: Optional[str]
+    position: int
+    total: int
+
+    @property
+    def can_switch(self) -> bool:
+        return self.total > 1
+
+
+@dataclass(slots=True)
 class MarketBrowseState:
     """Current browse filters for the market buy screen."""
 
@@ -1177,6 +1192,201 @@ class Database:
             content_type=row["content_type"],
             source=row["source"],
         )
+
+    @staticmethod
+    def _normalize_http_source(source: object) -> Optional[str]:
+        if not isinstance(source, str):
+            return None
+        normalized = source.strip()
+        if not normalized.startswith(("http://", "https://")):
+            return None
+        return normalized
+
+    async def _list_pokemon_image_variants(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        pokemon_id: int,
+    ) -> list[asyncpg.Record]:
+        return await conn.fetch(
+            """
+            WITH has_variant_rows AS (
+              SELECT EXISTS(
+                SELECT 1
+                FROM pokemon_image_variants
+                WHERE pokemon_id = $1
+              ) AS value
+            )
+            SELECT
+              variants.image_credit_id,
+              variants.display_order,
+              variants.is_default,
+              ic.source
+            FROM (
+              SELECT
+                piv.image_credit_id,
+                piv.display_order,
+                piv.is_default
+              FROM pokemon_image_variants piv
+              WHERE piv.pokemon_id = $1
+
+              UNION ALL
+
+              SELECT
+                pc.image_credit_id,
+                1 AS display_order,
+                TRUE AS is_default
+              FROM pokemon_catalog pc
+              WHERE pc.id = $1
+                AND pc.image_credit_id IS NOT NULL
+                AND NOT (SELECT value FROM has_variant_rows)
+            ) AS variants
+            LEFT JOIN image_credits ic ON ic.id = variants.image_credit_id
+            ORDER BY variants.display_order ASC, variants.image_credit_id ASC
+            """,
+            pokemon_id,
+        )
+
+    async def _resolve_pokemon_image_selection_for_user_id(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        user_id: int,
+        pokemon_id: int,
+    ) -> PokemonImageSelection:
+        variant_rows = await self._list_pokemon_image_variants(conn, pokemon_id=pokemon_id)
+        if not variant_rows:
+            return PokemonImageSelection(
+                pokemon_id=pokemon_id,
+                image_credit_id=None,
+                source_url=None,
+                position=1,
+                total=1,
+            )
+
+        preferred_row = await conn.fetchrow(
+            """
+            SELECT image_credit_id
+            FROM user_pokemon_image_preferences
+            WHERE user_id = $1
+              AND pokemon_id = $2
+            """,
+            user_id,
+            pokemon_id,
+        )
+        preferred_image_credit_id = (
+            int(preferred_row["image_credit_id"])
+            if preferred_row and preferred_row["image_credit_id"] is not None
+            else None
+        )
+
+        resolved_index = 0
+        chosen_row = None
+        if preferred_image_credit_id is not None:
+            for index, row in enumerate(variant_rows):
+                if int(row["image_credit_id"]) == preferred_image_credit_id:
+                    chosen_row = row
+                    resolved_index = index
+                    break
+
+        if chosen_row is None:
+            chosen_row = next((row for row in variant_rows if bool(row["is_default"])), variant_rows[0])
+            resolved_index = variant_rows.index(chosen_row)
+            if preferred_image_credit_id is not None:
+                await conn.execute(
+                    """
+                    DELETE FROM user_pokemon_image_preferences
+                    WHERE user_id = $1
+                      AND pokemon_id = $2
+                    """,
+                    user_id,
+                    pokemon_id,
+                )
+                logger.info(
+                    "pokemon_image_preference_repaired",
+                    user_id=user_id,
+                    pokemon_id=pokemon_id,
+                    invalid_image_credit_id=preferred_image_credit_id,
+                    fallback_image_credit_id=int(chosen_row["image_credit_id"]),
+                )
+
+        return PokemonImageSelection(
+            pokemon_id=pokemon_id,
+            image_credit_id=int(chosen_row["image_credit_id"]),
+            source_url=self._normalize_http_source(chosen_row["source"]),
+            position=resolved_index + 1,
+            total=len(variant_rows),
+        )
+
+    async def get_pokemon_image_selection(
+        self,
+        telegram_id: int,
+        username: Optional[str],
+        *,
+        pokemon_id: int,
+    ) -> PokemonImageSelection:
+        """Resolve the active image variant for one viewer and one pokemon species."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                user_id = await self._ensure_user(conn, telegram_id, username)
+                return await self._resolve_pokemon_image_selection_for_user_id(
+                    conn,
+                    user_id=user_id,
+                    pokemon_id=pokemon_id,
+                )
+
+    async def cycle_pokemon_image_selection(
+        self,
+        telegram_id: int,
+        username: Optional[str],
+        *,
+        pokemon_id: int,
+    ) -> PokemonImageSelection:
+        """Persist and return the next image variant for a user's view of a species."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                user_id = await self._ensure_user(conn, telegram_id, username)
+                current = await self._resolve_pokemon_image_selection_for_user_id(
+                    conn,
+                    user_id=user_id,
+                    pokemon_id=pokemon_id,
+                )
+                if current.total <= 1 or current.image_credit_id is None:
+                    return current
+
+                variant_rows = await self._list_pokemon_image_variants(conn, pokemon_id=pokemon_id)
+                next_index = current.position % len(variant_rows)
+                next_row = variant_rows[next_index]
+                next_image_credit_id = int(next_row["image_credit_id"])
+
+                await conn.execute(
+                    """
+                    INSERT INTO user_pokemon_image_preferences (user_id, pokemon_id, image_credit_id, updated_at)
+                    VALUES ($1, $2, $3, NOW())
+                    ON CONFLICT (user_id, pokemon_id)
+                    DO UPDATE SET image_credit_id = EXCLUDED.image_credit_id, updated_at = NOW()
+                    """,
+                    user_id,
+                    pokemon_id,
+                    next_image_credit_id,
+                )
+                logger.info(
+                    "pokemon_image_selection_cycled",
+                    user_id=user_id,
+                    pokemon_id=pokemon_id,
+                    next_image_credit_id=next_image_credit_id,
+                    next_position=next_index + 1,
+                    total_variants=len(variant_rows),
+                )
+                return PokemonImageSelection(
+                    pokemon_id=pokemon_id,
+                    image_credit_id=next_image_credit_id,
+                    source_url=self._normalize_http_source(next_row["source"]),
+                    position=next_index + 1,
+                    total=len(variant_rows),
+                )
 
     async def get_market_listings_page(
         self,

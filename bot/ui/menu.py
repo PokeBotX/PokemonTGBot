@@ -1,7 +1,6 @@
 """Menu keyboard builders."""
-import os
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 
 def build_main_menu_keyboard(session_id: str, *, chat_type: str | None = None) -> InlineKeyboardMarkup:
@@ -9,30 +8,16 @@ def build_main_menu_keyboard(session_id: str, *, chat_type: str | None = None) -
     Build main menu inline keyboard.
     
     Layout:
-    Row 0: Mini App (private chats only, when MINI_APP_URL is configured)
-    Row 1: Магазин | Рынок | Профиль
-    Row 2: Моя коллекция | Чат | Информация
+    Row 0: Магазин | Рынок | Профиль
+    Row 1: Моя коллекция | Чат | Информация
     
     Args:
         session_id: Unique session identifier for this menu
     
     Returns:
-        InlineKeyboardMarkup with 9 buttons
+        InlineKeyboardMarkup with 6 buttons
     """
-    keyboard = []
-
-    mini_app_url = os.getenv("MINI_APP_URL", "").strip()
-    if chat_type == "private" and mini_app_url:
-        keyboard.append(
-            [
-                InlineKeyboardButton(
-                    "🌐 Открыть Mini App",
-                    web_app=WebAppInfo(url=mini_app_url),
-                )
-            ]
-        )
-
-    keyboard.extend([
+    keyboard = [
         [
             InlineKeyboardButton("🛒 Магазин", callback_data=f"menu:shop:{session_id}"),
             InlineKeyboardButton("📈 Рынок", callback_data=f"menu:market:{session_id}"),
@@ -43,7 +28,7 @@ def build_main_menu_keyboard(session_id: str, *, chat_type: str | None = None) -
             InlineKeyboardButton("💬 Чат", url="https://t.me/+TQ8-KkXpZa02MDY6"),
             InlineKeyboardButton("ℹ️ Информация", callback_data=f"menu:info:{session_id}"),
         ],
-    ])
+    ]
     return InlineKeyboardMarkup(keyboard)
 
 

@@ -18,7 +18,14 @@ from bot.navigation.router import NavigationRouter, parse_callback_data
 from bot.navigation.session import MenuSession, PendingInput, session_store
 from bot.ui.html import display_name, escape_html
 from bot.ui.menu import build_back_button
-from bot.ui.pokemon_cards import send_captioned_image
+from bot.ui.pokemon_cards import (
+    build_image_switch_label,
+    build_pokemon_card_keyboard,
+    build_search_card_session_payload,
+    normalize_image_selection,
+    PokemonCardData,
+    send_pokemon_card,
+)
 
 logger = structlog.get_logger()
 
@@ -576,14 +583,31 @@ async def _send_pokemon_search_card(
     entry: PokemonSearchEntry,
     user_label: Optional[str] = None,
 ) -> Message:
-    # Keep profile search card local for now until profile UI is revisited.
-    caption = _render_pokemon_search_card_caption(entry, user_label)
-    message = await send_captioned_image(
+    application = getattr(context, "application", None)
+    db = application.bot_data.get("db") if application and hasattr(application, "bot_data") else None
+    image_selection = normalize_image_selection(
+        await db.get_pokemon_image_selection(session.user_id, None, pokemon_id=entry.pokemon_id)
+        if db and hasattr(db, "get_pokemon_image_selection")
+        else None
+    )
+    message = await send_pokemon_card(
         context,
         chat_id=session.chat_id,
         message_thread_id=session.message_thread_id,
-        caption=caption,
-        image_credit_id=entry.image_credit_id,
+        card=PokemonCardData(
+            pokemon_id=entry.pokemon_id,
+            name=entry.name,
+            rarity=entry.rarity,
+            pokemon_type=entry.pokemon_type,
+            base_hp=entry.base_hp,
+            base_attack=entry.base_attack,
+            base_defense=entry.base_defense,
+            base_stamina=entry.base_stamina,
+            trainer_label=user_label,
+            image_credit_id=image_selection.image_credit_id or entry.image_credit_id,
+            image_variant_position=image_selection.position,
+            image_variant_total=image_selection.total,
+        ),
         image_path=FALLBACK_IMAGE_PATH,
     )
 
@@ -596,11 +620,27 @@ async def _send_pokemon_search_card(
             action=resolve_market_card_action(False),
             pokemon_id=entry.pokemon_id,
             pokemon_name=entry.name,
+        )
+        | build_search_card_session_payload(
+            pokemon_id=entry.pokemon_id,
+            name=entry.name,
+            rarity=entry.rarity,
+            pokemon_type=entry.pokemon_type,
+            base_hp=entry.base_hp,
+            base_attack=entry.base_attack,
+            base_defense=entry.base_defense,
+            base_stamina=entry.base_stamina,
+            user_label=user_label,
         ),
     )
     await message.edit_reply_markup(
-        reply_markup=InlineKeyboardMarkup(
-            [[InlineKeyboardButton("🏪 Рынок", callback_data=f"menu:mce:{detail_session_id}")]]
+        reply_markup=build_pokemon_card_keyboard(
+            detail_session_id,
+            image_switch_label=build_image_switch_label(
+                image_selection.position,
+                image_selection.total,
+            ),
+            include_market_button=True,
         )
     )
     return message
@@ -631,25 +671,6 @@ async def _send_profile_message(
         text=text,
         parse_mode="HTML",
     )
-
-
-def _render_pokemon_search_card_caption(entry: PokemonSearchEntry, user_label: Optional[str] = None) -> str:
-    return "\n".join(
-        line
-        for line in [
-            f"📘 <b>{escape_html(entry.name)}</b>",
-            (f"Тренер: <b>{escape_html(user_label)}</b>" if user_label else ""),
-            f"Редкость: <b>{escape_html(entry.rarity)}</b>",
-            f"Тип: <b>{escape_html(entry.pokemon_type or 'unknown')}</b>",
-            f"HP: <b>{entry.base_hp}</b>",
-            f"ATK: <b>{entry.base_attack}</b>",
-            f"DEF: <b>{entry.base_defense}</b>",
-            f"SPD: <b>{entry.base_stamina}</b>",
-            f"ID покемона: <b>{entry.pokemon_id}</b>",
-        ]
-        if line
-    )
-
 
 async def _edit_profile_message(
     query,

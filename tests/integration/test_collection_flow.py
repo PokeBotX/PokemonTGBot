@@ -250,8 +250,18 @@ async def test_collection_detail_button_sends_separate_card_message() -> None:
     bot.send_photo = AsyncMock(return_value=Mock(spec=Message, message_id=200))
     bot.send_message = AsyncMock(return_value=Mock(spec=Message, message_id=201))
 
+    db = AsyncMock()
+    db.get_pokemon_image_selection = AsyncMock(
+        return_value=SimpleNamespace(
+            image_credit_id=55,
+            source_url="https://example.com/alt",
+            position=2,
+            total=3,
+        )
+    )
+    db.get_active_trade_for_user = AsyncMock(return_value=None)
     application = Mock()
-    application.bot_data = {"db": AsyncMock()}
+    application.bot_data = {"db": db}
     context = Mock(spec=ContextTypes.DEFAULT_TYPE)
     context.application = application
     context.bot = bot
@@ -259,6 +269,74 @@ async def test_collection_detail_button_sends_separate_card_message() -> None:
     await collection_handler(update, context, session)
 
     assert bot.send_photo.called or bot.send_message.called
+
+
+@pytest.mark.asyncio
+async def test_collection_detail_card_shows_image_switch_button_for_multiple_variants() -> None:
+    session = MenuSession(
+        session_id="collection-image-session",
+        chat_id=12345,
+        message_id=100,
+        user_id=12345,
+        message_thread_id=None,
+        data={
+            "collection_filters": CollectionFilterState().to_session_payload(),
+            "collection_screen": COLLECTION_VIEW_MAIN,
+            "collection_entries": [_entry(25, "Pikachu", "Rare", "electric", 1).as_session_payload()],
+        },
+    )
+
+    query = AsyncMock(spec=CallbackQuery)
+    query.data = f"menu:cd1:{session.session_id}"
+
+    user = Mock(spec=User)
+    user.id = 12345
+    user.username = "ash"
+
+    chat = Mock(spec=Chat)
+    chat.id = 12345
+    chat.type = "private"
+
+    message = Mock(spec=Message)
+    message.message_id = 100
+    message.chat = chat
+    message.message_thread_id = None
+
+    sent_message = Mock(spec=Message)
+    sent_message.message_id = 200
+    sent_message.edit_reply_markup = AsyncMock()
+
+    update = Mock(spec=Update)
+    update.callback_query = query
+    update.effective_user = user
+    update.effective_chat = chat
+    update.effective_message = message
+
+    bot = Mock()
+    bot.send_photo = AsyncMock(return_value=sent_message)
+    bot.send_message = AsyncMock(return_value=sent_message)
+
+    db = AsyncMock()
+    db.get_pokemon_image_selection = AsyncMock(
+        return_value=SimpleNamespace(
+            image_credit_id=55,
+            source_url="https://example.com/alt",
+            position=2,
+            total=3,
+        )
+    )
+    db.get_active_trade_for_user = AsyncMock(return_value=None)
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+    context.bot = bot
+
+    await collection_handler(update, context, session)
+
+    keyboard = sent_message.edit_reply_markup.call_args.kwargs["reply_markup"]
+    labels = [button.text for row in keyboard.inline_keyboard for button in row]
+    assert "🖼 2/3" in labels
 
 
 @pytest.mark.asyncio
@@ -622,13 +700,12 @@ async def test_collection_extra_actions_shows_source_button_when_available() -> 
     entry = _entry(25, "Pikachu", "Rare", "electric", 1)
     entry.image_credit_id = 55
     db.get_user_pokemon_entry = AsyncMock(return_value=entry)
-    db.get_image_credit = AsyncMock(
+    db.get_pokemon_image_selection = AsyncMock(
         return_value=SimpleNamespace(
-            image_credit_id=55,
-            storage_bucket="pokemon-assets",
-            object_key="pokemon/Pikachu/image.png",
-            content_type="image/png",
-            source="https://example.com/source",
+            image_credit_id=77,
+            source_url="https://example.com/selected-source",
+            position=2,
+            total=3,
         )
     )
 
@@ -642,4 +719,4 @@ async def test_collection_extra_actions_shows_source_button_when_available() -> 
     button_texts = [button.text for row in keyboard.inline_keyboard for button in row]
     assert "🔗 Источник" in button_texts
     source_button = next(button for row in keyboard.inline_keyboard for button in row if button.text == "🔗 Источник")
-    assert source_button.url == "https://example.com/source"
+    assert source_button.url == "https://example.com/selected-source"

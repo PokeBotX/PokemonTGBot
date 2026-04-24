@@ -15,6 +15,7 @@ from bot.db.database import (
     CollectionPage,
     Database,
     POKEMON_RELEASE_REWARDS,
+    PokemonSearchEntry,
 )
 from bot.navigation.context import extract_context
 from bot.navigation.router import NavigationRouter, parse_callback_data
@@ -23,7 +24,15 @@ from bot.handlers.sections.market import build_market_entry_payload, resolve_mar
 from bot.ui.html import display_name, escape_html
 from bot.ui.menu import build_back_button
 from bot.ui.pokemon_cards import (
+    build_image_switch_label,
+    build_owned_card_session_payload,
+    build_search_card_session_payload,
+    CARD_KIND_OWNED,
+    CARD_KIND_SEARCH,
+    edit_pokemon_card,
     EXTRA_CARD_SECTION,
+    IMAGE_CARD_SECTION,
+    normalize_image_selection,
     PokemonCardData,
     build_pokemon_card_keyboard,
     RELEASE_CARD_SECTION,
@@ -87,6 +96,7 @@ COLLECTION_TYPE_CODES_REVERSE = {value: key for key, value in COLLECTION_TYPE_CO
 COLLECTION_ROUTE_SECTIONS = [
     "collection",
     EXTRA_CARD_SECTION,
+    IMAGE_CARD_SECTION,
     RELEASE_CARD_SECTION,
     "pkb",
     "pkl",
@@ -243,6 +253,10 @@ async def collection_handler(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
         if section == EXTRA_CARD_SECTION:
             await _handle_extra_actions_prompt(update, context, session)
+            return
+
+        if section == IMAGE_CARD_SECTION:
+            await _handle_image_switch(update, context, session)
             return
 
         if section == "pkb":
@@ -758,6 +772,7 @@ async def _send_collection_card(
 ) -> Message:
     logger.info("collection_send_card_start", user_id=session.user_id, pokemon_id=entry.pokemon_id)
     db = _get_db(context)
+    image_selection = await _resolve_card_image_selection(db, session.user_id, entry.pokemon_id)
     has_active_trade = bool((not read_only) and db and await db.get_active_trade_for_user(session.user_id, None))
     message = await send_pokemon_card(
         context,
@@ -775,7 +790,9 @@ async def _send_collection_card(
             base_stamina=entry.base_stamina,
             trainer_label=user_label,
             user_pokemon_id=entry.sample_user_pokemon_id,
-            image_credit_id=entry.image_credit_id,
+            image_credit_id=image_selection.image_credit_id or entry.image_credit_id,
+            image_variant_position=image_selection.position,
+            image_variant_total=image_selection.total,
         ),
     )
     detail_session_id = session_store.create_session(
@@ -784,20 +801,34 @@ async def _send_collection_card(
         user_id=session.user_id,
         message_thread_id=session.message_thread_id,
         data=build_market_entry_payload(
-            action=resolve_market_card_action(True),
+            action=resolve_market_card_action(not read_only),
             pokemon_id=entry.pokemon_id,
             pokemon_name=entry.name,
-            user_pokemon_id=entry.sample_user_pokemon_id,
+            user_pokemon_id=entry.sample_user_pokemon_id if not read_only else None,
         )
-        | {
-            "release_user_pokemon_id": entry.sample_user_pokemon_id,
-            "release_pokemon_name": entry.name,
-            "release_rarity": entry.rarity,
-        },
+        | (
+            {
+                "release_user_pokemon_id": entry.sample_user_pokemon_id,
+                "release_pokemon_name": entry.name,
+                "release_rarity": entry.rarity,
+            }
+            if not read_only
+            else {}
+        )
+        | build_owned_card_session_payload(
+            pokemon_id=entry.pokemon_id,
+            user_pokemon_id=entry.sample_user_pokemon_id,
+            user_label=user_label,
+            read_only=read_only,
+        ),
     )
     await message.edit_reply_markup(
         reply_markup=build_pokemon_card_keyboard(
             detail_session_id,
+            image_switch_label=build_image_switch_label(
+                image_selection.position,
+                image_selection.total,
+            ),
             include_market_button=not read_only,
             include_trade_button=has_active_trade,
             include_release_button=not read_only,
@@ -854,7 +885,11 @@ async def _handle_extra_actions_prompt(update: Update, context: ContextTypes.DEF
         await query.answer("Карточка больше недоступна.", show_alert=False)
         return
 
-    source_url = await _resolve_entry_source_url(db, entry)
+    source_url = await _resolve_entry_source_url(
+        db,
+        viewer_telegram_id=session.user_id,
+        pokemon_id=entry.pokemon_id,
+    )
     next_session_id = _create_session(session, dict(session.data))
     await _edit_collection_message(
         query,
@@ -871,7 +906,47 @@ async def _handle_card_return(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not entry:
         await query.answer("Карточка больше недоступна.", show_alert=False)
         return
-    await _edit_collection_card_message(query, session, entry, db)
+    await _edit_collection_card_message(query, context, session, entry, db)
+
+
+async def _handle_image_switch(update: Update, context: ContextTypes.DEFAULT_TYPE, session: MenuSession) -> None:
+    query = update.callback_query
+    db = _get_db(context)
+    if not db:
+        await query.answer("Карточка временно недоступна.", show_alert=False)
+        return
+
+    pokemon_id = session.data.get("card_pokemon_id")
+    card_kind = session.data.get("card_kind")
+    if not isinstance(pokemon_id, int) or not isinstance(card_kind, str):
+        await query.answer("Карточка больше недоступна.", show_alert=False)
+        return
+
+    await db.cycle_pokemon_image_selection(
+        session.user_id,
+        update.effective_user.username if update.effective_user else None,
+        pokemon_id=pokemon_id,
+    )
+
+    if card_kind == CARD_KIND_OWNED:
+        entry = await _load_owned_card_entry(update, context, session)
+        if not entry:
+            await query.answer("Карточка больше недоступна.", show_alert=False)
+            return
+        await _edit_collection_card_message(query, context, session, entry, db)
+        await query.answer("Арт переключён.", show_alert=False)
+        return
+
+    if card_kind == CARD_KIND_SEARCH:
+        search_card = _search_card_from_session(session)
+        if not search_card:
+            await query.answer("Карточка больше недоступна.", show_alert=False)
+            return
+        await _edit_search_card_message(query, context, session, search_card)
+        await query.answer("Арт переключён.", show_alert=False)
+        return
+
+    await query.answer("Карточка больше недоступна.", show_alert=False)
 
 
 async def _handle_lock_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE, session: MenuSession) -> None:
@@ -904,7 +979,11 @@ async def _handle_lock_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     next_session_id = _create_session(session, dict(session.data))
     status_text = "🔒 Покемон залочен." if result.is_locked else "🔓 Покемон разблокирован."
-    source_url = await _resolve_entry_source_url(db, entry)
+    source_url = await _resolve_entry_source_url(
+        db,
+        viewer_telegram_id=session.user_id,
+        pokemon_id=entry.pokemon_id,
+    )
     await _edit_collection_message(
         query,
         session,
@@ -925,7 +1004,9 @@ async def _handle_set_cover(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     if not entry:
         await query.answer("Карточка больше недоступна.", show_alert=False)
         return
-    if entry.image_credit_id is None:
+    image_selection = await _resolve_card_image_selection(db, session.user_id, entry.pokemon_id)
+    active_image_credit_id = image_selection.image_credit_id or entry.image_credit_id
+    if active_image_credit_id is None:
         await query.answer("У этого покемона нет картинки для обложки.", show_alert=False)
         return
 
@@ -933,7 +1014,7 @@ async def _handle_set_cover(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         await db.update_profile_cover(
             session.user_id,
             update.effective_user.username if update.effective_user else None,
-            image_credit_id=int(entry.image_credit_id),
+            image_credit_id=int(active_image_credit_id),
         )
     except Exception as exc:
         error_message = str(exc) or "Не удалось обновить обложку."
@@ -942,7 +1023,11 @@ async def _handle_set_cover(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
     next_session_id = _create_session(session, dict(session.data))
     status_text = f"🖼 Обложка обновлена: <b>{entry.name}</b>."
-    source_url = await _resolve_entry_source_url(db, entry)
+    source_url = await _resolve_entry_source_url(
+        db,
+        viewer_telegram_id=session.user_id,
+        pokemon_id=entry.pokemon_id,
+    )
     await _edit_collection_message(
         query,
         session,
@@ -1003,49 +1088,95 @@ async def _load_owned_card_entry(
     return entry
 
 
-async def _resolve_entry_source_url(db: Database, entry: CollectionEntry) -> Optional[str]:
-    if entry.image_credit_id is None:
-        return None
-    image_credit = await db.get_image_credit(int(entry.image_credit_id))
-    source = getattr(image_credit, "source", None) if image_credit else None
-    if not isinstance(source, str):
-        return None
-    source = source.strip()
-    if not source.startswith(("http://", "https://")):
-        return None
-    return source
+async def _resolve_card_image_selection(
+    db: Optional[Database],
+    viewer_telegram_id: int,
+    pokemon_id: int,
+):
+    if not db:
+        return normalize_image_selection(None)
+    return normalize_image_selection(
+        await db.get_pokemon_image_selection(
+            viewer_telegram_id,
+            None,
+            pokemon_id=pokemon_id,
+        )
+    )
+
+
+async def _resolve_entry_source_url(
+    db: Database,
+    *,
+    viewer_telegram_id: int,
+    pokemon_id: int,
+) -> Optional[str]:
+    image_selection = await _resolve_card_image_selection(db, viewer_telegram_id, pokemon_id)
+    return getattr(image_selection, "source_url", None)
 
 
 async def _edit_collection_card_message(
     query,
+    context: ContextTypes.DEFAULT_TYPE,
     session: MenuSession,
     entry: CollectionEntry,
     db: Optional[Database],
 ) -> None:
+    image_selection = await _resolve_card_image_selection(db, session.user_id, entry.pokemon_id)
+    user_label = session.data.get("card_user_label")
+    read_only = bool(session.data.get("card_read_only", False))
     next_session_id = _create_session(
         session,
         build_market_entry_payload(
-            action=resolve_market_card_action(True),
+            action=resolve_market_card_action(not read_only),
             pokemon_id=entry.pokemon_id,
             pokemon_name=entry.name,
-            user_pokemon_id=entry.sample_user_pokemon_id,
+            user_pokemon_id=entry.sample_user_pokemon_id if not read_only else None,
         )
-        | {
-            "release_user_pokemon_id": entry.sample_user_pokemon_id,
-            "release_pokemon_name": entry.name,
-            "release_rarity": entry.rarity,
-        },
+        | (
+            {
+                "release_user_pokemon_id": entry.sample_user_pokemon_id,
+                "release_pokemon_name": entry.name,
+                "release_rarity": entry.rarity,
+            }
+            if not read_only
+            else {}
+        )
+        | build_owned_card_session_payload(
+            pokemon_id=entry.pokemon_id,
+            user_pokemon_id=entry.sample_user_pokemon_id,
+            user_label=user_label if isinstance(user_label, str) else None,
+            read_only=read_only,
+        ),
     )
-    await _edit_collection_message(
+    await edit_pokemon_card(
         query,
-        session,
-        _render_collection_card_caption(entry),
-        build_pokemon_card_keyboard(
+        context,
+        card=PokemonCardData(
+            pokemon_id=entry.pokemon_id,
+            name=entry.name,
+            rarity=entry.rarity,
+            pokemon_type=entry.pokemon_type,
+            quantity=entry.quantity,
+            base_hp=entry.base_hp,
+            base_attack=entry.base_attack,
+            base_defense=entry.base_defense,
+            base_stamina=entry.base_stamina,
+            trainer_label=user_label if isinstance(user_label, str) else None,
+            user_pokemon_id=entry.sample_user_pokemon_id,
+            image_credit_id=image_selection.image_credit_id or entry.image_credit_id,
+            image_variant_position=image_selection.position,
+            image_variant_total=image_selection.total,
+        ),
+        reply_markup=build_pokemon_card_keyboard(
             next_session_id,
-            include_market_button=True,
-            include_trade_button=bool(db and await db.get_active_trade_for_user(session.user_id, None)),
-            include_release_button=True,
-            include_extra_button=True,
+            image_switch_label=build_image_switch_label(
+                image_selection.position,
+                image_selection.total,
+            ),
+            include_market_button=not read_only,
+            include_trade_button=bool((not read_only) and db and await db.get_active_trade_for_user(session.user_id, None)),
+            include_release_button=not read_only,
+            include_extra_button=not read_only,
         ),
     )
 
@@ -1120,4 +1251,79 @@ def _render_collection_card_caption(entry: CollectionEntry, user_label: Optional
             user_pokemon_id=entry.sample_user_pokemon_id,
             image_credit_id=entry.image_credit_id,
         )
+    )
+
+
+def _search_card_from_session(session: MenuSession) -> Optional[PokemonSearchEntry]:
+    pokemon_id = session.data.get("card_pokemon_id")
+    name = session.data.get("card_name")
+    rarity = session.data.get("card_rarity")
+    if not isinstance(pokemon_id, int) or not isinstance(name, str) or not isinstance(rarity, str):
+        return None
+    return PokemonSearchEntry(
+        pokemon_id=pokemon_id,
+        name=name,
+        rarity=rarity,
+        pokemon_type=session.data.get("card_pokemon_type"),
+        base_hp=int(session.data.get("card_base_hp", 0)),
+        base_attack=int(session.data.get("card_base_attack", 0)),
+        base_defense=int(session.data.get("card_base_defense", 0)),
+        base_stamina=int(session.data.get("card_base_stamina", 0)),
+        image_credit_id=None,
+    )
+
+
+async def _edit_search_card_message(
+    query,
+    context: ContextTypes.DEFAULT_TYPE,
+    session: MenuSession,
+    entry: PokemonSearchEntry,
+) -> None:
+    db = _get_db(context)
+    image_selection = await _resolve_card_image_selection(db, session.user_id, entry.pokemon_id)
+    user_label = session.data.get("card_user_label")
+    next_session_id = _create_session(
+        session,
+        build_market_entry_payload(
+            action=resolve_market_card_action(False),
+            pokemon_id=entry.pokemon_id,
+            pokemon_name=entry.name,
+        )
+        | build_search_card_session_payload(
+            pokemon_id=entry.pokemon_id,
+            name=entry.name,
+            rarity=entry.rarity,
+            pokemon_type=entry.pokemon_type,
+            base_hp=entry.base_hp,
+            base_attack=entry.base_attack,
+            base_defense=entry.base_defense,
+            base_stamina=entry.base_stamina,
+            user_label=user_label if isinstance(user_label, str) else None,
+        ),
+    )
+    await edit_pokemon_card(
+        query,
+        context,
+        card=PokemonCardData(
+            pokemon_id=entry.pokemon_id,
+            name=entry.name,
+            rarity=entry.rarity,
+            pokemon_type=entry.pokemon_type,
+            base_hp=entry.base_hp,
+            base_attack=entry.base_attack,
+            base_defense=entry.base_defense,
+            base_stamina=entry.base_stamina,
+            trainer_label=user_label if isinstance(user_label, str) else None,
+            image_credit_id=image_selection.image_credit_id or entry.image_credit_id,
+            image_variant_position=image_selection.position,
+            image_variant_total=image_selection.total,
+        ),
+        reply_markup=build_pokemon_card_keyboard(
+            next_session_id,
+            image_switch_label=build_image_switch_label(
+                image_selection.position,
+                image_selection.total,
+            ),
+            include_market_button=True,
+        ),
     )

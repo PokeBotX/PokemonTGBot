@@ -86,6 +86,23 @@ CREATE TABLE IF NOT EXISTS "pokemon_catalog" (
   "image_credit_id" bigint
 );
 
+CREATE TABLE IF NOT EXISTS "pokemon_image_variants" (
+  "pokemon_id" int NOT NULL,
+  "image_credit_id" bigint NOT NULL,
+  "display_order" int NOT NULL DEFAULT 1,
+  "is_default" boolean NOT NULL DEFAULT false,
+  "created_at" timestamptz NOT NULL DEFAULT NOW(),
+  PRIMARY KEY ("pokemon_id", "image_credit_id")
+);
+
+CREATE TABLE IF NOT EXISTS "user_pokemon_image_preferences" (
+  "user_id" bigint NOT NULL,
+  "pokemon_id" int NOT NULL,
+  "image_credit_id" bigint NOT NULL,
+  "updated_at" timestamptz NOT NULL DEFAULT NOW(),
+  PRIMARY KEY ("user_id", "pokemon_id")
+);
+
 CREATE TABLE IF NOT EXISTS "user_pokemon" (
   "id" bigserial PRIMARY KEY,
   "owner_user_id" bigint NOT NULL,
@@ -208,6 +225,16 @@ CREATE INDEX IF NOT EXISTS chat_encounters_expires_at_status_idx
 
 CREATE INDEX IF NOT EXISTS user_pokemon_owner_user_id_pokemon_id_idx
   ON "user_pokemon" ("owner_user_id", "pokemon_id");
+
+CREATE UNIQUE INDEX IF NOT EXISTS pokemon_image_variants_default_idx
+  ON "pokemon_image_variants" ("pokemon_id")
+  WHERE is_default = true;
+
+CREATE UNIQUE INDEX IF NOT EXISTS pokemon_image_variants_order_idx
+  ON "pokemon_image_variants" ("pokemon_id", "display_order");
+
+CREATE INDEX IF NOT EXISTS user_pokemon_image_preferences_user_pokemon_idx
+  ON "user_pokemon_image_preferences" ("user_id", "pokemon_id", "updated_at" DESC);
 
 CREATE INDEX IF NOT EXISTS market_listings_active_browse_idx
   ON "market_listings" ("status", "listed_at" DESC, "price" ASC);

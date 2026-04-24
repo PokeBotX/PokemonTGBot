@@ -152,3 +152,99 @@ async def test_get_user_pokemon_instances_for_species_propagates_total_quantity(
 
     assert [entry.quantity for entry in entries] == [2, 2]
     assert "COUNT(*) OVER" in conn.fetch.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_resolve_pokemon_image_selection_uses_saved_variant_when_valid() -> None:
+    db = Database()
+    conn = AsyncMock()
+    conn.fetch = AsyncMock(
+        return_value=[
+            {
+                "image_credit_id": 55,
+                "display_order": 1,
+                "is_default": True,
+                "source": "https://example.com/default",
+            },
+            {
+                "image_credit_id": 77,
+                "display_order": 2,
+                "is_default": False,
+                "source": "https://example.com/alt",
+            },
+        ]
+    )
+    conn.fetchrow = AsyncMock(return_value={"image_credit_id": 77})
+    conn.execute = AsyncMock()
+
+    selection = await db._resolve_pokemon_image_selection_for_user_id(conn, user_id=1, pokemon_id=25)
+
+    assert selection.image_credit_id == 77
+    assert selection.source_url == "https://example.com/alt"
+    assert selection.position == 2
+    assert selection.total == 2
+    conn.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resolve_pokemon_image_selection_repairs_invalid_saved_variant() -> None:
+    db = Database()
+    conn = AsyncMock()
+    conn.fetch = AsyncMock(
+        return_value=[
+            {
+                "image_credit_id": 55,
+                "display_order": 1,
+                "is_default": True,
+                "source": "https://example.com/default",
+            },
+            {
+                "image_credit_id": 77,
+                "display_order": 2,
+                "is_default": False,
+                "source": "https://example.com/alt",
+            },
+        ]
+    )
+    conn.fetchrow = AsyncMock(return_value={"image_credit_id": 999})
+    conn.execute = AsyncMock()
+
+    selection = await db._resolve_pokemon_image_selection_for_user_id(conn, user_id=1, pokemon_id=25)
+
+    assert selection.image_credit_id == 55
+    assert selection.position == 1
+    conn.execute.assert_awaited()
+    assert "DELETE FROM user_pokemon_image_preferences" in conn.execute.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_cycle_pokemon_image_selection_persists_next_variant() -> None:
+    db = Database()
+    conn = AsyncMock()
+    conn.transaction = Mock(return_value=_AcquireContext(None))
+    conn.fetch = AsyncMock(
+        return_value=[
+            {
+                "image_credit_id": 55,
+                "display_order": 1,
+                "is_default": True,
+                "source": "https://example.com/default",
+            },
+            {
+                "image_credit_id": 77,
+                "display_order": 2,
+                "is_default": False,
+                "source": "https://example.com/alt",
+            },
+        ]
+    )
+    conn.fetchrow = AsyncMock(return_value={"image_credit_id": 55})
+    conn.execute = AsyncMock()
+    db.pool = _FakePool(conn)
+    db._ensure_user = AsyncMock(return_value=7)
+
+    selection = await db.cycle_pokemon_image_selection(12345, "ash", pokemon_id=25)
+
+    assert selection.image_credit_id == 77
+    assert selection.position == 2
+    assert "INSERT INTO user_pokemon_image_preferences" in conn.execute.call_args.args[0]

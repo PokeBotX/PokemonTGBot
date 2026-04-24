@@ -26,6 +26,9 @@ from bot.handlers.sections.market import build_market_entry_payload, resolve_mar
 from bot.navigation.session import session_store
 from bot.ui.html import display_name, escape_html
 from bot.ui.pokemon_cards import (
+    build_image_switch_label,
+    build_owned_card_session_payload,
+    normalize_image_selection,
     PokemonCardData,
     build_pokemon_card_keyboard,
     render_pokemon_card_caption,
@@ -395,6 +398,11 @@ async def _send_encounter_card(
     owner_user_id: Optional[int] = None,
 ) -> Message:
     db = _get_db(context)
+    image_selection = normalize_image_selection(
+        await db.get_pokemon_image_selection(viewer_user_id, None, pokemon_id=entry.pokemon_id)
+        if viewer_user_id is not None and db and hasattr(db, "get_pokemon_image_selection")
+        else None
+    )
     has_active_trade = bool(
         viewer_user_id is not None
         and db
@@ -414,7 +422,9 @@ async def _send_encounter_card(
             base_defense=entry.base_defense,
             base_stamina=entry.base_stamina,
             user_pokemon_id=entry.sample_user_pokemon_id,
-            image_credit_id=entry.image_credit_id,
+            image_credit_id=image_selection.image_credit_id or entry.image_credit_id,
+            image_variant_position=image_selection.position,
+            image_variant_total=image_selection.total,
         ),
     )
     if viewer_user_id is not None:
@@ -438,11 +448,21 @@ async def _send_encounter_card(
                 }
                 if viewer_is_owner
                 else {}
+            )
+            | build_owned_card_session_payload(
+                pokemon_id=entry.pokemon_id,
+                user_pokemon_id=entry.sample_user_pokemon_id,
+                user_label=None,
+                read_only=not viewer_is_owner,
             ),
         )
         await message.edit_reply_markup(
             reply_markup=build_pokemon_card_keyboard(
                 session_id,
+                image_switch_label=build_image_switch_label(
+                    image_selection.position,
+                    image_selection.total,
+                ),
                 include_market_button=True,
                 include_trade_button=viewer_is_owner and has_active_trade,
                 include_release_button=viewer_is_owner,
