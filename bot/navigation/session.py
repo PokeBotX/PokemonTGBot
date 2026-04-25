@@ -14,9 +14,9 @@ from redis.exceptions import RedisError
 SESSION_TTL_SECONDS = 10 * 60
 CALLBACK_LOCK_TTL_SECONDS = 10
 PENDING_INPUT_TTL_SECONDS = 10 * 60
-SESSION_KEY_PREFIX = "menu_session:"
-CALLBACK_LOCK_KEY_PREFIX = "callback_lock:"
-PENDING_INPUT_KEY_PREFIX = "pending_input:"
+DEFAULT_SESSION_KEY_PREFIX = "menu_session:"
+DEFAULT_CALLBACK_LOCK_KEY_PREFIX = "callback_lock:"
+DEFAULT_PENDING_INPUT_KEY_PREFIX = "pending_input:"
 
 
 @dataclass
@@ -135,11 +135,20 @@ class PendingInput:
 class SessionStore:
     """Session store with optional Redis backend and in-memory fallback."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        session_key_prefix: str = DEFAULT_SESSION_KEY_PREFIX,
+        callback_lock_key_prefix: str = DEFAULT_CALLBACK_LOCK_KEY_PREFIX,
+        pending_input_key_prefix: str = DEFAULT_PENDING_INPUT_KEY_PREFIX,
+    ) -> None:
         self._sessions: Dict[str, MenuSession] = {}
         self._callback_locks: Dict[str, datetime] = {}
         self._pending_inputs: Dict[str, PendingInput] = {}
         self._redis: Optional[Redis] = None
+        self._session_key_prefix = session_key_prefix
+        self._callback_lock_key_prefix = callback_lock_key_prefix
+        self._pending_input_key_prefix = pending_input_key_prefix
 
     def configure_redis(self, redis_url: str) -> None:
         """Enable Redis-backed storage."""
@@ -181,7 +190,7 @@ class SessionStore:
         )
         if self._redis is not None:
             self._redis.setex(
-                f"{SESSION_KEY_PREFIX}{session_id}",
+                f"{self._session_key_prefix}{session_id}",
                 SESSION_TTL_SECONDS,
                 session.to_json(),
             )
@@ -193,7 +202,7 @@ class SessionStore:
         """Get session by ID, return None if expired."""
         self.cleanup_expired()
         if self._redis is not None:
-            payload = self._redis.get(f"{SESSION_KEY_PREFIX}{session_id}")
+            payload = self._redis.get(f"{self._session_key_prefix}{session_id}")
             if not payload:
                 return None
             return MenuSession.from_json(payload)
@@ -207,7 +216,7 @@ class SessionStore:
     def delete_session(self, session_id: str) -> None:
         """Delete session by ID."""
         if self._redis is not None:
-            self._redis.delete(f"{SESSION_KEY_PREFIX}{session_id}")
+            self._redis.delete(f"{self._session_key_prefix}{session_id}")
             return
         self._sessions.pop(session_id, None)
 
@@ -215,7 +224,7 @@ class SessionStore:
         """Check if callback is already being processed."""
         self.cleanup_expired()
         if self._redis is not None:
-            return bool(self._redis.exists(f"{CALLBACK_LOCK_KEY_PREFIX}{callback_query_id}"))
+            return bool(self._redis.exists(f"{self._callback_lock_key_prefix}{callback_query_id}"))
 
         lock_time = self._callback_locks.get(callback_query_id)
         if lock_time:
@@ -229,7 +238,7 @@ class SessionStore:
         self.cleanup_expired()
         if self._redis is not None:
             self._redis.set(
-                f"{CALLBACK_LOCK_KEY_PREFIX}{callback_query_id}",
+                f"{self._callback_lock_key_prefix}{callback_query_id}",
                 "1",
                 ex=CALLBACK_LOCK_TTL_SECONDS,
                 nx=True,
@@ -284,7 +293,7 @@ class SessionStore:
         key = self._pending_input_key(chat_id, user_id)
         if self._redis is not None:
             self._redis.setex(
-                f"{PENDING_INPUT_KEY_PREFIX}{key}",
+                f"{self._pending_input_key_prefix}{key}",
                 PENDING_INPUT_TTL_SECONDS,
                 pending.to_json(),
             )
@@ -296,7 +305,7 @@ class SessionStore:
         self.cleanup_expired()
         key = self._pending_input_key(chat_id, user_id)
         if self._redis is not None:
-            payload = self._redis.get(f"{PENDING_INPUT_KEY_PREFIX}{key}")
+            payload = self._redis.get(f"{self._pending_input_key_prefix}{key}")
             if not payload:
                 return None
             return PendingInput.from_json(payload)
@@ -310,7 +319,7 @@ class SessionStore:
         """Clear pending input for the given chat/user pair."""
         key = self._pending_input_key(chat_id, user_id)
         if self._redis is not None:
-            self._redis.delete(f"{PENDING_INPUT_KEY_PREFIX}{key}")
+            self._redis.delete(f"{self._pending_input_key_prefix}{key}")
             return
         self._pending_inputs.pop(key, None)
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import random
 from dataclasses import dataclass
@@ -431,6 +432,15 @@ class PokemonImageSelection:
 
 
 @dataclass(slots=True)
+class UserLookupResult:
+    """Resolved Telegram-backed user identity from the bot database."""
+
+    user_id: int
+    telegram_id: int
+    username: Optional[str]
+
+
+@dataclass(slots=True)
 class MarketBrowseState:
     """Current browse filters for the market buy screen."""
 
@@ -827,6 +837,513 @@ class Database:
                 if user_id is None:
                     raise ShopError("Я пока не знаю этого пользователя. Он должен хотя бы раз воспользоваться ботом.")
                 return await self._fetch_profile_summary_by_user_id(conn, int(user_id))
+
+    async def get_user_lookup_by_username(self, username: str) -> UserLookupResult:
+        """Resolve an existing user by stored Telegram username."""
+        normalized = username.strip().lstrip("@").lower()
+        if not normalized:
+            raise ShopError("Укажите username пользователя.")
+
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, tg_user_id, tg_username
+                FROM users
+                WHERE lower(tg_username) = $1
+                """,
+                normalized,
+            )
+        if row is None:
+            raise ShopError("Я пока не знаю этого пользователя. Он должен хотя бы раз воспользоваться ботом.")
+        return UserLookupResult(
+            user_id=int(row["id"]),
+            telegram_id=int(row["tg_user_id"]),
+            username=row["tg_username"],
+        )
+
+    async def get_pokemon_catalog_entry_by_id(self, pokemon_id: int) -> PokemonSearchEntry:
+        """Load one catalog pokemon by id for admin and Mini App operations."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, name, type, rarity, base_hp, base_attack, base_defense, base_stamina, image_credit_id
+                FROM pokemon_catalog
+                WHERE id = $1
+                """,
+                pokemon_id,
+            )
+        if row is None:
+            raise ShopError("Покемон с таким id не найден.")
+        return PokemonSearchEntry(
+            pokemon_id=int(row["id"]),
+            name=str(row["name"]),
+            rarity=str(row["rarity"]),
+            pokemon_type=row["type"],
+            base_hp=int(row["base_hp"]),
+            base_attack=int(row["base_attack"]),
+            base_defense=int(row["base_defense"]),
+            base_stamina=int(row["base_stamina"]),
+            image_credit_id=row["image_credit_id"],
+        )
+
+    async def admin_grant_currency(self, *, target_user_id: int, currency_code: str, amount: int) -> int:
+        """Grant currency to a known user."""
+        normalized_code = currency_code.strip().lower()
+        if normalized_code not in {POKEDOLLAR_CODE, POKECOIN_CODE}:
+            raise ShopError("Неподдерживаемая валюта для выдачи.")
+        if amount <= 0:
+            raise ShopError("Сумма должна быть больше нуля.")
+
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await self._ensure_user_balance(conn, target_user_id, normalized_code)
+                await self._adjust_balance(conn, target_user_id, normalized_code, amount)
+                balance = await self._get_balance_for_update(conn, target_user_id, normalized_code)
+        logger.info(
+            "admin_currency_granted",
+            target_user_id=target_user_id,
+            currency_code=normalized_code,
+            amount=amount,
+            balance=balance,
+        )
+        return balance
+
+    async def admin_grant_pokemon(self, *, target_user_id: int, pokemon_id: int) -> int:
+        """Grant one pokemon species to a known user and return new instance id."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                exists = await conn.fetchval("SELECT 1 FROM pokemon_catalog WHERE id = $1", pokemon_id)
+                if not exists:
+                    raise ShopError("Покемон с таким id не найден.")
+                user_pokemon_id = await self._grant_pokemon_by_id(conn, target_user_id, pokemon_id)
+        logger.info(
+            "admin_pokemon_granted",
+            target_user_id=target_user_id,
+            pokemon_id=pokemon_id,
+            user_pokemon_id=user_pokemon_id,
+        )
+        return user_pokemon_id
+
+    async def admin_create_pokemon_species(
+        self,
+        *,
+        pokemon_id: int,
+        name: str,
+        pokemon_type: Optional[str],
+        rarity: str,
+        base_hp: int,
+        base_attack: int,
+        base_defense: int,
+        base_stamina: int,
+    ) -> int:
+        """Create a new catalog pokemon with the full field set."""
+        normalized_name = name.strip()
+        normalized_type = pokemon_type.strip() if isinstance(pokemon_type, str) else None
+        normalized_type = normalized_type or None
+        normalized_rarity = rarity.strip()
+
+        if pokemon_id <= 0:
+            raise ShopError("pokemon_id должен быть больше нуля.")
+        if not normalized_name:
+            raise ShopError("Имя покемона не может быть пустым.")
+        if not normalized_rarity:
+            raise ShopError("Редкость не может быть пустой.")
+        numeric_fields = {
+            "base_hp": base_hp,
+            "base_attack": base_attack,
+            "base_defense": base_defense,
+            "base_stamina": base_stamina,
+        }
+        for field_name, value in numeric_fields.items():
+            if value < 0:
+                raise ShopError(f"{field_name} не может быть отрицательным.")
+
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                existing_id = await conn.fetchval(
+                    "SELECT 1 FROM pokemon_catalog WHERE id = $1",
+                    pokemon_id,
+                )
+                if existing_id:
+                    raise ShopError("Покемон с таким id уже существует.")
+                existing_name = await conn.fetchval(
+                    "SELECT 1 FROM pokemon_catalog WHERE lower(name) = lower($1)",
+                    normalized_name,
+                )
+                if existing_name:
+                    raise ShopError("Покемон с таким именем уже существует.")
+                created_id = await conn.fetchval(
+                    """
+                    INSERT INTO pokemon_catalog (
+                        id,
+                        name,
+                        type,
+                        rarity,
+                        base_hp,
+                        base_attack,
+                        base_defense,
+                        base_stamina
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    RETURNING id
+                    """,
+                    pokemon_id,
+                    normalized_name,
+                    normalized_type,
+                    normalized_rarity,
+                    base_hp,
+                    base_attack,
+                    base_defense,
+                    base_stamina,
+                )
+        logger.info(
+            "admin_pokemon_species_created",
+            pokemon_id=created_id,
+            name=normalized_name,
+            rarity=normalized_rarity,
+        )
+        return int(created_id)
+
+    async def admin_attach_image_variant(
+        self,
+        *,
+        pokemon_id: int,
+        storage_bucket: str,
+        object_key: str,
+        content_type: Optional[str],
+        etag: Optional[str],
+        source: Optional[str],
+        display_order: int,
+        is_default: bool,
+    ) -> int:
+        """Create image_credit and attach it to a pokemon species as a variant."""
+        if display_order <= 0:
+            raise ShopError("display_order должен быть больше нуля.")
+        normalized_source = source.strip() if isinstance(source, str) else None
+        normalized_source = normalized_source or None
+
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                pokemon_row = await conn.fetchrow(
+                    "SELECT id, image_credit_id FROM pokemon_catalog WHERE id = $1",
+                    pokemon_id,
+                )
+                if pokemon_row is None:
+                    raise ShopError("Покемон с таким id не найден.")
+
+                existing_order = await conn.fetchval(
+                    """
+                    SELECT 1
+                    FROM pokemon_image_variants
+                    WHERE pokemon_id = $1 AND display_order = $2
+                    """,
+                    pokemon_id,
+                    display_order,
+                )
+                if existing_order:
+                    raise ShopError("У этого покемона уже есть вариант с таким порядком.")
+
+                image_credit_id = await conn.fetchval(
+                    """
+                    INSERT INTO image_credits (
+                        storage_bucket,
+                        object_key,
+                        content_type,
+                        etag,
+                        source
+                    )
+                    VALUES ($1, $2, $3, $4, $5)
+                    RETURNING id
+                    """,
+                    storage_bucket,
+                    object_key,
+                    content_type,
+                    etag,
+                    normalized_source,
+                )
+
+                should_be_default = is_default
+                if not should_be_default:
+                    has_default_variant = await conn.fetchval(
+                        """
+                        SELECT 1
+                        FROM pokemon_image_variants
+                        WHERE pokemon_id = $1
+                          AND is_default = true
+                        """,
+                        pokemon_id,
+                    )
+                    if not has_default_variant and pokemon_row["image_credit_id"] is None:
+                        should_be_default = True
+
+                if should_be_default:
+                    await conn.execute(
+                        """
+                        UPDATE pokemon_image_variants
+                        SET is_default = false
+                        WHERE pokemon_id = $1
+                          AND is_default = true
+                        """,
+                        pokemon_id,
+                    )
+
+                await conn.execute(
+                    """
+                    INSERT INTO pokemon_image_variants (
+                        pokemon_id,
+                        image_credit_id,
+                        display_order,
+                        is_default
+                    )
+                    VALUES ($1, $2, $3, $4)
+                    """,
+                    pokemon_id,
+                    image_credit_id,
+                    display_order,
+                    should_be_default,
+                )
+
+                if should_be_default or pokemon_row["image_credit_id"] is None:
+                    await conn.execute(
+                        """
+                        UPDATE pokemon_catalog
+                        SET image_credit_id = $2
+                        WHERE id = $1
+                        """,
+                        pokemon_id,
+                        image_credit_id,
+                    )
+
+        logger.info(
+            "admin_image_variant_attached",
+            pokemon_id=pokemon_id,
+            image_credit_id=image_credit_id,
+            display_order=display_order,
+            is_default=should_be_default,
+        )
+        return int(image_credit_id)
+
+    async def admin_update_image_source(self, *, image_credit_id: int, source: Optional[str]) -> int:
+        """Update source URL for an existing image_credit."""
+        normalized_source = source.strip() if isinstance(source, str) else None
+        normalized_source = normalized_source or None
+
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                exists = await conn.fetchval(
+                    "SELECT 1 FROM image_credits WHERE id = $1",
+                    image_credit_id,
+                )
+                if not exists:
+                    raise ShopError("image_credit_id не найден.")
+                await conn.execute(
+                    """
+                    UPDATE image_credits
+                    SET source = $2
+                    WHERE id = $1
+                    """,
+                    image_credit_id,
+                    normalized_source,
+                )
+        logger.info("admin_image_source_updated", image_credit_id=image_credit_id)
+        return image_credit_id
+
+    async def admin_update_image_variant_metadata(
+        self,
+        *,
+        pokemon_id: int,
+        image_credit_id: int,
+        display_order: int,
+        is_default: bool,
+    ) -> int:
+        """Update display_order and default flag for one image variant."""
+        if display_order <= 0:
+            raise ShopError("display_order должен быть больше нуля.")
+
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                variant_row = await conn.fetchrow(
+                    """
+                    SELECT pokemon_id, image_credit_id
+                    FROM pokemon_image_variants
+                    WHERE pokemon_id = $1
+                      AND image_credit_id = $2
+                    """,
+                    pokemon_id,
+                    image_credit_id,
+                )
+                if variant_row is None:
+                    raise ShopError("Вариант с таким pokemon_id и image_credit_id не найден.")
+
+                conflict = await conn.fetchval(
+                    """
+                    SELECT 1
+                    FROM pokemon_image_variants
+                    WHERE pokemon_id = $1
+                      AND display_order = $2
+                      AND image_credit_id <> $3
+                    """,
+                    pokemon_id,
+                    display_order,
+                    image_credit_id,
+                )
+                if conflict:
+                    raise ShopError("У этого покемона уже есть вариант с таким порядком.")
+
+                if is_default:
+                    await conn.execute(
+                        """
+                        UPDATE pokemon_image_variants
+                        SET is_default = false
+                        WHERE pokemon_id = $1
+                          AND is_default = true
+                          AND image_credit_id <> $2
+                        """,
+                        pokemon_id,
+                        image_credit_id,
+                    )
+
+                await conn.execute(
+                    """
+                    UPDATE pokemon_image_variants
+                    SET display_order = $3,
+                        is_default = $4
+                    WHERE pokemon_id = $1
+                      AND image_credit_id = $2
+                    """,
+                    pokemon_id,
+                    image_credit_id,
+                    display_order,
+                    is_default,
+                )
+
+                if is_default:
+                    await conn.execute(
+                        """
+                        UPDATE pokemon_catalog
+                        SET image_credit_id = $2
+                        WHERE id = $1
+                        """,
+                        pokemon_id,
+                        image_credit_id,
+                    )
+                else:
+                    has_default_variant = await conn.fetchval(
+                        """
+                        SELECT image_credit_id
+                        FROM pokemon_image_variants
+                        WHERE pokemon_id = $1
+                          AND is_default = true
+                        LIMIT 1
+                        """,
+                        pokemon_id,
+                    )
+                    if has_default_variant:
+                        await conn.execute(
+                            """
+                            UPDATE pokemon_catalog
+                            SET image_credit_id = $2
+                            WHERE id = $1
+                            """,
+                            pokemon_id,
+                            has_default_variant,
+                        )
+
+        logger.info(
+            "admin_image_variant_metadata_updated",
+            pokemon_id=pokemon_id,
+            image_credit_id=image_credit_id,
+            display_order=display_order,
+            is_default=is_default,
+        )
+        return image_credit_id
+
+    async def record_admin_action_audit(
+        self,
+        *,
+        actor_telegram_id: int,
+        actor_username: Optional[str],
+        action_type: str,
+        status: str,
+        input_payload: Optional[dict[str, object]] = None,
+        result_payload: Optional[dict[str, object]] = None,
+        error_message: Optional[str] = None,
+        target_user_id: Optional[int] = None,
+        target_telegram_id: Optional[int] = None,
+        target_username: Optional[str] = None,
+    ) -> int:
+        """Persist one admin-bot audit record."""
+        self._ensure_pool()
+        input_json = json.dumps(input_payload, ensure_ascii=False) if input_payload is not None else None
+        result_json = json.dumps(result_payload, ensure_ascii=False) if result_payload is not None else None
+
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                actor_user_id = await self._ensure_user(conn, actor_telegram_id, actor_username)
+                if target_user_id is None and target_telegram_id is not None:
+                    target_user_id = await conn.fetchval(
+                        "SELECT id FROM users WHERE tg_user_id = $1",
+                        target_telegram_id,
+                    )
+                audit_id = await conn.fetchval(
+                    """
+                    INSERT INTO admin_action_audit (
+                        actor_user_id,
+                        actor_telegram_id,
+                        actor_username,
+                        action_type,
+                        target_user_id,
+                        target_telegram_id,
+                        target_username,
+                        status,
+                        input_payload,
+                        result_payload,
+                        error_message
+                    )
+                    VALUES (
+                        $1,
+                        $2,
+                        $3,
+                        $4,
+                        $5,
+                        $6,
+                        $7,
+                        $8,
+                        $9::jsonb,
+                        $10::jsonb,
+                        $11
+                    )
+                    RETURNING id
+                    """,
+                    actor_user_id,
+                    actor_telegram_id,
+                    actor_username,
+                    action_type,
+                    target_user_id,
+                    target_telegram_id,
+                    target_username,
+                    status,
+                    input_json,
+                    result_json,
+                    error_message,
+                )
+        logger.info(
+            "admin_action_audit_recorded",
+            audit_id=audit_id,
+            actor_telegram_id=actor_telegram_id,
+            action_type=action_type,
+            status=status,
+            target_telegram_id=target_telegram_id,
+        )
+        return int(audit_id)
 
     async def get_profile_referral(self, telegram_id: int, username: Optional[str], bot_username: Optional[str]) -> ProfileReferral:
         """Build the user's referral code and link."""

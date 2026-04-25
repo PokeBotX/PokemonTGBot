@@ -103,6 +103,22 @@ CREATE TABLE IF NOT EXISTS "user_pokemon_image_preferences" (
   PRIMARY KEY ("user_id", "pokemon_id")
 );
 
+CREATE TABLE IF NOT EXISTS "admin_action_audit" (
+  "id" bigserial PRIMARY KEY,
+  "actor_user_id" bigint,
+  "actor_telegram_id" bigint NOT NULL,
+  "actor_username" varchar(64),
+  "action_type" varchar(64) NOT NULL,
+  "target_user_id" bigint,
+  "target_telegram_id" bigint,
+  "target_username" varchar(64),
+  "status" varchar(16) NOT NULL,
+  "input_payload" jsonb,
+  "result_payload" jsonb,
+  "error_message" text,
+  "created_at" timestamptz NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS "user_pokemon" (
   "id" bigserial PRIMARY KEY,
   "owner_user_id" bigint NOT NULL,
@@ -235,6 +251,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS pokemon_image_variants_order_idx
 
 CREATE INDEX IF NOT EXISTS user_pokemon_image_preferences_user_pokemon_idx
   ON "user_pokemon_image_preferences" ("user_id", "pokemon_id", "updated_at" DESC);
+
+CREATE INDEX IF NOT EXISTS admin_action_audit_actor_created_idx
+  ON "admin_action_audit" ("actor_telegram_id", "created_at" DESC);
+
+CREATE INDEX IF NOT EXISTS admin_action_audit_action_status_idx
+  ON "admin_action_audit" ("action_type", "status", "created_at" DESC);
 
 CREATE INDEX IF NOT EXISTS market_listings_active_browse_idx
   ON "market_listings" ("status", "listed_at" DESC, "price" ASC);
