@@ -15,9 +15,12 @@ export function usePokemons({
   types = [],
   duplicatesOnly = false,
 }: UsePokemonsOptions = {}) {
+  const isClient = typeof window !== "undefined";
+
   const query = useInfiniteQuery({
     queryKey: ["pokemons", { lockedOnly, rarities, types, duplicatesOnly }],
     initialPageParam: 1,
+    enabled: isClient,
     queryFn: ({ pageParam }) =>
       getPokemonsPage({
         pageParam,
