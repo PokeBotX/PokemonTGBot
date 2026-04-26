@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 
 type TelegramUser = {
   id: number;
@@ -132,24 +132,34 @@ export function isLocalMiniAppDevelopment() {
   return window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost";
 }
 
-export function useMiniAppQueryScope() {
-  const snapshot = useTelegramSnapshot();
-
-  return useMemo(() => {
-    if (isLocalMiniAppDevelopment()) {
-      return "local-dev";
-    }
-
-    if (snapshot.isTelegram && snapshot.initData) {
-      return `telegram:${snapshot.user?.id ?? "unknown"}`;
-    }
-
-    return "unready";
-  }, [snapshot.initData, snapshot.isTelegram, snapshot.user?.id]);
-}
-
 export function useMiniAppDataReady() {
-  const scope = useMiniAppQueryScope();
+  const [isReady, setIsReady] = useState(() => {
+    if (isLocalMiniAppDevelopment()) {
+      return true;
+    }
+    return Boolean(getTelegramInitData());
+  });
 
-  return scope !== "unready";
+  useEffect(() => {
+    if (isLocalMiniAppDevelopment()) {
+      return;
+    }
+
+    const checkReady = () => {
+      setIsReady(Boolean(getTelegramInitData()));
+    };
+
+    checkReady();
+    const intervalId = window.setInterval(checkReady, 250);
+    window.addEventListener("focus", checkReady);
+    window.addEventListener("visibilitychange", checkReady);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", checkReady);
+      window.removeEventListener("visibilitychange", checkReady);
+    };
+  }, []);
+
+  return isReady;
 }

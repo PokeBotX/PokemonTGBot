@@ -1,14 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { getTelegramAuthPreview } from "@/lib/api";
-import { useMiniAppDataReady, useMiniAppQueryScope } from "@/lib/telegram";
+import { useMiniAppDataReady } from "@/lib/telegram";
 
 export function useTelegramAuthPreview() {
   const isReady = useMiniAppDataReady();
-  const queryScope = useMiniAppQueryScope();
 
   const query = useQuery({
-    queryKey: ["telegram-auth-preview", queryScope],
+    queryKey: ["telegram-auth-preview", isReady ? "live" : "waiting"],
     enabled: isReady,
     queryFn: getTelegramAuthPreview,
   });

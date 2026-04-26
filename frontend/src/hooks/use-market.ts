@@ -1,14 +1,13 @@
 import { useInfiniteQuery } from "@tanstack/react-query";
 
 import { getMarketPage } from "@/lib/api";
-import { useMiniAppDataReady, useMiniAppQueryScope } from "@/lib/telegram";
+import { useMiniAppDataReady } from "@/lib/telegram";
 
 export function useMarket() {
   const isReady = useMiniAppDataReady();
-  const queryScope = useMiniAppQueryScope();
 
   const query = useInfiniteQuery({
-    queryKey: ["market", queryScope],
+    queryKey: ["market", isReady ? "live" : "waiting"],
     initialPageParam: 1,
     enabled: isReady,
     queryFn: ({ pageParam }) => getMarketPage(pageParam),
