@@ -331,7 +331,10 @@ async def _build_mini_app_collection_payload(telegram_id: int, username: str | N
 
 
 def _storage_endpoint_url() -> str:
-    return os.getenv("S3_ENDPOINT_URL", "http://127.0.0.1:9000").rstrip("/")
+    return (
+        os.getenv("S3_PUBLIC_BASE_URL")
+        or os.getenv("S3_ENDPOINT_URL", "http://127.0.0.1:9000")
+    ).rstrip("/")
 
 
 def _build_object_url(storage_bucket: str, object_key: str) -> str:
