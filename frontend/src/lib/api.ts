@@ -1,4 +1,8 @@
-import { getDevelopmentTelegramUser, getTelegramInitData } from "@/lib/telegram";
+import {
+  getDevelopmentTelegramUser,
+  getTelegramInitData,
+  isLocalMiniAppDevelopment,
+} from "@/lib/telegram";
 
 type MiniAppProfile = {
   id: number;
@@ -149,13 +153,16 @@ function buildApiUrl(path: string) {
 }
 
 function canUseLiveBackend() {
-  return Boolean(getTelegramInitData() || getApiBaseUrl());
+  return Boolean(getTelegramInitData() || isLocalMiniAppDevelopment());
 }
 
 function getAuthHeaders(): Record<string, string> {
   const initData = getTelegramInitData();
   if (initData) {
     return { "X-Telegram-Init-Data": initData };
+  }
+  if (!isLocalMiniAppDevelopment()) {
+    return {};
   }
   return { "X-Dev-Telegram-Id": DEV_TELEGRAM_ID };
 }

@@ -1,13 +1,20 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { getProfile } from "@/lib/api";
+import { useMiniAppDataReady, useMiniAppQueryScope } from "@/lib/telegram";
 
 export function useProfile() {
-  const isClient = typeof window !== "undefined";
+  const isReady = useMiniAppDataReady();
+  const queryScope = useMiniAppQueryScope();
 
-  return useQuery({
-    queryKey: ["profile"],
-    enabled: isClient,
+  const query = useQuery({
+    queryKey: ["profile", queryScope],
+    enabled: isReady,
     queryFn: getProfile,
   });
+
+  return {
+    ...query,
+    isLoading: query.isLoading || !isReady,
+  };
 }

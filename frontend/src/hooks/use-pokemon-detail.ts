@@ -1,24 +1,32 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { cyclePokemonImage, getPokemonDetail, togglePokemonLock } from "@/lib/api";
+import { useMiniAppDataReady, useMiniAppQueryScope } from "@/lib/telegram";
 
 export function usePokemonDetail(userPokemonId: number | null) {
-  const isClient = typeof window !== "undefined";
+  const isReady = useMiniAppDataReady();
+  const queryScope = useMiniAppQueryScope();
 
-  return useQuery({
-    queryKey: ["pokemon-detail", userPokemonId],
+  const query = useQuery({
+    queryKey: ["pokemon-detail", queryScope, userPokemonId],
     queryFn: () => getPokemonDetail(userPokemonId as number),
-    enabled: isClient && userPokemonId !== null,
+    enabled: isReady && userPokemonId !== null,
   });
+
+  return {
+    ...query,
+    isLoading: query.isLoading || !isReady,
+  };
 }
 
 export function usePokemonLockToggle(userPokemonId: number | null) {
   const queryClient = useQueryClient();
+  const queryScope = useMiniAppQueryScope();
 
   return useMutation({
     mutationFn: () => togglePokemonLock(userPokemonId as number),
     onSuccess: (data) => {
-      queryClient.setQueryData(["pokemon-detail", userPokemonId], data);
+      queryClient.setQueryData(["pokemon-detail", queryScope, userPokemonId], data);
       void queryClient.invalidateQueries({ queryKey: ["pokemons"] });
     },
   });
@@ -26,11 +34,12 @@ export function usePokemonLockToggle(userPokemonId: number | null) {
 
 export function usePokemonImageCycle(userPokemonId: number | null) {
   const queryClient = useQueryClient();
+  const queryScope = useMiniAppQueryScope();
 
   return useMutation({
     mutationFn: () => cyclePokemonImage(userPokemonId as number),
     onSuccess: (data) => {
-      queryClient.setQueryData(["pokemon-detail", userPokemonId], data);
+      queryClient.setQueryData(["pokemon-detail", queryScope, userPokemonId], data);
     },
   });
 }

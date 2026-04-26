@@ -1,6 +1,7 @@
 import { useInfiniteQuery } from "@tanstack/react-query";
 
 import { getPokemonsPage } from "@/lib/api";
+import { useMiniAppDataReady, useMiniAppQueryScope } from "@/lib/telegram";
 
 type UsePokemonsOptions = {
   lockedOnly?: boolean;
@@ -15,12 +16,13 @@ export function usePokemons({
   types = [],
   duplicatesOnly = false,
 }: UsePokemonsOptions = {}) {
-  const isClient = typeof window !== "undefined";
+  const isReady = useMiniAppDataReady();
+  const queryScope = useMiniAppQueryScope();
 
   const query = useInfiniteQuery({
-    queryKey: ["pokemons", { lockedOnly, rarities, types, duplicatesOnly }],
+    queryKey: ["pokemons", queryScope, { lockedOnly, rarities, types, duplicatesOnly }],
     initialPageParam: 1,
-    enabled: isClient,
+    enabled: isReady,
     queryFn: ({ pageParam }) =>
       getPokemonsPage({
         pageParam,
@@ -34,6 +36,7 @@ export function usePokemons({
 
   return {
     ...query,
+    isLoading: query.isLoading || !isReady,
     entries: query.data?.pages.flatMap((page) => page.entries) ?? [],
     pageInfo: query.data?.pages.at(-1)?.pageInfo ?? null,
   };

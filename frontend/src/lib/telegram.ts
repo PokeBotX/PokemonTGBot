@@ -1,6 +1,6 @@
 "use client";
 
-import { useSyncExternalStore } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 
 type TelegramUser = {
   id: number;
@@ -69,8 +69,30 @@ const EMPTY_TELEGRAM_SNAPSHOT: TelegramSnapshot = {
   initData: "",
 };
 
-function subscribeTelegramSnapshot() {
-  return () => {};
+function subscribeTelegramSnapshot(onStoreChange: () => void) {
+  if (typeof window === "undefined") {
+    return () => {};
+  }
+
+  let previousKey = JSON.stringify(getTelegramSnapshot());
+
+  const checkForChanges = () => {
+    const nextKey = JSON.stringify(getTelegramSnapshot());
+    if (nextKey !== previousKey) {
+      previousKey = nextKey;
+      onStoreChange();
+    }
+  };
+
+  const intervalId = window.setInterval(checkForChanges, 250);
+  window.addEventListener("focus", checkForChanges);
+  window.addEventListener("visibilitychange", checkForChanges);
+
+  return () => {
+    window.clearInterval(intervalId);
+    window.removeEventListener("focus", checkForChanges);
+    window.removeEventListener("visibilitychange", checkForChanges);
+  };
 }
 
 function getTelegramSnapshot(): TelegramSnapshot {
@@ -96,4 +118,38 @@ export function useTelegramSnapshot() {
 
 export function getDevelopmentTelegramUser() {
   return DEV_TELEGRAM_USER;
+}
+
+export function isLocalMiniAppDevelopment() {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  if (process.env.NEXT_PUBLIC_ENABLE_DEV_FALLBACK?.trim() === "true") {
+    return true;
+  }
+
+  return window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost";
+}
+
+export function useMiniAppQueryScope() {
+  const snapshot = useTelegramSnapshot();
+
+  return useMemo(() => {
+    if (isLocalMiniAppDevelopment()) {
+      return "local-dev";
+    }
+
+    if (snapshot.isTelegram && snapshot.initData) {
+      return `telegram:${snapshot.user?.id ?? "unknown"}`;
+    }
+
+    return "unready";
+  }, [snapshot.initData, snapshot.isTelegram, snapshot.user?.id]);
+}
+
+export function useMiniAppDataReady() {
+  const scope = useMiniAppQueryScope();
+
+  return scope !== "unready";
 }
