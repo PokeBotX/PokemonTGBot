@@ -1,12 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
-
-import {
-  getTelegramInitData,
-  getTelegramUser,
-  isTelegramWebApp,
-} from "@/lib/telegram";
+import { useTelegramSnapshot } from "@/lib/telegram";
 
 import { ErrorState } from "@/components/error-state";
 import { SectionCard } from "@/components/section-card";
@@ -15,15 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useTelegramAuthPreview } from "@/hooks/use-telegram-auth-preview";
 
 export function TelegramDebugCard() {
-  const [isTelegram, setIsTelegram] = useState(false);
-  const [userFound, setUserFound] = useState(false);
-  const [hasInitData, setHasInitData] = useState(false);
-
-  useEffect(() => {
-    setIsTelegram(isTelegramWebApp());
-    setUserFound(Boolean(getTelegramUser()));
-    setHasInitData(Boolean(getTelegramInitData()));
-  }, []);
+  const { isTelegram, user, initData } = useTelegramSnapshot();
 
   const { data, isLoading, isError } = useTelegramAuthPreview();
 
@@ -31,8 +17,8 @@ export function TelegramDebugCard() {
     <SectionCard title="Telegram Debug">
       <div className="flex flex-col gap-3">
         <InfoRow label="Telegram WebApp" value={isTelegram ? "yes" : "no"} />
-        <InfoRow label="User найден" value={userFound ? "yes" : "no"} />
-        <InfoRow label="initData есть" value={hasInitData ? "yes" : "no"} />
+        <InfoRow label="User найден" value={user ? "yes" : "no"} />
+        <InfoRow label="initData есть" value={initData ? "yes" : "no"} />
 
         {isLoading ? (
           <Skeleton className="h-16 w-full rounded-2xl" />

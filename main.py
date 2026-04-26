@@ -1,4 +1,5 @@
 """PokéCollect Bot - FastAPI application with Telegram webhook."""
+import asyncio
 import hashlib
 import hmac
 import json
@@ -11,14 +12,21 @@ from urllib.parse import parse_qsl
 
 import structlog
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException, Request, Response, status
+from fastapi import FastAPI, Header, HTTPException, Query, Request, Response, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from telegram import Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
 from bot.db import Database
-from bot.db.database import MARKET_MAINTENANCE_INTERVAL_SECONDS, TRADE_MAINTENANCE_INTERVAL_SECONDS
+from bot.db.database import (
+    MARKET_MAINTENANCE_INTERVAL_SECONDS,
+    TRADE_MAINTENANCE_INTERVAL_SECONDS,
+    CollectionFilterState,
+    MarketBrowseState,
+    ShopError,
+)
 from bot.utils.logging import setup_logging
 from bot.handlers.chat_activity import group_message_activity_handler
 from bot.handlers.commands import (
@@ -95,6 +103,18 @@ bot_app: Application = None
 db: Database = None
 
 MINI_APP_AUTH_MAX_AGE_SECONDS = 24 * 60 * 60
+MINI_APP_COLLECTION_PAGE_SIZE = 24
+MINI_APP_DEV_FALLBACK_ENABLED = os.getenv("MINI_APP_DEV_FALLBACK_ENABLED", "false").lower() == "true"
+MINI_APP_DEV_FALLBACK_TELEGRAM_ID = int(os.getenv("MINI_APP_DEV_FALLBACK_TELEGRAM_ID", "1640978922"))
+MINI_APP_DEV_FALLBACK_USERNAME = os.getenv("MINI_APP_DEV_FALLBACK_USERNAME", "termenater").strip() or "termenater"
+MINI_APP_ALLOWED_ORIGINS = tuple(
+    origin.strip()
+    for origin in os.getenv(
+        "MINI_APP_ALLOWED_ORIGINS",
+        "http://127.0.0.1:3000,http://localhost:3000,https://app.pokemoncollection.ru,https://pokemoncollection.ru",
+    ).split(",")
+    if origin.strip()
+)
 
 
 class TelegramAuthRequest(BaseModel):
@@ -237,6 +257,28 @@ def _extract_mini_app_identity(telegram_payload: dict[str, Any]) -> tuple[int, s
     return telegram_id, username
 
 
+def _resolve_mini_app_identity(
+    *,
+    x_telegram_init_data: str | None,
+    x_dev_telegram_id: str | None,
+) -> tuple[int, str | None]:
+    """Resolve Mini App identity from Telegram initData or a local dev fallback."""
+    normalized_init_data = (x_telegram_init_data or "").strip()
+    if normalized_init_data:
+        telegram_payload = _validate_telegram_init_data(normalized_init_data)
+        return _extract_mini_app_identity(telegram_payload)
+
+    if MINI_APP_DEV_FALLBACK_ENABLED:
+        normalized_dev_id = (x_dev_telegram_id or "").strip()
+        if normalized_dev_id and normalized_dev_id == str(MINI_APP_DEV_FALLBACK_TELEGRAM_ID):
+            return MINI_APP_DEV_FALLBACK_TELEGRAM_ID, MINI_APP_DEV_FALLBACK_USERNAME
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Telegram initData is required",
+    )
+
+
 async def _build_mini_app_profile_payload(telegram_id: int, username: str | None) -> dict[str, Any]:
     """Build the current user's Mini App profile response from DB read models."""
     if not DB_ENABLED or db is None:
@@ -264,6 +306,7 @@ async def _build_mini_app_profile_payload(telegram_id: int, username: str | None
         "language": profile_summary.language,
         "completionPercent": profile_summary.total_unique_percent,
         "totalCatalog": profile_summary.total_catalog,
+        "accountAgeLabel": _humanize_account_age(profile_summary.created_at),
         "coverPokemonName": profile_summary.cover_pokemon_name,
         "rarityProgress": [
             {
@@ -279,13 +322,69 @@ async def _build_mini_app_profile_payload(telegram_id: int, username: str | None
 
 async def _build_mini_app_collection_payload(telegram_id: int, username: str | None) -> dict[str, Any]:
     """Build the current user's Mini App collection response from DB read models."""
+    return await _build_mini_app_collection_payload_with_filters(
+        telegram_id,
+        username,
+        filter_state=CollectionFilterState(),
+        page_size=MINI_APP_COLLECTION_PAGE_SIZE,
+    )
+
+
+def _storage_endpoint_url() -> str:
+    return os.getenv("S3_ENDPOINT_URL", "http://127.0.0.1:9000").rstrip("/")
+
+
+def _build_object_url(storage_bucket: str, object_key: str) -> str:
+    from urllib.parse import quote
+
+    quoted_key = quote(object_key, safe="/")
+    return f"{_storage_endpoint_url()}/{storage_bucket}/{quoted_key}"
+
+
+async def _resolve_image_url(
+    *,
+    image_credit_id: int | None,
+) -> str | None:
+    if image_credit_id is None or db is None:
+        return None
+
+    image_credit = await db.get_image_credit(image_credit_id)
+    if not image_credit:
+        return None
+
+    storage_bucket = getattr(image_credit, "storage_bucket", None)
+    object_key = getattr(image_credit, "object_key", None)
+    if not isinstance(storage_bucket, str) or not isinstance(object_key, str):
+        return None
+    return _build_object_url(storage_bucket, object_key)
+
+
+async def _build_mini_app_collection_payload_with_filters(
+    telegram_id: int,
+    username: str | None,
+    *,
+    filter_state: CollectionFilterState,
+    page_size: int,
+) -> dict[str, Any]:
+    """Build the current user's Mini App collection response with explicit filters."""
     if not DB_ENABLED or db is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Database is not available for Mini App collection requests",
         )
 
-    collection_page = await db.get_collection_page(telegram_id, username)
+    collection_page = await db.get_mini_app_collection_page(
+        telegram_id,
+        username,
+        filter_state,
+        page_size=page_size,
+    )
+    image_urls: list[str | None] = await asyncio.gather(
+        *[
+            _resolve_image_url(image_credit_id=entry.image_credit_id)
+            for entry in collection_page.entries
+        ]
+    )
     return {
         "entries": [
             {
@@ -301,16 +400,175 @@ async def _build_mini_app_collection_payload(telegram_id: int, username: str | N
                 "baseDefense": entry.base_defense,
                 "baseStamina": entry.base_stamina,
                 "imageCreditId": entry.image_credit_id,
+                "imageUrl": image_urls[index],
                 "isLocked": entry.is_locked,
             }
-            for entry in collection_page.entries
+            for index, entry in enumerate(collection_page.entries)
         ],
-        "pagination": {
+        "pageInfo": {
             "totalEntries": collection_page.total_entries,
             "currentPage": collection_page.current_page,
             "totalPages": collection_page.total_pages,
+            "pageSize": collection_page.page_size,
+            "hasNext": collection_page.has_next(),
+            "hasPrevious": collection_page.has_previous(),
+            "nextPage": collection_page.current_page + 1 if collection_page.has_next() else None,
+        },
+        "appliedFilters": {
+            "rarities": list(collection_page.filter_state.rarities),
+            "types": list(collection_page.filter_state.types),
+            "duplicatesOnly": collection_page.filter_state.duplicates_only,
+            "lockedOnly": collection_page.filter_state.locked_only,
         },
     }
+
+
+async def _build_mini_app_market_payload(
+    telegram_id: int,
+    username: str | None,
+    *,
+    page: int,
+) -> dict[str, Any]:
+    """Build the current market browse response for Mini App."""
+    if not DB_ENABLED or db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database is not available for Mini App market requests",
+        )
+
+    market_page = await db.get_market_listings_page(
+        telegram_id,
+        username,
+        filter_state=MarketBrowseState(page=page),
+    )
+
+    image_urls: list[str | None] = await asyncio.gather(
+        *[
+            _resolve_image_url(image_credit_id=entry.image_credit_id)
+            for entry in market_page.entries
+        ]
+    )
+    return {
+        "entries": [
+            {
+                "listingId": entry.listing_id,
+                "pokemonId": entry.pokemon_id,
+                "userPokemonId": entry.user_pokemon_id,
+                "name": entry.name,
+                "type": entry.pokemon_type or "Unknown",
+                "rarity": entry.rarity,
+                "price": entry.price,
+                "sellerLabel": entry.seller_label or "Тренер",
+                "daysRemaining": entry.days_remaining,
+                "imageCreditId": entry.image_credit_id,
+                "imageUrl": image_urls[index],
+            }
+            for index, entry in enumerate(market_page.entries)
+        ],
+        "pageInfo": {
+            "totalEntries": market_page.total_entries,
+            "currentPage": market_page.current_page,
+            "totalPages": market_page.total_pages,
+            "pageSize": 20,
+            "hasNext": market_page.has_next(),
+            "hasPrevious": market_page.has_previous(),
+            "nextPage": market_page.current_page + 1 if market_page.has_next() else None,
+        },
+    }
+
+
+async def _build_mini_app_pokemon_detail_payload(
+    telegram_id: int,
+    username: str | None,
+    *,
+    user_pokemon_id: int,
+) -> dict[str, Any]:
+    """Build one owned pokemon detail payload for Mini App."""
+    if not DB_ENABLED or db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database is not available for Mini App pokemon requests",
+        )
+
+    entry = await db.get_owned_user_pokemon_entry(
+        telegram_id,
+        username,
+        user_pokemon_id=user_pokemon_id,
+    )
+    if entry is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Pokemon not found",
+        )
+
+    image_selection = await db.get_pokemon_image_selection(
+        telegram_id,
+        username,
+        pokemon_id=entry.pokemon_id,
+    )
+    active_image_credit_id = image_selection.image_credit_id or entry.image_credit_id
+    image_url = await _resolve_image_url(image_credit_id=active_image_credit_id)
+
+    return {
+        "id": entry.pokemon_id,
+        "userPokemonId": entry.sample_user_pokemon_id,
+        "name": entry.name,
+        "rarity": entry.rarity,
+        "type": entry.pokemon_type or "Unknown",
+        "quantity": entry.quantity,
+        "baseHp": entry.base_hp,
+        "baseAttack": entry.base_attack,
+        "baseDefense": entry.base_defense,
+        "baseStamina": entry.base_stamina,
+        "isLocked": entry.is_locked,
+        "imageCreditId": active_image_credit_id,
+        "imageUrl": image_url,
+        "sourceUrl": image_selection.source_url,
+        "imageVariant": {
+            "position": image_selection.position,
+            "total": image_selection.total,
+            "canSwitch": bool(image_selection.total > 1),
+        },
+    }
+
+
+def _parse_csv_query_values(values: list[str] | None) -> tuple[str, ...]:
+    if not values:
+        return ()
+
+    parsed: list[str] = []
+    for raw_value in values:
+        for part in raw_value.split(","):
+            normalized = part.strip()
+            if normalized:
+                parsed.append(normalized)
+    return tuple(parsed)
+
+
+def _pluralize_ru(value: int, singular: str, paucal: str, plural: str) -> str:
+    remainder_100 = value % 100
+    remainder_10 = value % 10
+    if 11 <= remainder_100 <= 14:
+        return plural
+    if remainder_10 == 1:
+        return singular
+    if 2 <= remainder_10 <= 4:
+        return paucal
+    return plural
+
+
+def _humanize_account_age(created_at: datetime) -> str:
+    now = datetime.now(UTC)
+    delta_days = max(0, (now - created_at.astimezone(UTC)).days)
+    if delta_days < 30:
+        return f"{delta_days} {_pluralize_ru(delta_days, 'день', 'дня', 'дней')}"
+
+    months = delta_days // 30
+    if months < 12:
+        return f"{months} {_pluralize_ru(months, 'месяц', 'месяца', 'месяцев')}"
+
+    years = months // 12
+    return f"{years} {_pluralize_ru(years, 'год', 'года', 'лет')}"
 
 
 async def run_market_maintenance_job(context) -> None:
@@ -512,6 +770,13 @@ async def lifespan(app: FastAPI):
 
 # Create FastAPI application
 app = FastAPI(title="PokéCollect Bot", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=list(MINI_APP_ALLOWED_ORIGINS),
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/")
@@ -546,19 +811,144 @@ async def telegram_mini_app_auth(payload: TelegramAuthRequest):
 
 
 @app.get("/api/me")
-async def mini_app_me(x_telegram_init_data: str = Header(alias="X-Telegram-Init-Data")):
+async def mini_app_me(
+    x_telegram_init_data: str | None = Header(default=None, alias="X-Telegram-Init-Data"),
+    x_dev_telegram_id: str | None = Header(default=None, alias="X-Dev-Telegram-Id"),
+):
     """Return the current Mini App profile using validated Telegram initData."""
-    telegram_payload = _validate_telegram_init_data(x_telegram_init_data)
-    telegram_id, username = _extract_mini_app_identity(telegram_payload)
+    telegram_id, username = _resolve_mini_app_identity(
+        x_telegram_init_data=x_telegram_init_data,
+        x_dev_telegram_id=x_dev_telegram_id,
+    )
     return await _build_mini_app_profile_payload(telegram_id, username)
 
 
 @app.get("/api/collection")
-async def mini_app_collection(x_telegram_init_data: str = Header(alias="X-Telegram-Init-Data")):
+async def mini_app_collection(
+    x_telegram_init_data: str | None = Header(default=None, alias="X-Telegram-Init-Data"),
+    x_dev_telegram_id: str | None = Header(default=None, alias="X-Dev-Telegram-Id"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=MINI_APP_COLLECTION_PAGE_SIZE, ge=1, le=100),
+    locked: bool = Query(default=False),
+    duplicates_only: bool = Query(default=False),
+    rarities: list[str] | None = Query(default=None),
+    types: list[str] | None = Query(default=None),
+):
     """Return the current Mini App collection using validated Telegram initData."""
-    telegram_payload = _validate_telegram_init_data(x_telegram_init_data)
-    telegram_id, username = _extract_mini_app_identity(telegram_payload)
-    return await _build_mini_app_collection_payload(telegram_id, username)
+    telegram_id, username = _resolve_mini_app_identity(
+        x_telegram_init_data=x_telegram_init_data,
+        x_dev_telegram_id=x_dev_telegram_id,
+    )
+    filter_state = CollectionFilterState(
+        rarities=_parse_csv_query_values(rarities),
+        types=_parse_csv_query_values(types),
+        duplicates_only=duplicates_only,
+        locked_only=locked,
+        page=page,
+    )
+    return await _build_mini_app_collection_payload_with_filters(
+        telegram_id,
+        username,
+        filter_state=filter_state,
+        page_size=page_size,
+    )
+
+
+@app.get("/api/market")
+async def mini_app_market(
+    x_telegram_init_data: str | None = Header(default=None, alias="X-Telegram-Init-Data"),
+    x_dev_telegram_id: str | None = Header(default=None, alias="X-Dev-Telegram-Id"),
+    page: int = Query(default=1, ge=1),
+):
+    """Return active market listings for Mini App browsing."""
+    telegram_id, username = _resolve_mini_app_identity(
+        x_telegram_init_data=x_telegram_init_data,
+        x_dev_telegram_id=x_dev_telegram_id,
+    )
+    return await _build_mini_app_market_payload(
+        telegram_id,
+        username,
+        page=page,
+    )
+
+
+@app.get("/api/pokemon")
+async def mini_app_pokemon_detail(
+    user_pokemon_id: int = Query(..., ge=1),
+    x_telegram_init_data: str | None = Header(default=None, alias="X-Telegram-Init-Data"),
+    x_dev_telegram_id: str | None = Header(default=None, alias="X-Dev-Telegram-Id"),
+):
+    """Return one owned pokemon detail payload for Mini App."""
+    telegram_id, username = _resolve_mini_app_identity(
+        x_telegram_init_data=x_telegram_init_data,
+        x_dev_telegram_id=x_dev_telegram_id,
+    )
+    return await _build_mini_app_pokemon_detail_payload(
+        telegram_id,
+        username,
+        user_pokemon_id=user_pokemon_id,
+    )
+
+
+@app.post("/api/pokemon/{user_pokemon_id}/lock-toggle")
+async def mini_app_pokemon_lock_toggle(
+    user_pokemon_id: int,
+    x_telegram_init_data: str | None = Header(default=None, alias="X-Telegram-Init-Data"),
+    x_dev_telegram_id: str | None = Header(default=None, alias="X-Dev-Telegram-Id"),
+):
+    """Toggle one owned pokemon lock state for Mini App."""
+    telegram_id, username = _resolve_mini_app_identity(
+        x_telegram_init_data=x_telegram_init_data,
+        x_dev_telegram_id=x_dev_telegram_id,
+    )
+    try:
+        await db.toggle_user_pokemon_lock(
+            telegram_id,
+            username,
+            user_pokemon_id=user_pokemon_id,
+        )
+    except ShopError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    return await _build_mini_app_pokemon_detail_payload(
+        telegram_id,
+        username,
+        user_pokemon_id=user_pokemon_id,
+    )
+
+
+@app.post("/api/pokemon/{user_pokemon_id}/image-cycle")
+async def mini_app_pokemon_image_cycle(
+    user_pokemon_id: int,
+    x_telegram_init_data: str | None = Header(default=None, alias="X-Telegram-Init-Data"),
+    x_dev_telegram_id: str | None = Header(default=None, alias="X-Dev-Telegram-Id"),
+):
+    """Cycle the active pokemon image variant for Mini App."""
+    telegram_id, username = _resolve_mini_app_identity(
+        x_telegram_init_data=x_telegram_init_data,
+        x_dev_telegram_id=x_dev_telegram_id,
+    )
+    entry = await db.get_owned_user_pokemon_entry(
+        telegram_id,
+        username,
+        user_pokemon_id=user_pokemon_id,
+    )
+    if entry is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Pokemon not found",
+        )
+
+    await db.cycle_pokemon_image_selection(
+        telegram_id,
+        username,
+        pokemon_id=entry.pokemon_id,
+    )
+    return await _build_mini_app_pokemon_detail_payload(
+        telegram_id,
+        username,
+        user_pokemon_id=user_pokemon_id,
+    )
 
 
 @app.post(WEBHOOK_PATH)

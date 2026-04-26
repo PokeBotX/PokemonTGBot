@@ -1,4 +1,4 @@
-import { getTelegramInitData } from "@/lib/telegram";
+import { getDevelopmentTelegramUser, getTelegramInitData } from "@/lib/telegram";
 
 type MiniAppProfile = {
   id: number;
@@ -10,6 +10,7 @@ type MiniAppProfile = {
   language: string;
   completionPercent: number;
   totalCatalog: number;
+  accountAgeLabel: string;
   coverPokemonName: string | null;
   rarityProgress: Array<{
     rarity: string;
@@ -19,26 +20,88 @@ type MiniAppProfile = {
   }>;
 };
 
+export type MiniAppCollectionEntry = {
+  id: number;
+  userPokemonId: number | null;
+  name: string;
+  type: string;
+  level: number;
+  rarity: string;
+  quantity: number;
+  baseHp: number;
+  baseAttack: number;
+  baseDefense: number;
+  baseStamina: number;
+  imageCreditId: number | null;
+  imageUrl: string | null;
+  isLocked: boolean;
+};
+
+export type MiniAppMarketEntry = {
+  listingId: number;
+  pokemonId: number;
+  userPokemonId: number;
+  name: string;
+  type: string;
+  rarity: string;
+  price: number;
+  sellerLabel: string;
+  daysRemaining: number;
+  imageCreditId: number | null;
+  imageUrl: string | null;
+};
+
+export type MiniAppPokemonDetail = {
+  id: number;
+  userPokemonId: number;
+  name: string;
+  rarity: string;
+  type: string;
+  quantity: number;
+  baseHp: number;
+  baseAttack: number;
+  baseDefense: number;
+  baseStamina: number;
+  isLocked: boolean;
+  imageCreditId: number | null;
+  imageUrl: string | null;
+  sourceUrl: string | null;
+  imageVariant: {
+    position: number;
+    total: number;
+    canSwitch: boolean;
+  };
+};
+
 type MiniAppCollectionResponse = {
-  entries: Array<{
-    id: number;
-    userPokemonId: number | null;
-    name: string;
-    type: string;
-    level: number;
-    rarity: string;
-    quantity: number;
-    baseHp: number;
-    baseAttack: number;
-    baseDefense: number;
-    baseStamina: number;
-    imageCreditId: number | null;
-    isLocked: boolean;
-  }>;
-  pagination: {
+  entries: MiniAppCollectionEntry[];
+  pageInfo: {
     totalEntries: number;
     currentPage: number;
     totalPages: number;
+    pageSize: number;
+    hasNext: boolean;
+    hasPrevious: boolean;
+    nextPage: number | null;
+  };
+  appliedFilters: {
+    rarities: string[];
+    types: string[];
+    duplicatesOnly: boolean;
+    lockedOnly: boolean;
+  };
+};
+
+type MiniAppMarketResponse = {
+  entries: MiniAppMarketEntry[];
+  pageInfo: {
+    totalEntries: number;
+    currentPage: number;
+    totalPages: number;
+    pageSize: number;
+    hasNext: boolean;
+    hasPrevious: boolean;
+    nextPage: number | null;
   };
 };
 
@@ -55,23 +118,46 @@ type TelegramAuthPreview = {
   profile: MiniAppProfile | null;
 };
 
-const API_BASE_URL = (
+const CONFIGURED_API_BASE_URL = (
   process.env.NEXT_PUBLIC_API_BASE_URL?.trim() || ""
 ).replace(/\/$/, "");
+const DEV_TELEGRAM_ID = process.env.NEXT_PUBLIC_DEV_TELEGRAM_ID?.trim() || "1640978922";
+
+function getApiBaseUrl() {
+  if (CONFIGURED_API_BASE_URL) {
+    return CONFIGURED_API_BASE_URL;
+  }
+
+  if (typeof window === "undefined") {
+    return "";
+  }
+
+  const hostname = window.location.hostname;
+  if (hostname === "127.0.0.1" || hostname === "localhost") {
+    return "http://127.0.0.1:8000";
+  }
+
+  return "";
+}
 
 function buildApiUrl(path: string) {
-  if (!API_BASE_URL) {
+  const apiBaseUrl = getApiBaseUrl();
+  if (!apiBaseUrl) {
     return path;
   }
-  return `${API_BASE_URL}${path}`;
+  return `${apiBaseUrl}${path}`;
+}
+
+function canUseLiveBackend() {
+  return Boolean(getTelegramInitData() || getApiBaseUrl());
 }
 
 function getAuthHeaders(): Record<string, string> {
   const initData = getTelegramInitData();
-  if (!initData) {
-    return {};
+  if (initData) {
+    return { "X-Telegram-Init-Data": initData };
   }
-  return { "X-Telegram-Init-Data": initData };
+  return { "X-Dev-Telegram-Id": DEV_TELEGRAM_ID };
 }
 
 async function parseJsonResponse<T>(response: Response): Promise<T> {
@@ -91,20 +177,24 @@ async function parseJsonResponse<T>(response: Response): Promise<T> {
 }
 
 function getMockProfile(): MiniAppProfile {
+  const devUser = getDevelopmentTelegramUser();
   return {
     id: 1,
-    telegramId: 0,
-    name: "Dev Trainer",
-    username: "local_dev",
+    telegramId: devUser.id,
+    name: [devUser.first_name, devUser.last_name].filter(Boolean).join(" ") || devUser.username || "termenater",
+    username: devUser.username || "termenater",
     pokemonCount: 3,
     coins: 1250,
     language: "ru",
-    completionPercent: 0.3,
+    completionPercent: 16,
     totalCatalog: 1025,
+    accountAgeLabel: "1 месяц",
     coverPokemonName: "Pikachu",
     rarityProgress: [
-      { rarity: "Common", ownedUnique: 2, totalCatalog: 500, percent: 0.4 },
-      { rarity: "Rare", ownedUnique: 1, totalCatalog: 300, percent: 0.33 },
+      { rarity: "Legendary", ownedUnique: 1, totalCatalog: 65, percent: 2 },
+      { rarity: "Epic", ownedUnique: 0, totalCatalog: 154, percent: 0 },
+      { rarity: "Rare", ownedUnique: 1, totalCatalog: 306, percent: 1 },
+      { rarity: "Common", ownedUnique: 1, totalCatalog: 514, percent: 0 },
     ],
   };
 }
@@ -125,6 +215,7 @@ function getMockCollection(): MiniAppCollectionResponse {
         baseDefense: 40,
         baseStamina: 90,
         imageCreditId: null,
+        imageUrl: null,
         isLocked: false,
       },
       {
@@ -140,20 +231,96 @@ function getMockCollection(): MiniAppCollectionResponse {
         baseDefense: 49,
         baseStamina: 100,
         imageCreditId: null,
-        isLocked: false,
+        imageUrl: null,
+        isLocked: true,
       },
     ],
-    pagination: {
+    pageInfo: {
       totalEntries: 2,
       currentPage: 1,
       totalPages: 1,
+      pageSize: 24,
+      hasNext: false,
+      hasPrevious: false,
+      nextPage: null,
+    },
+    appliedFilters: {
+      rarities: [],
+      types: [],
+      duplicatesOnly: false,
+      lockedOnly: false,
+    }
+  };
+}
+
+function getMockMarket(): MiniAppMarketResponse {
+  return {
+    entries: [
+      {
+        listingId: 1,
+        pokemonId: 25,
+        userPokemonId: 1001,
+        name: "Pikachu",
+        type: "Electric",
+        rarity: "Rare",
+        price: 240,
+        sellerLabel: "termenater",
+        daysRemaining: 6,
+        imageCreditId: null,
+        imageUrl: null,
+      },
+      {
+        listingId: 2,
+        pokemonId: 6,
+        userPokemonId: 1002,
+        name: "Charizard",
+        type: "Fire/Flying",
+        rarity: "Epic",
+        price: 1200,
+        sellerLabel: "termenater",
+        daysRemaining: 5,
+        imageCreditId: null,
+        imageUrl: null,
+      },
+    ],
+    pageInfo: {
+      totalEntries: 2,
+      currentPage: 1,
+      totalPages: 1,
+      pageSize: 20,
+      hasNext: false,
+      hasPrevious: false,
+      nextPage: null,
+    },
+  };
+}
+
+function getMockPokemonDetail(userPokemonId: number): MiniAppPokemonDetail {
+  return {
+    id: 25,
+    userPokemonId,
+    name: "Pikachu",
+    rarity: "Rare",
+    type: "Electric",
+    quantity: 1,
+    baseHp: 35,
+    baseAttack: 55,
+    baseDefense: 40,
+    baseStamina: 90,
+    isLocked: false,
+    imageCreditId: null,
+    imageUrl: null,
+    sourceUrl: null,
+    imageVariant: {
+      position: 1,
+      total: 1,
+      canSwitch: false,
     },
   };
 }
 
 export async function getProfile(): Promise<MiniAppProfile> {
-  const initData = getTelegramInitData();
-  if (!initData) {
+  if (!canUseLiveBackend()) {
     return getMockProfile();
   }
 
@@ -164,34 +331,149 @@ export async function getProfile(): Promise<MiniAppProfile> {
   return parseJsonResponse<MiniAppProfile>(response);
 }
 
-export async function getPokemons(): Promise<MiniAppCollectionResponse["entries"]> {
-  const initData = getTelegramInitData();
-  if (!initData) {
-    return getMockCollection().entries;
+type GetPokemonsPageOptions = {
+  pageParam?: number;
+  lockedOnly?: boolean;
+  rarities?: string[];
+  types?: string[];
+  duplicatesOnly?: boolean;
+  pageSize?: number;
+};
+
+export async function getPokemonsPage({
+  pageParam = 1,
+  lockedOnly = false,
+  rarities = [],
+  types = [],
+  duplicatesOnly = false,
+  pageSize = 24,
+}: GetPokemonsPageOptions = {}): Promise<MiniAppCollectionResponse> {
+  if (!canUseLiveBackend()) {
+    const mockCollection = getMockCollection();
+    return {
+      ...mockCollection,
+      entries: lockedOnly
+        ? mockCollection.entries.filter((entry) => entry.isLocked)
+        : mockCollection.entries,
+      appliedFilters: {
+        ...mockCollection.appliedFilters,
+        lockedOnly,
+        rarities,
+        types,
+        duplicatesOnly,
+      },
+    };
   }
 
-  const response = await fetch(buildApiUrl("/api/collection"), {
+  const searchParams = new URLSearchParams({
+    page: String(pageParam),
+    page_size: String(pageSize),
+    locked: String(lockedOnly),
+    duplicates_only: String(duplicatesOnly),
+  });
+  for (const rarity of rarities) {
+    searchParams.append("rarities", rarity);
+  }
+  for (const pokemonType of types) {
+    searchParams.append("types", pokemonType);
+  }
+
+  const response = await fetch(buildApiUrl(`/api/collection?${searchParams.toString()}`), {
     headers: getAuthHeaders(),
     cache: "no-store",
   });
-  const payload = await parseJsonResponse<MiniAppCollectionResponse>(response);
-  return payload.entries;
+  return parseJsonResponse<MiniAppCollectionResponse>(response);
+}
+
+export async function getMarketPage(pageParam = 1): Promise<MiniAppMarketResponse> {
+  if (!canUseLiveBackend()) {
+    return getMockMarket();
+  }
+
+  const searchParams = new URLSearchParams({
+    page: String(pageParam),
+  });
+  const response = await fetch(buildApiUrl(`/api/market?${searchParams.toString()}`), {
+    headers: getAuthHeaders(),
+    cache: "no-store",
+  });
+  return parseJsonResponse<MiniAppMarketResponse>(response);
+}
+
+export async function getPokemonDetail(userPokemonId: number): Promise<MiniAppPokemonDetail> {
+  if (!canUseLiveBackend()) {
+    return getMockPokemonDetail(userPokemonId);
+  }
+
+  const searchParams = new URLSearchParams({
+    user_pokemon_id: String(userPokemonId),
+  });
+  const response = await fetch(buildApiUrl(`/api/pokemon?${searchParams.toString()}`), {
+    headers: getAuthHeaders(),
+    cache: "no-store",
+  });
+  return parseJsonResponse<MiniAppPokemonDetail>(response);
+}
+
+export async function togglePokemonLock(userPokemonId: number): Promise<MiniAppPokemonDetail> {
+  if (!canUseLiveBackend()) {
+    const detail = getMockPokemonDetail(userPokemonId);
+    return { ...detail, isLocked: !detail.isLocked };
+  }
+
+  const response = await fetch(buildApiUrl(`/api/pokemon/${userPokemonId}/lock-toggle`), {
+    method: "POST",
+    headers: getAuthHeaders(),
+    cache: "no-store",
+  });
+  return parseJsonResponse<MiniAppPokemonDetail>(response);
+}
+
+export async function cyclePokemonImage(userPokemonId: number): Promise<MiniAppPokemonDetail> {
+  if (!canUseLiveBackend()) {
+    return getMockPokemonDetail(userPokemonId);
+  }
+
+  const response = await fetch(buildApiUrl(`/api/pokemon/${userPokemonId}/image-cycle`), {
+    method: "POST",
+    headers: getAuthHeaders(),
+    cache: "no-store",
+  });
+  return parseJsonResponse<MiniAppPokemonDetail>(response);
 }
 
 export async function getTelegramAuthPreview(): Promise<TelegramAuthPreview> {
   const initData = getTelegramInitData();
-  if (!initData) {
+  if (!canUseLiveBackend()) {
+    const devUser = getDevelopmentTelegramUser();
     return {
       authenticated: false,
       authDate: 0,
-      message: "Локальный preview без Telegram initData",
+      message: `Локальный preview пользователя @${devUser.username ?? "termenater"}`,
       telegramUser: {
-        id: 0,
-        username: "local_dev",
-        first_name: "Dev",
-        last_name: "User",
+        id: devUser.id,
+        username: devUser.username,
+        first_name: devUser.first_name,
+        last_name: devUser.last_name,
       },
       profile: getMockProfile(),
+    };
+  }
+
+  if (!initData) {
+    const profile = await getProfile();
+    const devUser = getDevelopmentTelegramUser();
+    return {
+      authenticated: false,
+      authDate: 0,
+      message: `Локальный preview пользователя @${devUser.username ?? "termenater"}`,
+      telegramUser: {
+        id: devUser.id,
+        username: devUser.username,
+        first_name: devUser.first_name,
+        last_name: devUser.last_name,
+      },
+      profile,
     };
   }
 
