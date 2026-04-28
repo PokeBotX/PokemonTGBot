@@ -480,6 +480,64 @@ async def _build_mini_app_market_payload(
     }
 
 
+async def _build_mini_app_market_listing_detail_payload(
+    telegram_id: int,
+    username: str | None,
+    *,
+    listing_id: int,
+) -> dict[str, Any]:
+    """Build one active market listing detail payload for Mini App."""
+    if not DB_ENABLED or db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database is not available for Mini App market requests",
+        )
+
+    try:
+        listing = await db.get_market_listing_summary(
+            telegram_id,
+            username,
+            listing_id=listing_id,
+        )
+        pokemon = await db.get_pokemon_catalog_entry_by_id(listing.pokemon_id)
+        image_selection = await db.get_pokemon_image_selection(
+            telegram_id,
+            username,
+            pokemon_id=listing.pokemon_id,
+        )
+    except ShopError as exc:
+        detail = str(exc)
+        status_code = status.HTTP_404_NOT_FOUND if "не найден" in detail.lower() or "недоступ" in detail.lower() else status.HTTP_400_BAD_REQUEST
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+
+    active_image_credit_id = image_selection.image_credit_id or pokemon.image_credit_id
+    image_url = await _resolve_image_url(image_credit_id=active_image_credit_id)
+
+    return {
+        "listingId": listing.listing_id,
+        "userPokemonId": listing.user_pokemon_id,
+        "pokemonId": listing.pokemon_id,
+        "name": listing.name,
+        "rarity": listing.rarity,
+        "type": listing.pokemon_type or "Unknown",
+        "price": listing.price,
+        "sellerLabel": listing.seller_label or "Тренер",
+        "daysRemaining": listing.days_remaining,
+        "baseHp": pokemon.base_hp,
+        "baseAttack": pokemon.base_attack,
+        "baseDefense": pokemon.base_defense,
+        "baseStamina": pokemon.base_stamina,
+        "imageCreditId": active_image_credit_id,
+        "imageUrl": image_url,
+        "sourceUrl": image_selection.source_url,
+        "imageVariant": {
+            "position": image_selection.position,
+            "total": image_selection.total,
+            "canSwitch": image_selection.total > 1,
+        },
+    }
+
+
 async def _build_mini_app_pokemon_detail_payload(
     telegram_id: int,
     username: str | None,
@@ -872,6 +930,24 @@ async def mini_app_market(
         telegram_id,
         username,
         page=page,
+    )
+
+
+@app.get("/api/market/{listing_id}")
+async def mini_app_market_detail(
+    listing_id: int,
+    x_telegram_init_data: str | None = Header(default=None, alias="X-Telegram-Init-Data"),
+    x_dev_telegram_id: str | None = Header(default=None, alias="X-Dev-Telegram-Id"),
+):
+    """Return one active market listing detail payload for Mini App."""
+    telegram_id, username = _resolve_mini_app_identity(
+        x_telegram_init_data=x_telegram_init_data,
+        x_dev_telegram_id=x_dev_telegram_id,
+    )
+    return await _build_mini_app_market_listing_detail_payload(
+        telegram_id,
+        username,
+        listing_id=listing_id,
     )
 
 

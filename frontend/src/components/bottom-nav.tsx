@@ -30,7 +30,7 @@ export function BottomNav({ variant = "default" }: BottomNavProps) {
   return (
     <nav
       className={cn(
-        "fixed bottom-0 left-0 right-0",
+        "fixed bottom-0 left-0 right-0 z-30",
         isMinimal
           ? "border-t border-slate-700 bg-slate-900"
           : "border-t border-slate-800 bg-slate-950/95 backdrop-blur"

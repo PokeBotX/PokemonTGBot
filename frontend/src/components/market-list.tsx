@@ -68,7 +68,7 @@ export function MarketList() {
   return (
     <div className="grid grid-cols-2 gap-4">
       {entries.map((entry) => (
-        <Link key={entry.listingId} href={`/shop/${entry.listingId}`} className="block">
+        <Link key={entry.listingId} href={`/shop/listing?id=${entry.listingId}`} className="block">
           <PokemonCard
             pokemonId={entry.pokemonId}
             name={entry.name}

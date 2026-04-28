@@ -40,11 +40,11 @@ export function PokemonCard({
           <img
             src={imageUrl}
             alt={name}
-            className="mx-auto mb-3 mt-2 h-24 w-24 rounded-2xl object-cover"
+            className="mx-auto mb-3 mt-2 h-28 w-28 rounded-2xl object-cover"
             loading="lazy"
           />
         ) : (
-          <div className="mx-auto mb-3 mt-2 h-24 w-24 rounded-2xl bg-slate-700" />
+          <div className="mx-auto mb-3 mt-2 h-28 w-28 rounded-2xl bg-slate-700" />
         )}
 
         <CardTitle className="text-sm font-medium leading-snug">{name}</CardTitle>
@@ -57,7 +57,7 @@ export function PokemonCard({
       </CardContent>
 
       <div
-        className={`absolute bottom-0 left-0 z-10 rounded-tr-md rounded-br-md border border-l-0 border-b-0 px-2 py-0.5 text-[10px] font-semibold tracking-[0.12em] ${getRarityTagClass(rarity)}`}
+        className={`absolute bottom-0 left-0 z-0 rounded-tr-md rounded-br-md border border-l-0 border-b-0 px-2 py-0.5 text-[10px] font-semibold tracking-[0.12em] ${getRarityTagClass(rarity)}`}
       >
         {getRarityLabel(rarity)}
       </div>

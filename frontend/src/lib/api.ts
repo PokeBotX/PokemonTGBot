@@ -55,6 +55,30 @@ export type MiniAppMarketEntry = {
   imageUrl: string | null;
 };
 
+export type MiniAppMarketDetail = {
+  listingId: number;
+  userPokemonId: number;
+  pokemonId: number;
+  name: string;
+  rarity: string;
+  type: string;
+  price: number;
+  sellerLabel: string;
+  daysRemaining: number;
+  baseHp: number;
+  baseAttack: number;
+  baseDefense: number;
+  baseStamina: number;
+  imageCreditId: number | null;
+  imageUrl: string | null;
+  sourceUrl: string | null;
+  imageVariant: {
+    position: number;
+    total: number;
+    canSwitch: boolean;
+  };
+};
+
 export type MiniAppPokemonDetail = {
   id: number;
   userPokemonId: number;
@@ -302,6 +326,32 @@ function getMockMarket(): MiniAppMarketResponse {
   };
 }
 
+function getMockMarketDetail(listingId: number): MiniAppMarketDetail {
+  return {
+    listingId,
+    userPokemonId: 1001,
+    pokemonId: 25,
+    name: "Pikachu",
+    rarity: "Rare",
+    type: "Electric",
+    price: 240,
+    sellerLabel: "termenater",
+    daysRemaining: 6,
+    baseHp: 35,
+    baseAttack: 55,
+    baseDefense: 40,
+    baseStamina: 90,
+    imageCreditId: null,
+    imageUrl: null,
+    sourceUrl: null,
+    imageVariant: {
+      position: 1,
+      total: 1,
+      canSwitch: false,
+    },
+  };
+}
+
 function getMockPokemonDetail(userPokemonId: number): MiniAppPokemonDetail {
   return {
     id: 25,
@@ -405,6 +455,18 @@ export async function getMarketPage(pageParam = 1): Promise<MiniAppMarketRespons
     cache: "no-store",
   });
   return parseJsonResponse<MiniAppMarketResponse>(response);
+}
+
+export async function getMarketDetail(listingId: number): Promise<MiniAppMarketDetail> {
+  if (!canUseLiveBackend()) {
+    return getMockMarketDetail(listingId);
+  }
+
+  const response = await fetch(buildApiUrl(`/api/market/${listingId}`), {
+    headers: getAuthHeaders(),
+    cache: "no-store",
+  });
+  return parseJsonResponse<MiniAppMarketDetail>(response);
 }
 
 export async function getPokemonDetail(userPokemonId: number): Promise<MiniAppPokemonDetail> {

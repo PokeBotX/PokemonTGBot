@@ -1962,6 +1962,25 @@ class Database:
                 user_id = await self._ensure_user(conn, telegram_id, username)
                 return await self._fetch_market_listings_page(conn, user_id, requested_state)
 
+    async def get_market_listing_summary(
+        self,
+        telegram_id: int,
+        username: Optional[str],
+        *,
+        listing_id: int,
+    ) -> MarketListingSummary:
+        """Load one active market listing that is visible to the current user."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                user_id = await self._ensure_user(conn, telegram_id, username)
+                listing = await self._fetch_market_listing_summary(conn, listing_id)
+                if listing.status != MARKET_LISTING_STATUS_ACTIVE:
+                    raise ShopError("Лот больше недоступен.")
+                if listing.seller_user_id == user_id:
+                    raise ShopError("Это ваш лот.")
+                return listing
+
     async def get_my_market_listings(self, telegram_id: int, username: Optional[str]) -> list[MarketListingSummary]:
         """Load active listings created by the current user."""
         self._ensure_pool()
