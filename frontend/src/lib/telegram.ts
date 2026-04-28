@@ -70,15 +70,27 @@ const EMPTY_TELEGRAM_SNAPSHOT: TelegramSnapshot = {
   initData: "",
 };
 
+function getTelegramSnapshotKey(snapshot: TelegramSnapshot) {
+  return [
+    snapshot.isTelegram ? "1" : "0",
+    snapshot.initData,
+    snapshot.user?.id ?? "",
+    snapshot.user?.username ?? "",
+    snapshot.user?.first_name ?? "",
+    snapshot.user?.last_name ?? "",
+    snapshot.user?.photo_url ?? "",
+  ].join("|");
+}
+
 function subscribeTelegramSnapshot(onStoreChange: () => void) {
   if (typeof window === "undefined") {
     return () => {};
   }
 
-  let previousKey = JSON.stringify(getTelegramSnapshot());
+  let previousKey = getTelegramSnapshotKey(getTelegramSnapshot());
 
   const checkForChanges = () => {
-    const nextKey = JSON.stringify(getTelegramSnapshot());
+    const nextKey = getTelegramSnapshotKey(getTelegramSnapshot());
     if (nextKey !== previousKey) {
       previousKey = nextKey;
       onStoreChange();
