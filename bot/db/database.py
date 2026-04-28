@@ -85,6 +85,21 @@ RARITY_PROBABILITIES = {
 RARITY_ORDER = ("Legendary", "Epic", "Rare", "Common")
 
 
+def _coerce_json_object(value: object) -> dict[str, object] | None:
+    """Best-effort normalize asyncpg JSON/JSONB payloads into dicts."""
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {"raw": value}
+        return dict(parsed) if isinstance(parsed, dict) else {"raw": parsed}
+    return {"raw": value}
+
+
 class ShopError(RuntimeError):
     """Base class for shop-related failures."""
 
@@ -460,6 +475,25 @@ class UserLookupResult:
     user_id: int
     telegram_id: int
     username: Optional[str]
+
+
+@dataclass(slots=True)
+class AdminAuditRecord:
+    """One admin-action audit record for operator views and exports."""
+
+    audit_id: int
+    actor_user_id: Optional[int]
+    actor_telegram_id: int
+    actor_username: Optional[str]
+    action_type: str
+    target_user_id: Optional[int]
+    target_telegram_id: Optional[int]
+    target_username: Optional[str]
+    status: str
+    input_payload: dict[str, object] | None
+    result_payload: dict[str, object] | None
+    error_message: Optional[str]
+    created_at: datetime
 
 
 @dataclass(slots=True)
@@ -1387,6 +1421,52 @@ class Database:
             target_telegram_id=target_telegram_id,
         )
         return int(audit_id)
+
+    async def get_recent_admin_action_audit(self, *, limit: int = 10) -> list[AdminAuditRecord]:
+        """Return recent admin audit records for operator review."""
+        self._ensure_pool()
+        bounded_limit = max(1, min(limit, 100))
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    id,
+                    actor_user_id,
+                    actor_telegram_id,
+                    actor_username,
+                    action_type,
+                    target_user_id,
+                    target_telegram_id,
+                    target_username,
+                    status,
+                    input_payload,
+                    result_payload,
+                    error_message,
+                    created_at
+                FROM admin_action_audit
+                ORDER BY created_at DESC, id DESC
+                LIMIT $1
+                """,
+                bounded_limit,
+            )
+        return [
+            AdminAuditRecord(
+                audit_id=int(row["id"]),
+                actor_user_id=int(row["actor_user_id"]) if row["actor_user_id"] is not None else None,
+                actor_telegram_id=int(row["actor_telegram_id"]),
+                actor_username=row["actor_username"],
+                action_type=str(row["action_type"]),
+                target_user_id=int(row["target_user_id"]) if row["target_user_id"] is not None else None,
+                target_telegram_id=int(row["target_telegram_id"]) if row["target_telegram_id"] is not None else None,
+                target_username=row["target_username"],
+                status=str(row["status"]),
+                input_payload=_coerce_json_object(row["input_payload"]),
+                result_payload=_coerce_json_object(row["result_payload"]),
+                error_message=row["error_message"],
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
 
     async def get_profile_referral(self, telegram_id: int, username: Optional[str], bot_username: Optional[str]) -> ProfileReferral:
         """Build the user's referral code and link."""

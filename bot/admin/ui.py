@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot.ui.html import escape_html
@@ -11,6 +14,7 @@ SECTION_GRANTS = "adg"
 SECTION_POKEMON = "adp"
 SECTION_IMAGES = "adi"
 SECTION_AUDIT = "ada"
+SECTION_AUDIT_EXPORT = "aae"
 SECTION_CONFIRM = "adc"
 SECTION_CANCEL = "adx"
 SECTION_GRANT_POKEDOLLAR = "ag1"
@@ -105,6 +109,19 @@ def build_admin_images_keyboard(session_id: str) -> InlineKeyboardMarkup:
     )
 
 
+def build_admin_audit_keyboard(session_id: str) -> InlineKeyboardMarkup:
+    """Build the audit section keyboard."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("🔄 Обновить", callback_data=build_admin_callback(SECTION_AUDIT, session_id)),
+                InlineKeyboardButton("📤 Экспорт", callback_data=build_admin_callback(SECTION_AUDIT_EXPORT, session_id)),
+            ],
+            build_admin_back_keyboard(session_id).inline_keyboard[0],
+        ]
+    )
+
+
 def build_admin_confirmation_keyboard(session_id: str) -> InlineKeyboardMarkup:
     """Build a standard confirm/cancel keyboard for privileged actions."""
     return InlineKeyboardMarkup(
@@ -124,12 +141,8 @@ def get_admin_welcome_text(username: str | None) -> str:
         f"🛠 <b>Админ-бот</b>\n\n"
         f"Привет, {label}.\n"
         "Здесь мы работаем только в личке и только через подтверждаемые действия.\n\n"
-        "Уже готово:\n"
-        "• доступ по allowlist из env\n"
-        "• отдельный state для второго бота\n"
-        "• общий confirm-каркас\n"
-        "• аудит всех будущих мутаций\n\n"
-        "Ниже можно открыть нужный раздел."
+        "Все изменяющие операции сначала показывают preview, потом ждут подтверждение, и только после этого трогают БД или MinIO.\n\n"
+        "Выберите нужный раздел ниже."
     )
 
 
@@ -155,8 +168,8 @@ def get_grants_section_text() -> str:
     """Return the root grants section text."""
     return (
         "💸 <b>Выдачи</b>\n\n"
-        "Здесь можно безопасно выдать пользователю валюту или конкретного покемона.\n"
-        "Дальше бот сам проведёт нас по шагам и перед выполнением обязательно покажет подтверждение."
+        "Здесь можно выдать пользователю валюту или конкретного покемона.\n"
+        "Бот сам проведёт по шагам и перед выполнением обязательно покажет подтверждение."
     )
 
 
@@ -164,7 +177,8 @@ def get_pokemon_section_text() -> str:
     """Return the pokemon catalog section text."""
     return (
         "🆕 <b>Каталог покемонов</b>\n\n"
-        "Здесь можно создать нового покемона с полным набором полей каталога."
+        "Здесь можно создать нового покемона с полным набором полей каталога.\n"
+        "Перед сохранением бот покажет итоговый preview."
     )
 
 
@@ -172,8 +186,76 @@ def get_images_section_text() -> str:
     """Return the image management section text."""
     return (
         "🖼 <b>Изображения</b>\n\n"
-        "Здесь можно загружать новые арты и привязывать их к существующим покемонам как image variant."
+        "Здесь можно загружать новые арты и привязывать их к существующим покемонам как image variant.\n"
+        "Также здесь редактируются source, порядок и default-вариант."
     )
+
+
+def format_admin_audit_status(status: str) -> str:
+    """Return a short human-readable status label."""
+    return {
+        "pending": "ожидает",
+        "success": "успешно",
+        "failed": "ошибка",
+        "canceled": "отменено",
+        "expired": "истекло",
+    }.get(status, status)
+
+
+def _format_admin_audit_timestamp(value: datetime) -> str:
+    localized = value.astimezone(UTC)
+    return localized.strftime("%Y-%m-%d %H:%M UTC")
+
+
+def get_admin_audit_text(records: list[object]) -> str:
+    """Render recent admin audit records for the audit screen."""
+    if not records:
+        return (
+            "🧾 <b>Аудит</b>\n\n"
+            "Записей пока нет."
+        )
+
+    lines = ["🧾 <b>Аудит</b>", "", "Последние действия:"]
+    for record in records:
+        actor = f"@{escape_html(record.actor_username)}" if getattr(record, "actor_username", None) else str(record.actor_telegram_id)
+        target = getattr(record, "target_username", None)
+        target_label = f" → @{escape_html(target)}" if target else ""
+        lines.append(
+            "• "
+            f"<code>{_format_admin_audit_timestamp(record.created_at)}</code>\n"
+            f"  <b>{escape_html(record.action_type)}</b> · {escape_html(format_admin_audit_status(record.status))}\n"
+            f"  {actor}{target_label}"
+        )
+    lines.append("")
+    lines.append("Экспорт выгружает расширенную текстовую сводку последних записей.")
+    return "\n".join(lines)
+
+
+def build_admin_audit_export_text(records: list[object]) -> str:
+    """Build text export payload for audit records."""
+    if not records:
+        return "Admin audit export\n\nNo records."
+
+    chunks = ["Admin audit export", ""]
+    for record in records:
+        chunks.extend(
+            [
+                f"id: {record.audit_id}",
+                f"created_at: {record.created_at.isoformat()}",
+                f"action_type: {record.action_type}",
+                f"status: {record.status}",
+                f"actor_telegram_id: {record.actor_telegram_id}",
+                f"actor_username: {record.actor_username or ''}",
+                f"target_user_id: {record.target_user_id or ''}",
+                f"target_telegram_id: {record.target_telegram_id or ''}",
+                f"target_username: {record.target_username or ''}",
+                f"input_payload: {json.dumps(record.input_payload, ensure_ascii=False, sort_keys=True)}",
+                f"result_payload: {json.dumps(record.result_payload, ensure_ascii=False, sort_keys=True)}",
+                f"error_message: {record.error_message or ''}",
+                "",
+            ]
+        )
+    return "\n".join(chunks).strip() + "\n"
 
 
 def get_image_upload_intro_text() -> str:
@@ -370,10 +452,23 @@ def get_pending_action_text(*, title: str, description: str) -> str:
     return (
         f"⚠️ <b>{escape_html(title)}</b>\n\n"
         f"{escape_html(description)}\n\n"
-        "Если подтвердите, бот выполнит это действие с доступом к БД и MinIO."
+        "Если подтвердите, бот выполнит это действие с доступом к БД и MinIO.\n"
+        "Если отмените, никаких изменений не произойдёт."
     )
 
 
 def get_action_canceled_text(action_label: str) -> str:
     """Return user-facing confirmation cancel text."""
-    return f"↩️ Действие отменено: {escape_html(action_label)}"
+    return (
+        "↩️ <b>Действие отменено</b>\n\n"
+        f"{escape_html(action_label)} не будет выполнено."
+    )
+
+
+def get_action_expired_text(action_label: str) -> str:
+    """Return user-facing confirmation expiry text."""
+    return (
+        "⌛ <b>Подтверждение истекло</b>\n\n"
+        f"Окно для действия {escape_html(action_label)} уже закрылось.\n"
+        "Запустите его заново из меню."
+    )

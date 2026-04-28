@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from io import BytesIO
 from typing import Optional
 
 import structlog
-from telegram import Document, Message, PhotoSize, Update
+from telegram import Document, InputFile, Message, PhotoSize, Update
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
@@ -17,6 +18,7 @@ from bot.admin.storage import build_admin_object_key, upload_admin_image_bytes
 from bot.admin.ui import (
     ADMIN_SECTIONS,
     SECTION_AUDIT,
+    SECTION_AUDIT_EXPORT,
     SECTION_CANCEL,
     SECTION_CONFIRM,
     SECTION_CREATE_POKEMON,
@@ -31,6 +33,8 @@ from bot.admin.ui import (
     SECTION_POKEMON,
     SECTION_ROOT,
     build_admin_back_keyboard,
+    build_admin_audit_export_text,
+    build_admin_audit_keyboard,
     build_admin_confirmation_keyboard,
     build_admin_grants_keyboard,
     build_admin_images_keyboard,
@@ -38,7 +42,9 @@ from bot.admin.ui import (
     build_admin_root_keyboard,
     get_access_denied_text,
     get_action_canceled_text,
+    get_action_expired_text,
     get_admin_welcome_text,
+    get_admin_audit_text,
     get_create_pokemon_field_prompt,
     get_create_pokemon_intro_text,
     get_create_pokemon_summary_text,
@@ -101,6 +107,8 @@ ADMIN_ACTION_CREATE_POKEMON = "catalog.create_pokemon"
 ADMIN_ACTION_ATTACH_IMAGE_VARIANT = "images.attach_variant"
 ADMIN_ACTION_UPDATE_IMAGE_SOURCE = "images.update_source"
 ADMIN_ACTION_UPDATE_IMAGE_VARIANT = "images.update_variant"
+ADMIN_AUDIT_PREVIEW_LIMIT = 10
+ADMIN_AUDIT_EXPORT_LIMIT = 200
 
 CREATE_POKEMON_FIELDS: tuple[tuple[str, str, str], ...] = (
     ("pokemon_id", "ID", "Отправьте числовой id нового покемона."),
@@ -375,6 +383,59 @@ async def _show_images_section(update: Update, context: ContextTypes.DEFAULT_TYP
     )
 
 
+async def _show_audit_section(update: Update, context: ContextTypes.DEFAULT_TYPE, session) -> None:
+    db = _db_from_context(context)
+    if db is None:
+        await update.callback_query.message.edit_text(
+            "⚠️ База данных недоступна.",
+            parse_mode="HTML",
+            reply_markup=build_admin_back_keyboard(
+                admin_session_store.create_session(
+                    chat_id=session.chat_id,
+                    message_id=update.callback_query.message.message_id,
+                    message_thread_id=getattr(update.callback_query.message, "message_thread_id", None),
+                    user_id=session.user_id,
+                    data={"screen": SECTION_ROOT},
+                )
+            ),
+        )
+        return
+    records = await db.get_recent_admin_action_audit(limit=ADMIN_AUDIT_PREVIEW_LIMIT)
+    next_session_id = admin_session_store.create_session(
+        chat_id=session.chat_id,
+        message_id=update.callback_query.message.message_id,
+        message_thread_id=getattr(update.callback_query.message, "message_thread_id", None),
+        user_id=session.user_id,
+        data={"screen": SECTION_AUDIT},
+    )
+    await update.callback_query.message.edit_text(
+        get_admin_audit_text(records),
+        parse_mode="HTML",
+        reply_markup=build_admin_audit_keyboard(next_session_id),
+    )
+
+
+async def _export_audit_section(update: Update, context: ContextTypes.DEFAULT_TYPE, session) -> None:
+    db = _db_from_context(context)
+    if db is None:
+        await update.callback_query.answer("⚠️ База данных недоступна.", show_alert=True)
+        return
+    records = await db.get_recent_admin_action_audit(limit=ADMIN_AUDIT_EXPORT_LIMIT)
+    export_text = build_admin_audit_export_text(records)
+    filename = "admin-audit-export.txt"
+    document = InputFile(BytesIO(export_text.encode("utf-8")), filename=filename)
+    await update.effective_chat.send_document(
+        document=document,
+        caption=f"🧾 Экспорт аудита\n\nЗаписей: <b>{len(records)}</b>",
+        parse_mode="HTML",
+    )
+    logger.info(
+        "admin_audit_export_sent",
+        actor_telegram_id=update.effective_user.id if update.effective_user else None,
+        records=len(records),
+    )
+
+
 def _pokemon_back_session(update: Update, session) -> str:
     return admin_session_store.create_session(
         chat_id=session.chat_id,
@@ -563,6 +624,7 @@ async def _confirm_pending_action(update: Update, context: ContextTypes.DEFAULT_
         await update.callback_query.answer(ADMIN_ERROR_INVALID_CALLBACK, show_alert=True)
         return
     if pending_action.is_expired():
+        admin_session_store.delete_session(session.session_id)
         await _audit_admin_event(
             context,
             actor_telegram_id=update.effective_user.id,
@@ -575,6 +637,10 @@ async def _confirm_pending_action(update: Update, context: ContextTypes.DEFAULT_
             target_username=pending_action.target_username,
         )
         await update.callback_query.answer(ADMIN_ERROR_EXPIRED_ACTION, show_alert=True)
+        await update.callback_query.message.edit_text(
+            get_action_expired_text(pending_action.title),
+            parse_mode="HTML",
+        )
         return
 
     executor = _pending_executors.get(pending_action.action_type)
@@ -585,6 +651,7 @@ async def _confirm_pending_action(update: Update, context: ContextTypes.DEFAULT_
     try:
         result_payload = await executor(update, context, pending_action) or {}
     except Exception as exc:
+        admin_session_store.delete_session(session.session_id)
         await _audit_admin_event(
             context,
             actor_telegram_id=update.effective_user.id,
@@ -608,6 +675,7 @@ async def _confirm_pending_action(update: Update, context: ContextTypes.DEFAULT_
         )
         return
 
+    admin_session_store.delete_session(session.session_id)
     await _audit_admin_event(
         context,
         actor_telegram_id=update.effective_user.id,
@@ -633,6 +701,7 @@ async def _confirm_pending_action(update: Update, context: ContextTypes.DEFAULT_
 
 async def _cancel_pending_action(update: Update, context: ContextTypes.DEFAULT_TYPE, session) -> None:
     pending_action = AdminPendingAction.from_session_payload(session.data.get("pending_action"))
+    admin_session_store.delete_session(session.session_id)
     if pending_action is not None:
         await _audit_admin_event(
             context,
@@ -1247,7 +1316,8 @@ def register_admin_routes() -> None:
     admin_router.register(SECTION_IMAGE_UPLOAD_VARIANT, _start_image_upload_variant)
     admin_router.register(SECTION_IMAGE_EDIT_SOURCE, _start_image_source_edit)
     admin_router.register(SECTION_IMAGE_EDIT_VARIANT, _start_image_variant_edit)
-    admin_router.register(SECTION_AUDIT, lambda update, context, session: _show_placeholder_section(update, context, session, SECTION_AUDIT))
+    admin_router.register(SECTION_AUDIT, _show_audit_section)
+    admin_router.register(SECTION_AUDIT_EXPORT, _export_audit_section)
     admin_router.register(SECTION_CONFIRM, _confirm_pending_action)
     admin_router.register(SECTION_CANCEL, _cancel_pending_action)
     register_pending_executor(ADMIN_ACTION_GRANT_CURRENCY, _execute_currency_grant)

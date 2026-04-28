@@ -20,7 +20,7 @@ from bot.admin.handlers import (
 )
 from bot.admin.pending import AdminPendingAction
 from bot.admin.session import admin_session_store
-from bot.admin.ui import SECTION_CONFIRM, SECTION_CREATE_POKEMON, SECTION_GRANT_POKEDOLLAR, SECTION_GRANT_POKEMON, SECTION_GRANTS, SECTION_IMAGE_EDIT_SOURCE, SECTION_IMAGE_EDIT_VARIANT, SECTION_IMAGE_UPLOAD_VARIANT, SECTION_IMAGES, SECTION_POKEMON
+from bot.admin.ui import SECTION_AUDIT, SECTION_AUDIT_EXPORT, SECTION_CANCEL, SECTION_CONFIRM, SECTION_CREATE_POKEMON, SECTION_GRANT_POKEDOLLAR, SECTION_GRANT_POKEMON, SECTION_GRANTS, SECTION_IMAGE_EDIT_SOURCE, SECTION_IMAGE_EDIT_VARIANT, SECTION_IMAGE_UPLOAD_VARIANT, SECTION_IMAGES, SECTION_POKEMON
 from bot.db.database import PokemonSearchEntry, UserLookupResult
 
 
@@ -130,7 +130,7 @@ async def test_admin_section_callback_opens_placeholder_screen() -> None:
 
     assert sent_message.edit_text.called
     edited_text = _extract_edited_text(sent_message.edit_text.call_args)
-    assert "безопасно выдать пользователю" in edited_text
+    assert "выдать пользователю валюту или конкретного покемона" in edited_text
 
 
 @pytest.mark.asyncio
@@ -187,6 +187,86 @@ async def test_admin_pending_confirmation_executes_registered_executor_and_audit
     assert sent_message.edit_text.called
     edited_text = _extract_edited_text(sent_message.edit_text.call_args)
     assert "Действие выполнено" in edited_text
+
+
+@pytest.mark.asyncio
+async def test_admin_audit_section_browse_and_export() -> None:
+    set_admin_settings_for_tests(_allowed_settings())
+    register_admin_routes()
+
+    update, user, chat, _ = _private_update()
+    chat.send_document = AsyncMock()
+    sent_message = Mock(spec=Message)
+    sent_message.message_id = 101
+    sent_message.chat_id = chat.id
+    sent_message.chat = chat
+    sent_message.message_thread_id = None
+    sent_message.edit_reply_markup = AsyncMock()
+    sent_message.edit_text = AsyncMock()
+    chat.send_message = AsyncMock(return_value=sent_message)
+
+    record = Mock()
+    record.audit_id = 5
+    record.actor_user_id = 1
+    record.actor_telegram_id = 12345
+    record.actor_username = "ash"
+    record.action_type = "grant.currency"
+    record.target_user_id = 2
+    record.target_telegram_id = 54321
+    record.target_username = "misty"
+    record.status = "success"
+    record.input_payload = {"amount": 500}
+    record.result_payload = {"balance": 1750}
+    record.error_message = None
+    from datetime import UTC, datetime
+    record.created_at = datetime(2026, 4, 29, 12, 0, tzinfo=UTC)
+
+    db = AsyncMock()
+    db.get_recent_admin_action_audit = AsyncMock(return_value=[record])
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+
+    await menu_admin_command(update, context)
+    root_session_id = next(iter(admin_session_store._sessions.keys()))
+
+    audit_callback = Mock(spec=CallbackQuery)
+    audit_callback.id = "cb-audit"
+    audit_callback.data = f"menu:{SECTION_AUDIT}:{root_session_id}"
+    audit_callback.message = sent_message
+    audit_callback.answer = AsyncMock()
+
+    audit_update = Mock(spec=Update)
+    audit_update.effective_user = user
+    audit_update.effective_chat = chat
+    audit_update.callback_query = audit_callback
+    audit_update.effective_message = sent_message
+
+    await handle_admin_callback_query(audit_update, context)
+
+    edited_text = _extract_edited_text(sent_message.edit_text.call_args)
+    assert "Последние действия" in edited_text
+    assert "grant.currency" in edited_text
+
+    audit_session_id = list(admin_session_store._sessions.keys())[-1]
+    export_callback = Mock(spec=CallbackQuery)
+    export_callback.id = "cb-audit-export"
+    export_callback.data = f"menu:{SECTION_AUDIT_EXPORT}:{audit_session_id}"
+    export_callback.message = sent_message
+    export_callback.answer = AsyncMock()
+
+    export_update = Mock(spec=Update)
+    export_update.effective_user = user
+    export_update.effective_chat = chat
+    export_update.callback_query = export_callback
+    export_update.effective_message = sent_message
+
+    await handle_admin_callback_query(export_update, context)
+
+    assert db.get_recent_admin_action_audit.await_count == 2
+    chat.send_document.assert_awaited_once()
+    assert "Экспорт аудита" in chat.send_document.await_args.kwargs["caption"]
 
 
 @pytest.mark.asyncio
@@ -826,3 +906,292 @@ async def test_admin_image_variant_metadata_edit_flow() -> None:
     )
     edited_text = _extract_edited_text(sent_message.edit_text.call_args)
     assert "Обновлён вариант" in edited_text
+
+
+@pytest.mark.asyncio
+async def test_admin_currency_grant_flow_can_be_canceled_before_execution() -> None:
+    set_admin_settings_for_tests(_allowed_settings())
+    register_admin_routes()
+
+    update, user, chat, _ = _private_update()
+    sent_message = Mock(spec=Message)
+    sent_message.message_id = 101
+    sent_message.chat_id = chat.id
+    sent_message.message_thread_id = None
+    sent_message.edit_reply_markup = AsyncMock()
+    sent_message.edit_text = AsyncMock()
+    chat.send_message = AsyncMock(return_value=sent_message)
+
+    db = AsyncMock()
+    db.get_user_lookup_by_username = AsyncMock(
+        return_value=UserLookupResult(user_id=77, telegram_id=54321, username="misty")
+    )
+    db.admin_grant_currency = AsyncMock(return_value=1750)
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+
+    await menu_admin_command(update, context)
+    root_session_id = next(iter(admin_session_store._sessions.keys()))
+
+    start_callback = Mock(spec=CallbackQuery)
+    start_callback.id = "cb-grant-start-cancel"
+    start_callback.data = f"menu:{SECTION_GRANT_POKEDOLLAR}:{root_session_id}"
+    start_callback.message = sent_message
+    start_callback.answer = AsyncMock()
+
+    start_update = Mock(spec=Update)
+    start_update.effective_user = user
+    start_update.effective_chat = chat
+    start_update.callback_query = start_callback
+    start_update.effective_message = sent_message
+
+    await handle_admin_callback_query(start_update, context)
+
+    for value in ["@misty", "500"]:
+        text_message = Mock(spec=Message)
+        text_message.chat = chat
+        text_message.chat_id = chat.id
+        text_message.from_user = user
+        text_message.text = value
+        text_message.message_thread_id = None
+
+        text_update = Mock(spec=Update)
+        text_update.effective_user = user
+        text_update.effective_chat = chat
+        text_update.effective_message = text_message
+
+        await handle_admin_text_input(text_update, context)
+
+    confirm_session_id = list(admin_session_store._sessions.keys())[-1]
+    cancel_callback = Mock(spec=CallbackQuery)
+    cancel_callback.id = "cb-grant-cancel"
+    cancel_callback.data = f"menu:{SECTION_CANCEL}:{confirm_session_id}"
+    cancel_callback.message = sent_message
+    cancel_callback.answer = AsyncMock()
+
+    cancel_update = Mock(spec=Update)
+    cancel_update.effective_user = user
+    cancel_update.effective_chat = chat
+    cancel_update.callback_query = cancel_callback
+    cancel_update.effective_message = sent_message
+
+    await handle_admin_callback_query(cancel_update, context)
+
+    db.admin_grant_currency.assert_not_awaited()
+    edited_text = _extract_edited_text(sent_message.edit_text.call_args)
+    assert "Действие отменено" in edited_text
+    assert db.record_admin_action_audit.await_count == 2
+    assert db.record_admin_action_audit.await_args.kwargs["status"] == "canceled"
+
+
+@pytest.mark.asyncio
+async def test_admin_create_pokemon_flow_can_be_canceled_before_execution() -> None:
+    set_admin_settings_for_tests(_allowed_settings())
+    register_admin_routes()
+
+    update, user, chat, _ = _private_update()
+    sent_message = Mock(spec=Message)
+    sent_message.message_id = 101
+    sent_message.chat_id = chat.id
+    sent_message.message_thread_id = None
+    sent_message.edit_reply_markup = AsyncMock()
+    sent_message.edit_text = AsyncMock()
+    chat.send_message = AsyncMock(return_value=sent_message)
+
+    db = AsyncMock()
+    db.admin_create_pokemon_species = AsyncMock(return_value=999)
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+
+    await menu_admin_command(update, context)
+    root_session_id = next(iter(admin_session_store._sessions.keys()))
+
+    catalog_callback = Mock(spec=CallbackQuery)
+    catalog_callback.id = "cb-catalog-cancel"
+    catalog_callback.data = f"menu:{SECTION_POKEMON}:{root_session_id}"
+    catalog_callback.message = sent_message
+    catalog_callback.answer = AsyncMock()
+
+    catalog_update = Mock(spec=Update)
+    catalog_update.effective_user = user
+    catalog_update.effective_chat = chat
+    catalog_update.callback_query = catalog_callback
+    catalog_update.effective_message = sent_message
+
+    await handle_admin_callback_query(catalog_update, context)
+
+    catalog_session_id = list(admin_session_store._sessions.keys())[-1]
+    create_callback = Mock(spec=CallbackQuery)
+    create_callback.id = "cb-create-cancel"
+    create_callback.data = f"menu:{SECTION_CREATE_POKEMON}:{catalog_session_id}"
+    create_callback.message = sent_message
+    create_callback.answer = AsyncMock()
+
+    create_update = Mock(spec=Update)
+    create_update.effective_user = user
+    create_update.effective_chat = chat
+    create_update.callback_query = create_callback
+    create_update.effective_message = sent_message
+
+    await handle_admin_callback_query(create_update, context)
+
+    for value in ["999", "Testmon", "Water", "Rare", "10", "20", "30", "40"]:
+        field_message = Mock(spec=Message)
+        field_message.chat = chat
+        field_message.chat_id = chat.id
+        field_message.from_user = user
+        field_message.text = value
+        field_message.message_thread_id = None
+
+        field_update = Mock(spec=Update)
+        field_update.effective_user = user
+        field_update.effective_chat = chat
+        field_update.effective_message = field_message
+
+        await handle_admin_text_input(field_update, context)
+
+    confirm_session_id = list(admin_session_store._sessions.keys())[-1]
+    cancel_callback = Mock(spec=CallbackQuery)
+    cancel_callback.id = "cb-create-confirm-cancel"
+    cancel_callback.data = f"menu:{SECTION_CANCEL}:{confirm_session_id}"
+    cancel_callback.message = sent_message
+    cancel_callback.answer = AsyncMock()
+
+    cancel_update = Mock(spec=Update)
+    cancel_update.effective_user = user
+    cancel_update.effective_chat = chat
+    cancel_update.callback_query = cancel_callback
+    cancel_update.effective_message = sent_message
+
+    await handle_admin_callback_query(cancel_update, context)
+
+    db.admin_create_pokemon_species.assert_not_awaited()
+    edited_text = _extract_edited_text(sent_message.edit_text.call_args)
+    assert "Действие отменено" in edited_text
+    assert db.record_admin_action_audit.await_count == 2
+    assert db.record_admin_action_audit.await_args.kwargs["status"] == "canceled"
+
+
+@pytest.mark.asyncio
+async def test_admin_image_upload_flow_can_be_canceled_before_execution() -> None:
+    set_admin_settings_for_tests(_allowed_settings())
+    register_admin_routes()
+
+    update, user, chat, _ = _private_update()
+    sent_message = Mock(spec=Message)
+    sent_message.message_id = 101
+    sent_message.chat_id = chat.id
+    sent_message.message_thread_id = None
+    sent_message.edit_reply_markup = AsyncMock()
+    sent_message.edit_text = AsyncMock()
+    chat.send_message = AsyncMock(return_value=sent_message)
+
+    db = AsyncMock()
+    db.get_pokemon_catalog_entry_by_id = AsyncMock(
+        return_value=PokemonSearchEntry(
+            pokemon_id=91,
+            name="Cloyster",
+            pokemon_type="Ice",
+            rarity="Rare",
+            base_hp=50,
+            base_attack=95,
+            base_defense=180,
+            base_stamina=70,
+            image_credit_id=None,
+        )
+    )
+    db.admin_attach_image_variant = AsyncMock(return_value=5555)
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+
+    await menu_admin_command(update, context)
+    root_session_id = next(iter(admin_session_store._sessions.keys()))
+
+    images_callback = Mock(spec=CallbackQuery)
+    images_callback.id = "cb-images-upload-cancel"
+    images_callback.data = f"menu:{SECTION_IMAGES}:{root_session_id}"
+    images_callback.message = sent_message
+    images_callback.answer = AsyncMock()
+
+    images_update = Mock(spec=Update)
+    images_update.effective_user = user
+    images_update.effective_chat = chat
+    images_update.callback_query = images_callback
+    images_update.effective_message = sent_message
+
+    await handle_admin_callback_query(images_update, context)
+
+    images_session_id = list(admin_session_store._sessions.keys())[-1]
+    upload_callback = Mock(spec=CallbackQuery)
+    upload_callback.id = "cb-upload-cancel"
+    upload_callback.data = f"menu:{SECTION_IMAGE_UPLOAD_VARIANT}:{images_session_id}"
+    upload_callback.message = sent_message
+    upload_callback.answer = AsyncMock()
+
+    upload_update = Mock(spec=Update)
+    upload_update.effective_user = user
+    upload_update.effective_chat = chat
+    upload_update.callback_query = upload_callback
+    upload_update.effective_message = sent_message
+
+    await handle_admin_callback_query(upload_update, context)
+
+    photo = Mock(spec=PhotoSize)
+    photo.file_id = "photo-1"
+    photo.file_unique_id = "uniq-1"
+    media_message = Mock(spec=Message)
+    media_message.chat = chat
+    media_message.chat_id = chat.id
+    media_message.from_user = user
+    media_message.photo = [photo]
+    media_message.document = None
+    media_message.message_thread_id = None
+
+    media_update = Mock(spec=Update)
+    media_update.effective_user = user
+    media_update.effective_chat = chat
+    media_update.effective_message = media_message
+
+    await handle_admin_media_input(media_update, context)
+
+    for value in ["91", "https://example.com/test", "2", "да"]:
+        text_message = Mock(spec=Message)
+        text_message.chat = chat
+        text_message.chat_id = chat.id
+        text_message.from_user = user
+        text_message.text = value
+        text_message.message_thread_id = None
+
+        text_update = Mock(spec=Update)
+        text_update.effective_user = user
+        text_update.effective_chat = chat
+        text_update.effective_message = text_message
+
+        await handle_admin_text_input(text_update, context)
+
+    confirm_session_id = list(admin_session_store._sessions.keys())[-1]
+    cancel_callback = Mock(spec=CallbackQuery)
+    cancel_callback.id = "cb-upload-confirm-cancel"
+    cancel_callback.data = f"menu:{SECTION_CANCEL}:{confirm_session_id}"
+    cancel_callback.message = sent_message
+    cancel_callback.answer = AsyncMock()
+
+    cancel_update = Mock(spec=Update)
+    cancel_update.effective_user = user
+    cancel_update.effective_chat = chat
+    cancel_update.callback_query = cancel_callback
+    cancel_update.effective_message = sent_message
+
+    await handle_admin_callback_query(cancel_update, context)
+
+    db.admin_attach_image_variant.assert_not_awaited()
+    edited_text = _extract_edited_text(sent_message.edit_text.call_args)
+    assert "Действие отменено" in edited_text
+    assert db.record_admin_action_audit.await_count == 2
+    assert db.record_admin_action_audit.await_args.kwargs["status"] == "canceled"

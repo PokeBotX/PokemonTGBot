@@ -69,7 +69,7 @@
 
 ### Tests for User Story 2
 
-- [ ] T016 [P] [US2] Add unit tests for target-user lookup, pokemon lookup, validation failures, and confirmation gating
+- [x] T016 [P] [US2] Add unit tests for target-user lookup, pokemon lookup, validation failures, and confirmation gating
 - [x] T017 [P] [US2] Add integration tests for successful currency grant and pokemon grant flows
 
 ### Implementation for User Story 2
@@ -91,7 +91,7 @@
 
 ### Tests for User Story 3
 
-- [ ] T022 [P] [US3] Add unit tests for pokemon draft validation, duplicate-id rejection, and confirmation behavior
+- [x] T022 [P] [US3] Add unit tests for pokemon draft validation, duplicate-id rejection, and confirmation behavior
 - [x] T023 [P] [US3] Add integration tests for successful pokemon creation and cancellation before confirmation
 
 ### Implementation for User Story 3
@@ -113,7 +113,7 @@
 
 ### Tests for User Story 4
 
-- [ ] T028 [P] [US4] Add unit tests for Telegram image intake, MinIO upload metadata handling, variant mapping validation, and source/order/default updates
+- [x] T028 [P] [US4] Add unit tests for Telegram image intake, MinIO upload metadata handling, variant mapping validation, and source/order/default updates
 - [x] T029 [P] [US4] Add integration tests for upload-confirm-attach flow and source/order/default edit flows
 
 ### Implementation for User Story 4
@@ -137,15 +137,15 @@
 
 ### Tests for User Story 5
 
-- [ ] T036 [P] [US5] Add unit tests for pending-action expiry/cancel semantics and audit payload formation
-- [ ] T037 [P] [US5] Add integration tests for confirmation/cancel flows across grants, pokemon creation, and image management
+- [x] T036 [P] [US5] Add unit tests for pending-action expiry/cancel semantics and audit payload formation
+- [x] T037 [P] [US5] Add integration tests for confirmation/cancel flows across grants, pokemon creation, and image management
 
 ### Implementation for User Story 5
 
-- [ ] T038 [US5] Standardize shared confirmation and cancel screens across all admin mutations
-- [ ] T039 [US5] Ensure pending actions expire or clear safely without executing unintended mutations
-- [ ] T040 [US5] Persist rich audit records for actor, target, action type, input payload, result status, and timestamps
-- [ ] T041 [US5] Add user-facing summaries after confirmed operations and after rejected/canceled operations
+- [x] T038 [US5] Standardize shared confirmation and cancel screens across all admin mutations
+- [x] T039 [US5] Ensure pending actions expire or clear safely without executing unintended mutations
+- [x] T040 [US5] Persist rich audit records for actor, target, action type, input payload, result status, and timestamps
+- [x] T041 [US5] Add user-facing summaries after confirmed operations and after rejected/canceled operations
 
 **Checkpoint**: Admin operations are safe, explicit, and traceable
 
@@ -155,10 +155,10 @@
 
 **Purpose**: Tighten UX, operational safety, and deployment clarity
 
-- [ ] T042 [P] Review admin menu wording and dangerous-action copy for clarity and safety
-- [ ] T043 [P] Add rollout notes for env setup (`ADMIN_BOT_TOKEN`, `ADMIN_BOT_ALLOWED_IDS`) and deployment usage
-- [ ] T044 [P] Verify that privileged DB and MinIO operations share the correct production credentials and do not drift from the public bot
-- [ ] T045 Run focused verification with `uv run pytest tests/unit/test_admin_access.py tests/unit/test_admin_actions.py tests/unit/test_admin_images.py tests/integration/test_admin_bot_flow.py -v`
+- [x] T042 [P] Review admin menu wording and dangerous-action copy for clarity and safety
+- [x] T043 [P] Add rollout notes for env setup (`ADMIN_BOT_TOKEN`, `ADMIN_BOT_ALLOWED_IDS`) and deployment usage
+- [x] T044 [P] Verify that privileged DB and MinIO operations share the correct production credentials and do not drift from the public bot
+- [x] T045 Run focused verification with `uv run pytest tests/unit/test_admin_access.py tests/unit/test_admin_actions.py tests/unit/test_admin_images.py tests/integration/test_admin_bot_flow.py -v`
 
 ## Dependencies & Execution Order
 

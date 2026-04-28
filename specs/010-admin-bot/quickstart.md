@@ -32,7 +32,7 @@ uv run python main_admin_local.py
 uv run python main_admin.py
 ```
 
-## Current Foundation Slice
+## Current Functional Slice
 
 - separate token and entrypoint
 - private-chat-only access
@@ -40,11 +40,16 @@ uv run python main_admin.py
 - dedicated admin session store prefixes
 - shared confirmation framework
 - DB-backed admin audit table
+- currency grants
+- pokemon grants by `pokemon_id`
+- pokemon catalog creation
+- image upload to MinIO and variant attachment
+- image `source` editing
+- image `display_order` / `default` editing
 
-## Next Functional Slices
+## Verification
 
-1. currency grant
-2. pokemon grant
-3. pokemon creation
-4. image upload and variant management
-
+```bash
+uv run pytest tests/unit/test_admin_access.py tests/unit/test_admin_actions.py tests/unit/test_admin_images.py tests/integration/test_admin_bot_flow.py -v
+uv run ruff check main_admin.py main_admin_local.py bot/admin bot/navigation/session.py bot/db/database.py tests/unit/test_admin_access.py tests/unit/test_admin_actions.py tests/unit/test_admin_images.py tests/integration/test_admin_bot_flow.py
+```
