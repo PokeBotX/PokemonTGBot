@@ -1,8 +1,10 @@
 "use client";
 
+import { useEffect, useState } from "react";
+
 import { ErrorState } from "@/components/error-state";
 import { ProfileCardSkeleton } from "@/components/profile-card-skeleton";
-import { useTelegramSnapshot } from "@/lib/telegram";
+import { getTelegramWebApp } from "@/lib/telegram";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -10,7 +12,25 @@ import { useProfile } from "@/hooks/use-profile";
 
 export function ProfileCard() {
   const { data, isLoading, isError } = useProfile();
-  const { user } = useTelegramSnapshot();
+  const [photoUrl, setPhotoUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    const syncPhoto = () => {
+      const nextPhotoUrl = getTelegramWebApp()?.initDataUnsafe?.user?.photo_url ?? null;
+      setPhotoUrl((current) => (current === nextPhotoUrl ? current : nextPhotoUrl));
+    };
+
+    syncPhoto();
+    const intervalId = window.setInterval(syncPhoto, 500);
+    window.addEventListener("focus", syncPhoto);
+    window.addEventListener("visibilitychange", syncPhoto);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", syncPhoto);
+      window.removeEventListener("visibilitychange", syncPhoto);
+    };
+  }, []);
 
   if (isLoading) {
     return <ProfileCardSkeleton />;
@@ -29,10 +49,10 @@ export function ProfileCard() {
   return (
     <Card className="rounded-2xl border border-slate-700 bg-slate-900 py-4 text-slate-100 shadow-[0_2px_12px_rgba(0,0,0,0.35)]">
       <CardContent className="space-y-4 px-4">
-        {user?.photo_url ? (
+        {photoUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={user.photo_url}
+            src={photoUrl}
             alt={data.name}
             className="mx-auto h-20 w-20 rounded-full object-cover ring-2 ring-slate-700"
             loading="lazy"
