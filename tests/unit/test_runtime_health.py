@@ -44,7 +44,6 @@ async def test_setup_webhook_respects_drop_pending_updates(monkeypatch) -> None:
     monkeypatch.setattr(main, "DROP_PENDING_UPDATES", True)
 
     bot = Mock()
-    bot.delete_webhook = AsyncMock()
     bot.set_webhook = AsyncMock()
     bot.get_webhook_info = AsyncMock(
         return_value=type(
@@ -61,8 +60,32 @@ async def test_setup_webhook_respects_drop_pending_updates(monkeypatch) -> None:
 
     await main.setup_webhook()
 
-    bot.delete_webhook.assert_awaited_once_with(drop_pending_updates=True)
     assert bot.set_webhook.await_args.kwargs["drop_pending_updates"] is True
+
+
+@pytest.mark.asyncio
+async def test_setup_webhook_reuses_existing_url_after_dns_failure(monkeypatch) -> None:
+    monkeypatch.setattr(main, "DROP_PENDING_UPDATES", False)
+
+    bot = Mock()
+    bot.set_webhook = AsyncMock(side_effect=main.BadRequest("Bad webhook: failed to resolve host: temporary failure in name resolution"))
+    bot.get_webhook_info = AsyncMock(
+        return_value=type(
+            "WebhookInfo",
+            (),
+            {
+                "url": "https://example.test/webhook",
+                "has_custom_certificate": False,
+                "pending_update_count": 0,
+            },
+        )()
+    )
+    monkeypatch.setattr(main, "bot_app", type("BotApp", (), {"bot": bot})())
+
+    await main.setup_webhook()
+
+    assert bot.set_webhook.await_count == 3
+    bot.get_webhook_info.assert_awaited()
 
 
 @pytest.mark.asyncio

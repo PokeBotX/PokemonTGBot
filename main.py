@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from telegram import Update
+from telegram.error import BadRequest
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
 from bot.db import Database
@@ -699,12 +700,33 @@ async def setup_webhook() -> None:
             raise ValueError(f"WEBHOOK_CERT_PATH does not exist: {cert_path}")
         webhook_kwargs["certificate"] = cert_path.open("rb")
     
-    # Delete any existing webhook
-    await bot_app.bot.delete_webhook(drop_pending_updates=DROP_PENDING_UPDATES)
-    logger.info("webhook_deleted")
-    
     try:
-        await bot_app.bot.set_webhook(**webhook_kwargs)
+        for attempt in range(1, 4):
+            try:
+                await bot_app.bot.set_webhook(**webhook_kwargs)
+                break
+            except BadRequest as exc:
+                message = str(exc).lower()
+                is_dns_failure = "failed to resolve host" in message
+                if not is_dns_failure or attempt == 3:
+                    if is_dns_failure:
+                        existing_webhook = await bot_app.bot.get_webhook_info()
+                        if existing_webhook.url == webhook_full_url:
+                            logger.warning(
+                                "webhook_reuse_existing",
+                                url=existing_webhook.url,
+                                attempt=attempt,
+                                error=str(exc),
+                            )
+                            return
+                    raise
+                logger.warning(
+                    "webhook_set_retry",
+                    attempt=attempt,
+                    url=webhook_full_url,
+                    error=str(exc),
+                )
+                await asyncio.sleep(attempt)
     finally:
         certificate = webhook_kwargs.get("certificate")
         if certificate:
