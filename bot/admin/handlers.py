@@ -8,7 +8,7 @@ from typing import Optional
 
 import structlog
 from telegram import Document, InputFile, Message, PhotoSize, Update
-from telegram.error import TelegramError
+from telegram.error import Forbidden, TelegramError
 from telegram.ext import ContextTypes
 
 from bot.admin.config import AdminBotSettings, load_admin_bot_settings
@@ -19,9 +19,18 @@ from bot.admin.ui import (
     ADMIN_SECTIONS,
     SECTION_AUDIT,
     SECTION_AUDIT_EXPORT,
+    SECTION_BROADCAST,
     SECTION_CANCEL,
     SECTION_CONFIRM,
     SECTION_CREATE_POKEMON,
+    SECTION_EDIT_POKEMON,
+    SECTION_EDIT_POKEMON_ATTACK,
+    SECTION_EDIT_POKEMON_DEFENSE,
+    SECTION_EDIT_POKEMON_HP,
+    SECTION_EDIT_POKEMON_NAME,
+    SECTION_EDIT_POKEMON_RARITY,
+    SECTION_EDIT_POKEMON_STAMINA,
+    SECTION_EDIT_POKEMON_TYPE,
     SECTION_GRANT_POKECOIN,
     SECTION_GRANT_POKEDOLLAR,
     SECTION_GRANT_POKEMON,
@@ -35,7 +44,9 @@ from bot.admin.ui import (
     build_admin_back_keyboard,
     build_admin_audit_export_text,
     build_admin_audit_keyboard,
+    build_admin_broadcast_keyboard,
     build_admin_confirmation_keyboard,
+    build_admin_edit_pokemon_field_keyboard,
     build_admin_grants_keyboard,
     build_admin_images_keyboard,
     build_admin_pokemon_keyboard,
@@ -48,6 +59,13 @@ from bot.admin.ui import (
     get_create_pokemon_field_prompt,
     get_create_pokemon_intro_text,
     get_create_pokemon_summary_text,
+    get_broadcast_empty_targets_text,
+    get_broadcast_intro_text,
+    get_broadcast_summary_text,
+    get_edit_pokemon_field_text,
+    get_edit_pokemon_intro_text,
+    get_edit_pokemon_summary_text,
+    get_edit_pokemon_value_prompt,
     get_grant_amount_prompt,
     get_grant_pokemon_prompt,
     get_grant_username_prompt,
@@ -90,6 +108,9 @@ ADMIN_PENDING_GRANT_POKEDOLLAR_AMOUNT = "grant_pokedollar_amount"
 ADMIN_PENDING_GRANT_POKECOIN_AMOUNT = "grant_pokecoin_amount"
 ADMIN_PENDING_GRANT_POKEMON_ID = "grant_pokemon_id"
 ADMIN_PENDING_CREATE_POKEMON_FIELD = "create_pokemon_field"
+ADMIN_PENDING_EDIT_POKEMON_ID = "edit_pokemon_id"
+ADMIN_PENDING_EDIT_POKEMON_VALUE = "edit_pokemon_value"
+ADMIN_PENDING_BROADCAST_TEXT = "broadcast_text"
 ADMIN_PENDING_IMAGE_UPLOAD_FILE = "image_upload_file"
 ADMIN_PENDING_IMAGE_UPLOAD_POKEMON_ID = "image_upload_pokemon_id"
 ADMIN_PENDING_IMAGE_UPLOAD_SOURCE = "image_upload_source"
@@ -107,6 +128,8 @@ ADMIN_ACTION_CREATE_POKEMON = "catalog.create_pokemon"
 ADMIN_ACTION_ATTACH_IMAGE_VARIANT = "images.attach_variant"
 ADMIN_ACTION_UPDATE_IMAGE_SOURCE = "images.update_source"
 ADMIN_ACTION_UPDATE_IMAGE_VARIANT = "images.update_variant"
+ADMIN_ACTION_UPDATE_POKEMON_SPECIES = "catalog.update_pokemon_species"
+ADMIN_ACTION_BROADCAST_MESSAGE = "ops.broadcast_message"
 ADMIN_AUDIT_PREVIEW_LIMIT = 10
 ADMIN_AUDIT_EXPORT_LIMIT = 200
 
@@ -121,6 +144,15 @@ CREATE_POKEMON_FIELDS: tuple[tuple[str, str, str], ...] = (
     ("base_stamina", "SPD", "Отправьте базовое значение скорости/стамины."),
 )
 CREATE_POKEMON_ALLOWED_RARITIES = {"Common", "Rare", "Epic", "Legendary"}
+EDIT_POKEMON_FIELDS: dict[str, tuple[str, str]] = {
+    SECTION_EDIT_POKEMON_NAME: ("name", "Имя"),
+    SECTION_EDIT_POKEMON_TYPE: ("pokemon_type", "Тип"),
+    SECTION_EDIT_POKEMON_RARITY: ("rarity", "Редкость"),
+    SECTION_EDIT_POKEMON_HP: ("base_hp", "HP"),
+    SECTION_EDIT_POKEMON_ATTACK: ("base_attack", "ATK"),
+    SECTION_EDIT_POKEMON_DEFENSE: ("base_defense", "DEF"),
+    SECTION_EDIT_POKEMON_STAMINA: ("base_stamina", "SPD"),
+}
 
 PendingExecutor = Callable[
     [Update, ContextTypes.DEFAULT_TYPE, AdminPendingAction],
@@ -368,6 +400,73 @@ async def _show_pokemon_section(update: Update, context: ContextTypes.DEFAULT_TY
     )
 
 
+async def _start_edit_pokemon(update: Update, context: ContextTypes.DEFAULT_TYPE, session) -> None:
+    admin_session_store.set_pending_input(
+        action=ADMIN_PENDING_EDIT_POKEMON_ID,
+        chat_id=session.chat_id,
+        user_id=session.user_id,
+        source_message_id=update.callback_query.message.message_id,
+        source_message_thread_id=getattr(update.callback_query.message, "message_thread_id", None),
+        data={},
+    )
+    await update.callback_query.message.edit_text(
+        get_edit_pokemon_intro_text(),
+        parse_mode="HTML",
+        reply_markup=build_admin_back_keyboard(_pokemon_back_session(update, session)),
+    )
+
+
+async def _select_edit_pokemon_field(update: Update, context: ContextTypes.DEFAULT_TYPE, session, *, callback_section: str) -> None:
+    field_meta = EDIT_POKEMON_FIELDS.get(callback_section)
+    if field_meta is None:
+        await update.callback_query.answer(ADMIN_ERROR_INVALID_CALLBACK, show_alert=True)
+        return
+    pending = admin_session_store.get_pending_input(chat_id=session.chat_id, user_id=session.user_id)
+    if pending is None or pending.action != ADMIN_PENDING_EDIT_POKEMON_VALUE:
+        await update.callback_query.answer(ADMIN_ERROR_STALE_MENU, show_alert=True)
+        return
+    pokemon_payload = dict(pending.data.get("pokemon_entry") or {})
+    pokemon_entry = pokemon_payload and pokemon_payload
+    if not pokemon_entry:
+        await update.callback_query.answer(ADMIN_ERROR_STALE_MENU, show_alert=True)
+        return
+
+    field_key, field_label = field_meta
+    current_value_raw = pokemon_payload.get(field_key)
+    current_value = "—" if current_value_raw in {None, ""} else str(current_value_raw)
+    admin_session_store.set_pending_input(
+        action=ADMIN_PENDING_EDIT_POKEMON_VALUE,
+        chat_id=session.chat_id,
+        user_id=session.user_id,
+        source_message_id=pending.source_message_id,
+        source_message_thread_id=pending.source_message_thread_id,
+        data={
+            **pending.data,
+            "field_key": field_key,
+            "field_label": field_label,
+            "old_value": current_value,
+        },
+    )
+    await update.callback_query.message.edit_text(
+        get_edit_pokemon_value_prompt(
+            pokemon_id=int(pokemon_payload["pokemon_id"]),
+            name=str(pokemon_payload["name"]),
+            field_label=field_label,
+            current_value=current_value,
+        ),
+        parse_mode="HTML",
+        reply_markup=build_admin_back_keyboard(
+            admin_session_store.create_session(
+                chat_id=session.chat_id,
+                message_id=update.callback_query.message.message_id,
+                message_thread_id=getattr(update.callback_query.message, "message_thread_id", None),
+                user_id=session.user_id,
+                data={"screen": SECTION_POKEMON},
+            )
+        ),
+    )
+
+
 async def _show_images_section(update: Update, context: ContextTypes.DEFAULT_TYPE, session) -> None:
     next_session_id = admin_session_store.create_session(
         chat_id=session.chat_id,
@@ -433,6 +532,29 @@ async def _export_audit_section(update: Update, context: ContextTypes.DEFAULT_TY
         "admin_audit_export_sent",
         actor_telegram_id=update.effective_user.id if update.effective_user else None,
         records=len(records),
+    )
+
+
+async def _show_broadcast_section(update: Update, context: ContextTypes.DEFAULT_TYPE, session) -> None:
+    admin_session_store.set_pending_input(
+        action=ADMIN_PENDING_BROADCAST_TEXT,
+        chat_id=session.chat_id,
+        user_id=session.user_id,
+        source_message_id=update.callback_query.message.message_id,
+        source_message_thread_id=getattr(update.callback_query.message, "message_thread_id", None),
+        data={},
+    )
+    next_session_id = admin_session_store.create_session(
+        chat_id=session.chat_id,
+        message_id=update.callback_query.message.message_id,
+        message_thread_id=getattr(update.callback_query.message, "message_thread_id", None),
+        user_id=session.user_id,
+        data={"screen": SECTION_BROADCAST},
+    )
+    await update.callback_query.message.edit_text(
+        get_broadcast_intro_text(),
+        parse_mode="HTML",
+        reply_markup=build_admin_broadcast_keyboard(next_session_id),
     )
 
 
@@ -887,6 +1009,69 @@ async def _execute_update_image_variant(update: Update, context: ContextTypes.DE
     }
 
 
+async def _execute_update_pokemon_species(update: Update, context: ContextTypes.DEFAULT_TYPE, pending_action: AdminPendingAction) -> dict[str, object]:
+    db = _db_from_context(context)
+    if db is None:
+        raise ShopError("База данных недоступна.")
+    input_payload = pending_action.input_payload
+    updated = await db.admin_update_pokemon_species_field(
+        pokemon_id=int(input_payload["pokemon_id"]),
+        field_key=str(input_payload["field_key"]),
+        new_value=input_payload["new_value"],
+    )
+    field_label = str(input_payload["field_label"])
+    old_value = str(input_payload["old_value"])
+    new_value = "—" if input_payload["new_value"] is None else str(input_payload["new_value"])
+    return {
+        "pokemon_id": updated.pokemon_id,
+        "field_key": input_payload["field_key"],
+        "summary_text": (
+            f"Обновлён <b>{updated.name}</b> (#{updated.pokemon_id})\n"
+            f"Поле: <b>{field_label}</b>\n"
+            f"Было: <code>{old_value}</code>\n"
+            f"Стало: <code>{new_value}</code>"
+        ),
+    }
+
+
+async def _execute_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE, pending_action: AdminPendingAction) -> dict[str, object]:
+    input_payload = pending_action.input_payload
+    chat_ids = [int(chat_id) for chat_id in input_payload.get("chat_ids", [])]
+    message_text = str(input_payload["message_text"])
+    success_count = 0
+    failure_count = 0
+    failed_chat_ids: list[int] = []
+    application = getattr(context, "application", None)
+    bot_data = getattr(application, "bot_data", {}) if application else {}
+    sender_bot = bot_data.get("broadcast_bot") if isinstance(bot_data, dict) else None
+    if sender_bot is None:
+        sender_bot = context.bot
+
+    for chat_id in chat_ids:
+        try:
+            await sender_bot.send_message(chat_id=chat_id, text=message_text, parse_mode="HTML")
+            success_count += 1
+        except (Forbidden, TelegramError):
+            failure_count += 1
+            failed_chat_ids.append(chat_id)
+
+    summary_lines = [
+        f"Успешно отправлено: <b>{success_count}</b>",
+        f"Ошибок доставки: <b>{failure_count}</b>",
+    ]
+    if failed_chat_ids:
+        sample = ", ".join(str(chat_id) for chat_id in failed_chat_ids[:10])
+        summary_lines.append(f"Проблемные chat_id: <code>{sample}</code>")
+
+    return {
+        "target_count": len(chat_ids),
+        "success_count": success_count,
+        "failure_count": failure_count,
+        "failed_chat_ids": failed_chat_ids,
+        "summary_text": "\n".join(summary_lines),
+    }
+
+
 def _normalize_create_pokemon_field(*, field_key: str, raw_value: str) -> object:
     normalized = raw_value.strip()
     if field_key in {"pokemon_id", "base_hp", "base_attack", "base_defense", "base_stamina"}:
@@ -912,6 +1097,10 @@ def _normalize_yes_no(raw_value: str) -> bool:
     if normalized in {"нет", "no", "n", "false", "0"}:
         return False
     raise ShopError("Отправьте 'да' или 'нет'.")
+
+
+def _format_edit_species_value(value: object) -> str:
+    return "—" if value is None or value == "" else str(value)
 
 
 def _resolve_admin_upload_media(message: Message) -> tuple[str, str, str | None, str | None]:
@@ -1121,6 +1310,86 @@ async def handle_admin_text_input(update: Update, context: ContextTypes.DEFAULT_
             await show_pending_action_preview(update, context, pending_action=pending_action)
             return
 
+        if pending.action == ADMIN_PENDING_EDIT_POKEMON_ID:
+            pokemon_id = int(text_value)
+            pokemon_entry = await db.get_pokemon_catalog_entry_by_id(pokemon_id)
+            admin_session_store.set_pending_input(
+                action=ADMIN_PENDING_EDIT_POKEMON_VALUE,
+                chat_id=chat.id,
+                user_id=user.id,
+                source_message_id=pending.source_message_id,
+                source_message_thread_id=pending.source_message_thread_id,
+                data={"pokemon_entry": pokemon_entry.as_session_payload()},
+            )
+            prompt_message = await _send_chat_message(
+                update,
+                get_edit_pokemon_field_text(
+                    pokemon_id=pokemon_entry.pokemon_id,
+                    name=pokemon_entry.name,
+                ),
+            )
+            if prompt_message is None:
+                return
+            callback_session_id = _create_session(
+                prompt_message,
+                user_id=user.id,
+                data={"screen": SECTION_POKEMON},
+            )
+            await prompt_message.edit_reply_markup(reply_markup=build_admin_edit_pokemon_field_keyboard(callback_session_id))
+            return
+
+        if pending.action == ADMIN_PENDING_EDIT_POKEMON_VALUE:
+            field_key = pending.data.get("field_key")
+            field_label = pending.data.get("field_label")
+            pokemon_payload = dict(pending.data.get("pokemon_entry") or {})
+            if not isinstance(field_key, str) or not isinstance(field_label, str) or not pokemon_payload:
+                raise ShopError("Сначала выберите поле для редактирования.")
+            new_value = _normalize_create_pokemon_field(field_key=field_key, raw_value=text_value)
+            admin_session_store.clear_pending_input(chat_id=chat.id, user_id=user.id)
+            pending_action = AdminPendingAction(
+                action_type=ADMIN_ACTION_UPDATE_POKEMON_SPECIES,
+                title="Изменить вид покемона",
+                description=get_edit_pokemon_summary_text(
+                    pokemon_id=int(pokemon_payload["pokemon_id"]),
+                    name=str(pokemon_payload["name"]),
+                    field_label=field_label,
+                    old_value=_format_edit_species_value(pending.data.get("old_value")),
+                    new_value=_format_edit_species_value(new_value),
+                ),
+                input_payload={
+                    "pokemon_id": int(pokemon_payload["pokemon_id"]),
+                    "field_key": field_key,
+                    "field_label": field_label,
+                    "old_value": _format_edit_species_value(pending.data.get("old_value")),
+                    "new_value": new_value,
+                },
+            )
+            await show_pending_action_preview(update, context, pending_action=pending_action)
+            return
+
+        if pending.action == ADMIN_PENDING_BROADCAST_TEXT:
+            target_chat_ids = await db.get_admin_broadcast_target_chat_ids()
+            if not target_chat_ids:
+                admin_session_store.clear_pending_input(chat_id=chat.id, user_id=user.id)
+                await _send_chat_message(update, get_broadcast_empty_targets_text())
+                return
+            admin_session_store.clear_pending_input(chat_id=chat.id, user_id=user.id)
+            pending_action = AdminPendingAction(
+                action_type=ADMIN_ACTION_BROADCAST_MESSAGE,
+                title="Разослать сообщение",
+                description=get_broadcast_summary_text(
+                    chat_count=len(target_chat_ids),
+                    message_text=text_value,
+                ),
+                input_payload={
+                    "message_text": text_value,
+                    "chat_ids": target_chat_ids,
+                    "target_count": len(target_chat_ids),
+                },
+            )
+            await show_pending_action_preview(update, context, pending_action=pending_action)
+            return
+
         if pending.action == ADMIN_PENDING_IMAGE_UPLOAD_POKEMON_ID:
             pokemon_id = int(text_value)
             pokemon_entry = await db.get_pokemon_catalog_entry_by_id(pokemon_id)
@@ -1312,12 +1581,21 @@ def register_admin_routes() -> None:
     admin_router.register(SECTION_GRANT_POKEMON, _start_grant_pokemon)
     admin_router.register(SECTION_POKEMON, _show_pokemon_section)
     admin_router.register(SECTION_CREATE_POKEMON, _start_create_pokemon)
+    admin_router.register(SECTION_EDIT_POKEMON, _start_edit_pokemon)
+    admin_router.register(SECTION_EDIT_POKEMON_NAME, lambda update, context, session: _select_edit_pokemon_field(update, context, session, callback_section=SECTION_EDIT_POKEMON_NAME))
+    admin_router.register(SECTION_EDIT_POKEMON_TYPE, lambda update, context, session: _select_edit_pokemon_field(update, context, session, callback_section=SECTION_EDIT_POKEMON_TYPE))
+    admin_router.register(SECTION_EDIT_POKEMON_RARITY, lambda update, context, session: _select_edit_pokemon_field(update, context, session, callback_section=SECTION_EDIT_POKEMON_RARITY))
+    admin_router.register(SECTION_EDIT_POKEMON_HP, lambda update, context, session: _select_edit_pokemon_field(update, context, session, callback_section=SECTION_EDIT_POKEMON_HP))
+    admin_router.register(SECTION_EDIT_POKEMON_ATTACK, lambda update, context, session: _select_edit_pokemon_field(update, context, session, callback_section=SECTION_EDIT_POKEMON_ATTACK))
+    admin_router.register(SECTION_EDIT_POKEMON_DEFENSE, lambda update, context, session: _select_edit_pokemon_field(update, context, session, callback_section=SECTION_EDIT_POKEMON_DEFENSE))
+    admin_router.register(SECTION_EDIT_POKEMON_STAMINA, lambda update, context, session: _select_edit_pokemon_field(update, context, session, callback_section=SECTION_EDIT_POKEMON_STAMINA))
     admin_router.register(SECTION_IMAGES, _show_images_section)
     admin_router.register(SECTION_IMAGE_UPLOAD_VARIANT, _start_image_upload_variant)
     admin_router.register(SECTION_IMAGE_EDIT_SOURCE, _start_image_source_edit)
     admin_router.register(SECTION_IMAGE_EDIT_VARIANT, _start_image_variant_edit)
     admin_router.register(SECTION_AUDIT, _show_audit_section)
     admin_router.register(SECTION_AUDIT_EXPORT, _export_audit_section)
+    admin_router.register(SECTION_BROADCAST, _show_broadcast_section)
     admin_router.register(SECTION_CONFIRM, _confirm_pending_action)
     admin_router.register(SECTION_CANCEL, _cancel_pending_action)
     register_pending_executor(ADMIN_ACTION_GRANT_CURRENCY, _execute_currency_grant)
@@ -1326,6 +1604,8 @@ def register_admin_routes() -> None:
     register_pending_executor(ADMIN_ACTION_ATTACH_IMAGE_VARIANT, _execute_attach_image_variant)
     register_pending_executor(ADMIN_ACTION_UPDATE_IMAGE_SOURCE, _execute_update_image_source)
     register_pending_executor(ADMIN_ACTION_UPDATE_IMAGE_VARIANT, _execute_update_image_variant)
+    register_pending_executor(ADMIN_ACTION_UPDATE_POKEMON_SPECIES, _execute_update_pokemon_species)
+    register_pending_executor(ADMIN_ACTION_BROADCAST_MESSAGE, _execute_broadcast_message)
 
 
 async def handle_admin_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

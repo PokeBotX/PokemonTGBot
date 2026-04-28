@@ -6,7 +6,7 @@ import os
 
 import structlog
 from dotenv import load_dotenv
-from telegram import BotCommand
+from telegram import Bot, BotCommand
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
 from bot.admin.config import load_admin_bot_settings
@@ -34,10 +34,12 @@ REDIS_ENABLED = os.getenv("REDIS_ENABLED", "false").lower() == "true"
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
 SESSION_REDIS_ENABLED = os.getenv("SESSION_REDIS_ENABLED", "false").lower() == "true"
 DROP_PENDING_UPDATES = os.getenv("DROP_PENDING_UPDATES", "false").lower() == "true"
+broadcast_bot: Bot | None = None
 
 
 async def post_init(application: Application) -> None:
     """Prepare admin-bot state for local polling."""
+    global broadcast_bot
     logger.info(
         "admin_startup_config",
         mode="polling",
@@ -59,6 +61,14 @@ async def post_init(application: Application) -> None:
         application.bot_data["db"] = db
         logger.info("admin_db_ready", schema_init=DB_INIT_SCHEMA)
 
+    main_bot_token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+    if main_bot_token:
+        broadcast_bot = Bot(token=main_bot_token)
+        if main_bot_token != settings.token:
+            await broadcast_bot.initialize()
+        application.bot_data["broadcast_bot"] = broadcast_bot
+        logger.info("admin_broadcast_bot_ready", shared_token=main_bot_token == settings.token)
+
     await application.bot.delete_webhook(drop_pending_updates=DROP_PENDING_UPDATES)
     await application.bot.set_my_commands(
         [
@@ -71,9 +81,14 @@ async def post_init(application: Application) -> None:
 
 async def post_shutdown(application: Application) -> None:
     """Close admin-bot resources on shutdown."""
+    global broadcast_bot
     db = application.bot_data.get("db")
     if db is not None:
         await db.close()
+    if broadcast_bot is not None:
+        if broadcast_bot.token != settings.token:
+            await broadcast_bot.shutdown()
+        broadcast_bot = None
     admin_session_store.disable_redis()
 
 

@@ -20,7 +20,7 @@ from bot.admin.handlers import (
 )
 from bot.admin.pending import AdminPendingAction
 from bot.admin.session import admin_session_store
-from bot.admin.ui import SECTION_AUDIT, SECTION_AUDIT_EXPORT, SECTION_CANCEL, SECTION_CONFIRM, SECTION_CREATE_POKEMON, SECTION_GRANT_POKEDOLLAR, SECTION_GRANT_POKEMON, SECTION_GRANTS, SECTION_IMAGE_EDIT_SOURCE, SECTION_IMAGE_EDIT_VARIANT, SECTION_IMAGE_UPLOAD_VARIANT, SECTION_IMAGES, SECTION_POKEMON
+from bot.admin.ui import SECTION_AUDIT, SECTION_AUDIT_EXPORT, SECTION_BROADCAST, SECTION_CANCEL, SECTION_CONFIRM, SECTION_CREATE_POKEMON, SECTION_EDIT_POKEMON, SECTION_EDIT_POKEMON_RARITY, SECTION_GRANT_POKEDOLLAR, SECTION_GRANT_POKEMON, SECTION_GRANTS, SECTION_IMAGE_EDIT_SOURCE, SECTION_IMAGE_EDIT_VARIANT, SECTION_IMAGE_UPLOAD_VARIANT, SECTION_IMAGES, SECTION_POKEMON
 from bot.db.database import PokemonSearchEntry, UserLookupResult
 
 
@@ -267,6 +267,254 @@ async def test_admin_audit_section_browse_and_export() -> None:
     assert db.get_recent_admin_action_audit.await_count == 2
     chat.send_document.assert_awaited_once()
     assert "Экспорт аудита" in chat.send_document.await_args.kwargs["caption"]
+
+
+@pytest.mark.asyncio
+async def test_admin_edit_pokemon_species_flow_from_buttons_to_confirm() -> None:
+    set_admin_settings_for_tests(_allowed_settings())
+    register_admin_routes()
+
+    update, user, chat, _ = _private_update()
+    sent_message = Mock(spec=Message)
+    sent_message.message_id = 101
+    sent_message.chat_id = chat.id
+    sent_message.chat = chat
+    sent_message.message_thread_id = None
+    sent_message.edit_reply_markup = AsyncMock()
+    sent_message.edit_text = AsyncMock()
+
+    field_message = Mock(spec=Message)
+    field_message.message_id = 102
+    field_message.chat_id = chat.id
+    field_message.chat = chat
+    field_message.message_thread_id = None
+    field_message.edit_reply_markup = AsyncMock()
+    field_message.edit_text = AsyncMock()
+
+    confirm_message = Mock(spec=Message)
+    confirm_message.message_id = 103
+    confirm_message.chat_id = chat.id
+    confirm_message.chat = chat
+    confirm_message.message_thread_id = None
+    confirm_message.edit_reply_markup = AsyncMock()
+    confirm_message.edit_text = AsyncMock()
+
+    chat.send_message = AsyncMock(side_effect=[sent_message, field_message, confirm_message])
+
+    pokemon_entry = PokemonSearchEntry(
+        pokemon_id=25,
+        name="Pikachu",
+        pokemon_type="Electric",
+        rarity="Rare",
+        base_hp=35,
+        base_attack=55,
+        base_defense=40,
+        base_stamina=90,
+        image_credit_id=77,
+    )
+    updated_entry = PokemonSearchEntry(
+        pokemon_id=25,
+        name="Pikachu",
+        pokemon_type="Electric",
+        rarity="Epic",
+        base_hp=35,
+        base_attack=55,
+        base_defense=40,
+        base_stamina=90,
+        image_credit_id=77,
+    )
+
+    db = AsyncMock()
+    db.get_pokemon_catalog_entry_by_id = AsyncMock(return_value=pokemon_entry)
+    db.admin_update_pokemon_species_field = AsyncMock(return_value=updated_entry)
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+
+    await menu_admin_command(update, context)
+    root_session_id = next(iter(admin_session_store._sessions.keys()))
+
+    pokemon_callback = Mock(spec=CallbackQuery)
+    pokemon_callback.id = "cb-pokemon-edit-root"
+    pokemon_callback.data = f"menu:{SECTION_POKEMON}:{root_session_id}"
+    pokemon_callback.message = sent_message
+    pokemon_callback.answer = AsyncMock()
+
+    pokemon_update = Mock(spec=Update)
+    pokemon_update.effective_user = user
+    pokemon_update.effective_chat = chat
+    pokemon_update.callback_query = pokemon_callback
+    pokemon_update.effective_message = sent_message
+
+    await handle_admin_callback_query(pokemon_update, context)
+
+    pokemon_session_id = list(admin_session_store._sessions.keys())[-1]
+    edit_callback = Mock(spec=CallbackQuery)
+    edit_callback.id = "cb-pokemon-edit-start"
+    edit_callback.data = f"menu:{SECTION_EDIT_POKEMON}:{pokemon_session_id}"
+    edit_callback.message = sent_message
+    edit_callback.answer = AsyncMock()
+
+    edit_update = Mock(spec=Update)
+    edit_update.effective_user = user
+    edit_update.effective_chat = chat
+    edit_update.callback_query = edit_callback
+    edit_update.effective_message = sent_message
+
+    await handle_admin_callback_query(edit_update, context)
+
+    id_message = Mock(spec=Message)
+    id_message.chat = chat
+    id_message.chat_id = chat.id
+    id_message.from_user = user
+    id_message.text = "25"
+    id_message.message_thread_id = None
+
+    id_update = Mock(spec=Update)
+    id_update.effective_user = user
+    id_update.effective_chat = chat
+    id_update.effective_message = id_message
+
+    await handle_admin_text_input(id_update, context)
+
+    field_session_id = list(admin_session_store._sessions.keys())[-1]
+    rarity_callback = Mock(spec=CallbackQuery)
+    rarity_callback.id = "cb-pokemon-edit-rarity"
+    rarity_callback.data = f"menu:{SECTION_EDIT_POKEMON_RARITY}:{field_session_id}"
+    rarity_callback.message = field_message
+    rarity_callback.answer = AsyncMock()
+
+    rarity_update = Mock(spec=Update)
+    rarity_update.effective_user = user
+    rarity_update.effective_chat = chat
+    rarity_update.callback_query = rarity_callback
+    rarity_update.effective_message = field_message
+
+    await handle_admin_callback_query(rarity_update, context)
+
+    value_message = Mock(spec=Message)
+    value_message.chat = chat
+    value_message.chat_id = chat.id
+    value_message.from_user = user
+    value_message.text = "Epic"
+    value_message.message_thread_id = None
+
+    value_update = Mock(spec=Update)
+    value_update.effective_user = user
+    value_update.effective_chat = chat
+    value_update.effective_message = value_message
+
+    await handle_admin_text_input(value_update, context)
+
+    confirm_session_id = list(admin_session_store._sessions.keys())[-1]
+    confirm_callback = Mock(spec=CallbackQuery)
+    confirm_callback.id = "cb-pokemon-edit-confirm"
+    confirm_callback.data = f"menu:{SECTION_CONFIRM}:{confirm_session_id}"
+    confirm_callback.message = confirm_message
+    confirm_callback.answer = AsyncMock()
+
+    confirm_update = Mock(spec=Update)
+    confirm_update.effective_user = user
+    confirm_update.effective_chat = chat
+    confirm_update.callback_query = confirm_callback
+    confirm_update.effective_message = confirm_message
+
+    await handle_admin_callback_query(confirm_update, context)
+
+    db.admin_update_pokemon_species_field.assert_awaited_once_with(
+        pokemon_id=25,
+        field_key="rarity",
+        new_value="Epic",
+    )
+    edited_text = _extract_edited_text(confirm_message.edit_text.call_args)
+    assert "Обновлён" in edited_text
+    assert "Pikachu" in edited_text
+
+
+@pytest.mark.asyncio
+async def test_admin_broadcast_flow_from_text_to_confirm() -> None:
+    set_admin_settings_for_tests(_allowed_settings())
+    register_admin_routes()
+
+    update, user, chat, _ = _private_update()
+    sent_message = Mock(spec=Message)
+    sent_message.message_id = 101
+    sent_message.chat_id = chat.id
+    sent_message.chat = chat
+    sent_message.message_thread_id = None
+    sent_message.edit_reply_markup = AsyncMock()
+    sent_message.edit_text = AsyncMock()
+    confirm_message = Mock(spec=Message)
+    confirm_message.message_id = 102
+    confirm_message.chat_id = chat.id
+    confirm_message.chat = chat
+    confirm_message.message_thread_id = None
+    confirm_message.edit_reply_markup = AsyncMock()
+    confirm_message.edit_text = AsyncMock()
+    chat.send_message = AsyncMock(side_effect=[sent_message, confirm_message])
+
+    db = AsyncMock()
+    db.get_admin_broadcast_target_chat_ids = AsyncMock(return_value=[-1001, -1002])
+    application = Mock()
+    broadcast_bot = AsyncMock()
+    application.bot_data = {"db": db, "broadcast_bot": broadcast_bot}
+    bot = AsyncMock()
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+    context.bot = bot
+
+    await menu_admin_command(update, context)
+    root_session_id = next(iter(admin_session_store._sessions.keys()))
+
+    broadcast_callback = Mock(spec=CallbackQuery)
+    broadcast_callback.id = "cb-broadcast-root"
+    broadcast_callback.data = f"menu:{SECTION_BROADCAST}:{root_session_id}"
+    broadcast_callback.message = sent_message
+    broadcast_callback.answer = AsyncMock()
+
+    broadcast_update = Mock(spec=Update)
+    broadcast_update.effective_user = user
+    broadcast_update.effective_chat = chat
+    broadcast_update.callback_query = broadcast_callback
+    broadcast_update.effective_message = sent_message
+
+    await handle_admin_callback_query(broadcast_update, context)
+
+    text_message = Mock(spec=Message)
+    text_message.chat = chat
+    text_message.chat_id = chat.id
+    text_message.from_user = user
+    text_message.text = "<b>Тестовая рассылка</b>"
+    text_message.message_thread_id = None
+
+    text_update = Mock(spec=Update)
+    text_update.effective_user = user
+    text_update.effective_chat = chat
+    text_update.effective_message = text_message
+
+    await handle_admin_text_input(text_update, context)
+
+    confirm_session_id = list(admin_session_store._sessions.keys())[-1]
+    confirm_callback = Mock(spec=CallbackQuery)
+    confirm_callback.id = "cb-broadcast-confirm"
+    confirm_callback.data = f"menu:{SECTION_CONFIRM}:{confirm_session_id}"
+    confirm_callback.message = confirm_message
+    confirm_callback.answer = AsyncMock()
+
+    confirm_update = Mock(spec=Update)
+    confirm_update.effective_user = user
+    confirm_update.effective_chat = chat
+    confirm_update.callback_query = confirm_callback
+    confirm_update.effective_message = confirm_message
+
+    await handle_admin_callback_query(confirm_update, context)
+
+    assert broadcast_bot.send_message.await_count == 2
+    broadcast_bot.send_message.assert_any_await(chat_id=-1001, text="<b>Тестовая рассылка</b>", parse_mode="HTML")
+    bot.send_message.assert_not_awaited()
+    edited_text = _extract_edited_text(confirm_message.edit_text.call_args)
+    assert "Успешно отправлено" in edited_text
 
 
 @pytest.mark.asyncio

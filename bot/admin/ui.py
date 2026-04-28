@@ -15,12 +15,21 @@ SECTION_POKEMON = "adp"
 SECTION_IMAGES = "adi"
 SECTION_AUDIT = "ada"
 SECTION_AUDIT_EXPORT = "aae"
+SECTION_BROADCAST = "adb"
 SECTION_CONFIRM = "adc"
 SECTION_CANCEL = "adx"
 SECTION_GRANT_POKEDOLLAR = "ag1"
 SECTION_GRANT_POKECOIN = "ag2"
 SECTION_GRANT_POKEMON = "ag3"
 SECTION_CREATE_POKEMON = "ap1"
+SECTION_EDIT_POKEMON = "ap2"
+SECTION_EDIT_POKEMON_NAME = "apn"
+SECTION_EDIT_POKEMON_TYPE = "apt"
+SECTION_EDIT_POKEMON_RARITY = "apr"
+SECTION_EDIT_POKEMON_HP = "aph"
+SECTION_EDIT_POKEMON_ATTACK = "apa"
+SECTION_EDIT_POKEMON_DEFENSE = "apd"
+SECTION_EDIT_POKEMON_STAMINA = "aps"
 SECTION_IMAGE_UPLOAD_VARIANT = "ai1"
 SECTION_IMAGE_EDIT_SOURCE = "ai2"
 SECTION_IMAGE_EDIT_VARIANT = "ai3"
@@ -30,6 +39,7 @@ ADMIN_SECTIONS: dict[str, str] = {
     SECTION_POKEMON: "Каталог покемонов",
     SECTION_IMAGES: "Изображения",
     SECTION_AUDIT: "Аудит",
+    SECTION_BROADCAST: "Рассылка",
 }
 
 
@@ -49,6 +59,9 @@ def build_admin_root_keyboard(session_id: str) -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton("🖼 Изображения", callback_data=build_admin_callback(SECTION_IMAGES, session_id)),
                 InlineKeyboardButton("🧾 Аудит", callback_data=build_admin_callback(SECTION_AUDIT, session_id)),
+            ],
+            [
+                InlineKeyboardButton("📣 Рассылка", callback_data=build_admin_callback(SECTION_BROADCAST, session_id)),
             ],
         ]
     )
@@ -88,6 +101,9 @@ def build_admin_pokemon_keyboard(session_id: str) -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton("🆕 Создать покемона", callback_data=build_admin_callback(SECTION_CREATE_POKEMON, session_id)),
             ],
+            [
+                InlineKeyboardButton("✏️ Редактировать вид", callback_data=build_admin_callback(SECTION_EDIT_POKEMON, session_id)),
+            ],
             build_admin_back_keyboard(session_id).inline_keyboard[0],
         ]
     )
@@ -116,6 +132,18 @@ def build_admin_audit_keyboard(session_id: str) -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton("🔄 Обновить", callback_data=build_admin_callback(SECTION_AUDIT, session_id)),
                 InlineKeyboardButton("📤 Экспорт", callback_data=build_admin_callback(SECTION_AUDIT_EXPORT, session_id)),
+            ],
+            build_admin_back_keyboard(session_id).inline_keyboard[0],
+        ]
+    )
+
+
+def build_admin_broadcast_keyboard(session_id: str) -> InlineKeyboardMarkup:
+    """Build the broadcast section keyboard."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("✍️ Новая рассылка", callback_data=build_admin_callback(SECTION_BROADCAST, session_id)),
             ],
             build_admin_back_keyboard(session_id).inline_keyboard[0],
         ]
@@ -177,8 +205,69 @@ def get_pokemon_section_text() -> str:
     """Return the pokemon catalog section text."""
     return (
         "🆕 <b>Каталог покемонов</b>\n\n"
-        "Здесь можно создать нового покемона с полным набором полей каталога.\n"
+        "Здесь можно создать нового покемона с полным набором полей каталога или точечно исправить существующий вид.\n"
         "Перед сохранением бот покажет итоговый preview."
+    )
+
+
+def build_admin_edit_pokemon_field_keyboard(session_id: str) -> InlineKeyboardMarkup:
+    """Build field-selection keyboard for pokemon species edits."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("Имя", callback_data=build_admin_callback(SECTION_EDIT_POKEMON_NAME, session_id)),
+                InlineKeyboardButton("Тип", callback_data=build_admin_callback(SECTION_EDIT_POKEMON_TYPE, session_id)),
+                InlineKeyboardButton("Редкость", callback_data=build_admin_callback(SECTION_EDIT_POKEMON_RARITY, session_id)),
+            ],
+            [
+                InlineKeyboardButton("HP", callback_data=build_admin_callback(SECTION_EDIT_POKEMON_HP, session_id)),
+                InlineKeyboardButton("ATK", callback_data=build_admin_callback(SECTION_EDIT_POKEMON_ATTACK, session_id)),
+            ],
+            [
+                InlineKeyboardButton("DEF", callback_data=build_admin_callback(SECTION_EDIT_POKEMON_DEFENSE, session_id)),
+                InlineKeyboardButton("SPD", callback_data=build_admin_callback(SECTION_EDIT_POKEMON_STAMINA, session_id)),
+            ],
+            build_admin_back_keyboard(session_id).inline_keyboard[0],
+        ]
+    )
+
+
+def get_edit_pokemon_intro_text() -> str:
+    """Return intro text before species edit starts."""
+    return (
+        "✏️ <b>Редактирование вида покемона</b>\n\n"
+        "Сначала отправьте <code>pokemon_id</code> существующего вида."
+    )
+
+
+def get_edit_pokemon_field_text(*, pokemon_id: int, name: str) -> str:
+    """Prompt for field selection after pokemon lookup."""
+    return (
+        "✏️ <b>Редактирование вида покемона</b>\n\n"
+        f"Покемон: <b>{escape_html(name)}</b> (#{pokemon_id})\n"
+        "Теперь выберите поле, которое нужно изменить."
+    )
+
+
+def get_edit_pokemon_value_prompt(*, pokemon_id: int, name: str, field_label: str, current_value: str) -> str:
+    """Prompt for the new field value."""
+    return (
+        "✏️ <b>Новое значение</b>\n\n"
+        f"Покемон: <b>{escape_html(name)}</b> (#{pokemon_id})\n"
+        f"Поле: <b>{escape_html(field_label)}</b>\n"
+        f"Сейчас: <code>{escape_html(current_value)}</code>\n\n"
+        "Отправьте новое значение одним сообщением."
+    )
+
+
+def get_edit_pokemon_summary_text(*, pokemon_id: int, name: str, field_label: str, old_value: str, new_value: str) -> str:
+    """Return confirmation summary for one species point edit."""
+    return (
+        "Будет обновлён вид покемона:\n"
+        f"• Покемон: <b>{escape_html(name)}</b> (#{pokemon_id})\n"
+        f"• Поле: <b>{escape_html(field_label)}</b>\n"
+        f"• Было: <code>{escape_html(old_value)}</code>\n"
+        f"• Станет: <code>{escape_html(new_value)}</code>"
     )
 
 
@@ -188,6 +277,34 @@ def get_images_section_text() -> str:
         "🖼 <b>Изображения</b>\n\n"
         "Здесь можно загружать новые арты и привязывать их к существующим покемонам как image variant.\n"
         "Также здесь редактируются source, порядок и default-вариант."
+    )
+
+
+def get_broadcast_intro_text() -> str:
+    """Return intro text before broadcast compose starts."""
+    return (
+        "📣 <b>Рассылка</b>\n\n"
+        "Отправьте текст сообщения, которое нужно разослать по групповым чатам, где сейчас состоит основной бот."
+    )
+
+
+def get_broadcast_empty_targets_text() -> str:
+    """Return empty-target warning for broadcast flow."""
+    return (
+        "📣 <b>Рассылка</b>\n\n"
+        "Подходящих групповых чатов для рассылки сейчас нет."
+    )
+
+
+def get_broadcast_summary_text(*, chat_count: int, message_text: str) -> str:
+    """Return confirmation summary for a pending broadcast."""
+    preview = message_text.strip()
+    if len(preview) > 800:
+        preview = preview[:797] + "..."
+    return (
+        "Будет отправлена текстовая рассылка:\n"
+        f"• Чатов: <b>{chat_count}</b>\n\n"
+        f"<blockquote>{escape_html(preview)}</blockquote>"
     )
 
 

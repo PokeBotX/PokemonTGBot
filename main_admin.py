@@ -10,7 +10,7 @@ import structlog
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
-from telegram import BotCommand, Update
+from telegram import Bot, BotCommand, Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
 from bot.admin.config import load_admin_bot_settings
@@ -41,6 +41,7 @@ DROP_PENDING_UPDATES = os.getenv("DROP_PENDING_UPDATES", "false").lower() == "tr
 
 admin_bot_app: Application | None = None
 db: Database | None = None
+broadcast_bot: Bot | None = None
 
 
 async def setup_webhook() -> None:
@@ -65,7 +66,7 @@ async def setup_webhook() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Start and stop the admin Telegram bot application."""
-    global admin_bot_app, db
+    global admin_bot_app, db, broadcast_bot
 
     logger.info(
         "admin_startup_config",
@@ -88,6 +89,14 @@ async def lifespan(app: FastAPI):
     admin_bot_app.add_handler(MessageHandler(filters.ChatType.PRIVATE & (filters.PHOTO | filters.Document.ALL), handle_admin_media_input))
     await admin_bot_app.initialize()
     await admin_bot_app.start()
+
+    main_bot_token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+    if main_bot_token:
+        broadcast_bot = Bot(token=main_bot_token)
+        if main_bot_token != settings.token:
+            await broadcast_bot.initialize()
+        admin_bot_app.bot_data["broadcast_bot"] = broadcast_bot
+        logger.info("admin_broadcast_bot_ready", shared_token=main_bot_token == settings.token)
 
     if DB_ENABLED:
         db = Database()
@@ -117,6 +126,10 @@ async def lifespan(app: FastAPI):
         if db is not None:
             await db.close()
             db = None
+        if broadcast_bot is not None:
+            if broadcast_bot.token != settings.token:
+                await broadcast_bot.shutdown()
+            broadcast_bot = None
         admin_session_store.disable_redis()
 
 

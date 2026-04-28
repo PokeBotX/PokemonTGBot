@@ -1086,6 +1086,81 @@ class Database:
         )
         return int(created_id)
 
+    async def admin_update_pokemon_species_field(
+        self,
+        *,
+        pokemon_id: int,
+        field_key: str,
+        new_value: object,
+    ) -> PokemonSearchEntry:
+        """Update one supported field on an existing pokemon species and return the refreshed row."""
+        field_map = {
+            "name": "name",
+            "pokemon_type": "type",
+            "rarity": "rarity",
+            "base_hp": "base_hp",
+            "base_attack": "base_attack",
+            "base_defense": "base_defense",
+            "base_stamina": "base_stamina",
+        }
+        column_name = field_map.get(field_key)
+        if column_name is None:
+            raise ShopError("Это поле нельзя редактировать через админ-бота.")
+
+        if field_key == "name":
+            prepared_value = str(new_value).strip()
+            if not prepared_value:
+                raise ShopError("Имя покемона не может быть пустым.")
+        elif field_key == "pokemon_type":
+            normalized_type = str(new_value).strip() if isinstance(new_value, str) else None
+            prepared_value = normalized_type or None
+        elif field_key == "rarity":
+            prepared_value = str(new_value).strip()
+            if prepared_value not in {"Common", "Rare", "Epic", "Legendary"}:
+                raise ShopError("Редкость должна быть одной из: Common, Rare, Epic, Legendary.")
+        else:
+            prepared_value = int(new_value)
+            if prepared_value < 0:
+                raise ShopError(f"{field_key} не может быть отрицательным.")
+
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                exists = await conn.fetchval(
+                    "SELECT 1 FROM pokemon_catalog WHERE id = $1",
+                    pokemon_id,
+                )
+                if not exists:
+                    raise ShopError("Покемон с таким id не найден.")
+                if field_key == "name":
+                    existing_name = await conn.fetchval(
+                        """
+                        SELECT 1
+                        FROM pokemon_catalog
+                        WHERE lower(name) = lower($1)
+                          AND id <> $2
+                        """,
+                        prepared_value,
+                        pokemon_id,
+                    )
+                    if existing_name:
+                        raise ShopError("Покемон с таким именем уже существует.")
+                try:
+                    await conn.execute(
+                        f"UPDATE pokemon_catalog SET {column_name} = $2 WHERE id = $1",
+                        pokemon_id,
+                        prepared_value,
+                    )
+                except asyncpg.UniqueViolationError as exc:
+                    raise ShopError("Не удалось сохранить поле из-за ограничения уникальности.") from exc
+
+        logger.info(
+            "admin_pokemon_species_updated",
+            pokemon_id=pokemon_id,
+            field_key=field_key,
+        )
+        return await self.get_pokemon_catalog_entry_by_id(pokemon_id)
+
     async def admin_attach_image_variant(
         self,
         *,
@@ -1467,6 +1542,20 @@ class Database:
             )
             for row in rows
         ]
+
+    async def get_admin_broadcast_target_chat_ids(self) -> list[int]:
+        """Return known group/supergroup chat ids eligible for admin broadcasts."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT chat_id
+                FROM chat_encounter_state
+                WHERE chat_id < 0
+                ORDER BY chat_id
+                """
+            )
+        return [int(row["chat_id"]) for row in rows]
 
     async def get_profile_referral(self, telegram_id: int, username: Optional[str], bot_username: Optional[str]) -> ProfileReferral:
         """Build the user's referral code and link."""

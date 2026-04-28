@@ -18,6 +18,7 @@ from bot.admin.handlers import (
     _confirm_pending_action,
     _execute_create_pokemon,
     _normalize_create_pokemon_field,
+    _execute_update_pokemon_species,
     _cancel_pending_action,
     handle_admin_text_input,
     register_admin_routes,
@@ -236,6 +237,32 @@ async def test_execute_create_pokemon_surfaces_duplicate_id_error() -> None:
 
     with pytest.raises(ShopError, match="уже существует"):
         await _execute_create_pokemon(Mock(spec=Update), context, pending_action)
+
+
+@pytest.mark.asyncio
+async def test_execute_update_pokemon_species_surfaces_validation_error() -> None:
+    pending_action = AdminPendingAction(
+        action_type="catalog.update_pokemon_species",
+        title="Изменить вид покемона",
+        description="Будет изменена редкость.",
+        input_payload={
+            "pokemon_id": 25,
+            "field_key": "rarity",
+            "field_label": "Редкость",
+            "old_value": "Rare",
+            "new_value": "Mythic",
+        },
+    )
+
+    db = AsyncMock()
+    db.admin_update_pokemon_species_field = AsyncMock(side_effect=ShopError("Редкость должна быть одной из: Common, Rare, Epic, Legendary."))
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+
+    with pytest.raises(ShopError, match="Редкость должна быть одной из"):
+        await _execute_update_pokemon_species(Mock(spec=Update), context, pending_action)
 
 
 @pytest.mark.asyncio
