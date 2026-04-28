@@ -295,6 +295,7 @@ async def _build_mini_app_profile_payload(telegram_id: int, username: str | None
         or profile_summary.tg_username
         or "Тренер Pokémon"
     )
+    cover_image_url = await _resolve_image_url(image_credit_id=profile_summary.profile_pic_credit_id)
 
     return {
         "id": profile_summary.user_id,
@@ -308,6 +309,7 @@ async def _build_mini_app_profile_payload(telegram_id: int, username: str | None
         "totalCatalog": profile_summary.total_catalog,
         "accountAgeLabel": _humanize_account_age(profile_summary.created_at),
         "coverPokemonName": profile_summary.cover_pokemon_name,
+        "coverPokemonImageUrl": cover_image_url,
         "rarityProgress": [
             {
                 "rarity": progress.rarity,

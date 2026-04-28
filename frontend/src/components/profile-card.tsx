@@ -49,26 +49,44 @@ export function ProfileCard() {
   return (
     <Card className="rounded-2xl border border-slate-700 bg-slate-900 py-4 text-slate-100 shadow-[0_2px_12px_rgba(0,0,0,0.35)]">
       <CardContent className="space-y-4 px-4">
-        {photoUrl ? (
+        {data.coverPokemonImageUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={data.coverPokemonImageUrl}
+            alt={data.coverPokemonName ?? data.name}
+            className="mx-auto h-24 w-24 rounded-full object-cover ring-2 ring-slate-700"
+            loading="lazy"
+          />
+        ) : photoUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
             src={photoUrl}
             alt={data.name}
-            className="mx-auto h-20 w-20 rounded-full object-cover ring-2 ring-slate-700"
+            className="mx-auto h-24 w-24 rounded-full object-cover ring-2 ring-slate-700"
             loading="lazy"
             referrerPolicy="no-referrer"
           />
         ) : (
-          <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full bg-slate-700 text-2xl font-semibold text-slate-200">
+          <div className="mx-auto flex h-24 w-24 items-center justify-center rounded-full bg-slate-700 text-3xl font-semibold text-slate-200">
             {data.name.slice(0, 1).toUpperCase()}
           </div>
         )}
 
         <div className="text-center">
           <p className="text-lg font-semibold">{data.name}</p>
-          <p className="text-sm text-slate-400">
-            {data.username ? `@${data.username}` : "Без username"}
-          </p>
+          <div className="mt-1 flex items-center justify-center gap-2 text-sm text-slate-400">
+            {photoUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={photoUrl}
+                alt={data.username ? `@${data.username}` : data.name}
+                className="h-5 w-5 rounded-full object-cover ring-1 ring-slate-700"
+                loading="lazy"
+                referrerPolicy="no-referrer"
+              />
+            ) : null}
+            <p>{data.username ? `@${data.username}` : "Без username"}</p>
+          </div>
         </div>
 
         <div className="flex flex-wrap justify-center gap-2">

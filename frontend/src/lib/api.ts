@@ -16,6 +16,7 @@ type MiniAppProfile = {
   totalCatalog: number;
   accountAgeLabel: string;
   coverPokemonName: string | null;
+  coverPokemonImageUrl: string | null;
   rarityProgress: Array<{
     rarity: string;
     ownedUnique: number;
@@ -221,6 +222,7 @@ function getMockProfile(): MiniAppProfile {
     totalCatalog: 1025,
     accountAgeLabel: "1 месяц",
     coverPokemonName: "Pikachu",
+    coverPokemonImageUrl: null,
     rarityProgress: [
       { rarity: "Legendary", ownedUnique: 1, totalCatalog: 65, percent: 2 },
       { rarity: "Epic", ownedUnique: 0, totalCatalog: 154, percent: 0 },
