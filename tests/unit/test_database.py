@@ -248,3 +248,49 @@ async def test_cycle_pokemon_image_selection_persists_next_variant() -> None:
     assert selection.image_credit_id == 77
     assert selection.position == 2
     assert "INSERT INTO user_pokemon_image_preferences" in conn.execute.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_ensure_catalog_image_variant_materialized_inserts_legacy_default_when_missing() -> None:
+    db = Database()
+    conn = AsyncMock()
+    conn.fetchrow = AsyncMock(return_value={"image_credit_id": 55})
+    conn.fetchval = AsyncMock(return_value=None)
+    conn.fetch = AsyncMock(return_value=[])
+    conn.execute = AsyncMock()
+
+    await db._ensure_catalog_image_variant_materialized(conn, pokemon_id=25)
+
+    insert_query, pokemon_id, image_credit_id, display_order, is_default = conn.execute.call_args.args
+    assert "INSERT INTO pokemon_image_variants" in insert_query
+    assert pokemon_id == 25
+    assert image_credit_id == 55
+    assert display_order == 1
+    assert is_default is True
+
+
+@pytest.mark.asyncio
+async def test_ensure_catalog_image_variant_materialized_uses_next_order_when_variants_exist() -> None:
+    db = Database()
+    conn = AsyncMock()
+    conn.fetchrow = AsyncMock(return_value={"image_credit_id": 55})
+    conn.fetchval = AsyncMock(return_value=None)
+    conn.fetch = AsyncMock(
+        return_value=[
+            {
+                "image_credit_id": 77,
+                "display_order": 1,
+                "is_default": False,
+            }
+        ]
+    )
+    conn.execute = AsyncMock()
+
+    await db._ensure_catalog_image_variant_materialized(conn, pokemon_id=25)
+
+    insert_query, pokemon_id, image_credit_id, display_order, is_default = conn.execute.call_args.args
+    assert "INSERT INTO pokemon_image_variants" in insert_query
+    assert pokemon_id == 25
+    assert image_credit_id == 55
+    assert display_order == 2
+    assert is_default is True

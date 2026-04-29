@@ -934,7 +934,7 @@ async def _handle_image_switch(update: Update, context: ContextTypes.DEFAULT_TYP
             await query.answer("Карточка больше недоступна.", show_alert=False)
             return
         await _edit_collection_card_message(query, context, session, entry, db)
-        await query.answer("Арт переключён.", show_alert=False)
+        await query.answer()
         return
 
     if card_kind == CARD_KIND_SEARCH:
@@ -943,7 +943,7 @@ async def _handle_image_switch(update: Update, context: ContextTypes.DEFAULT_TYP
             await query.answer("Карточка больше недоступна.", show_alert=False)
             return
         await _edit_search_card_message(query, context, session, search_card)
-        await query.answer("Арт переключён.", show_alert=False)
+        await query.answer()
         return
 
     await query.answer("Карточка больше недоступна.", show_alert=False)

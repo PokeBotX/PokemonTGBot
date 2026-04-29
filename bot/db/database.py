@@ -1189,6 +1189,8 @@ class Database:
                 if pokemon_row is None:
                     raise ShopError("Покемон с таким id не найден.")
 
+                await self._ensure_catalog_image_variant_materialized(conn, pokemon_id=pokemon_id)
+
                 existing_order = await conn.fetchval(
                     """
                     SELECT 1
@@ -1322,6 +1324,8 @@ class Database:
         self._ensure_pool()
         async with self.pool.acquire() as conn:
             async with conn.transaction():
+                await self._ensure_catalog_image_variant_materialized(conn, pokemon_id=pokemon_id)
+
                 variant_row = await conn.fetchrow(
                     """
                     SELECT pokemon_id, image_credit_id
@@ -1931,6 +1935,73 @@ class Database:
             return None
         return normalized
 
+    async def _ensure_catalog_image_variant_materialized(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        pokemon_id: int,
+    ) -> None:
+        """Backfill legacy pokemon_catalog.image_credit_id into pokemon_image_variants when needed."""
+        catalog_row = await conn.fetchrow(
+            """
+            SELECT image_credit_id
+            FROM pokemon_catalog
+            WHERE id = $1
+            """,
+            pokemon_id,
+        )
+        if catalog_row is None or catalog_row["image_credit_id"] is None:
+            return
+
+        image_credit_id = int(catalog_row["image_credit_id"])
+        existing_variant = await conn.fetchval(
+            """
+            SELECT 1
+            FROM pokemon_image_variants
+            WHERE pokemon_id = $1
+              AND image_credit_id = $2
+            """,
+            pokemon_id,
+            image_credit_id,
+        )
+        if existing_variant:
+            return
+
+        existing_rows = await conn.fetch(
+            """
+            SELECT image_credit_id, display_order, is_default
+            FROM pokemon_image_variants
+            WHERE pokemon_id = $1
+            ORDER BY display_order ASC, image_credit_id ASC
+            """,
+            pokemon_id,
+        )
+        existing_default = next((row for row in existing_rows if bool(row["is_default"])), None)
+        next_display_order = 1 if not existing_rows else max(int(row["display_order"]) for row in existing_rows) + 1
+
+        await conn.execute(
+            """
+            INSERT INTO pokemon_image_variants (
+                pokemon_id,
+                image_credit_id,
+                display_order,
+                is_default
+            )
+            VALUES ($1, $2, $3, $4)
+            """,
+            pokemon_id,
+            image_credit_id,
+            next_display_order,
+            existing_default is None,
+        )
+        logger.info(
+            "pokemon_image_variant_materialized",
+            pokemon_id=pokemon_id,
+            image_credit_id=image_credit_id,
+            display_order=next_display_order,
+            is_default=existing_default is None,
+        )
+
     async def _list_pokemon_image_variants(
         self,
         conn: asyncpg.Connection,
@@ -1939,12 +2010,10 @@ class Database:
     ) -> list[asyncpg.Record]:
         return await conn.fetch(
             """
-            WITH has_variant_rows AS (
-              SELECT EXISTS(
-                SELECT 1
-                FROM pokemon_image_variants
-                WHERE pokemon_id = $1
-              ) AS value
+            WITH catalog_image AS (
+              SELECT image_credit_id
+              FROM pokemon_catalog
+              WHERE id = $1
             )
             SELECT
               variants.image_credit_id,
@@ -1962,13 +2031,17 @@ class Database:
               UNION ALL
 
               SELECT
-                pc.image_credit_id,
+                ci.image_credit_id,
                 1 AS display_order,
                 TRUE AS is_default
-              FROM pokemon_catalog pc
-              WHERE pc.id = $1
-                AND pc.image_credit_id IS NOT NULL
-                AND NOT (SELECT value FROM has_variant_rows)
+              FROM catalog_image ci
+              WHERE ci.image_credit_id IS NOT NULL
+                AND NOT EXISTS(
+                  SELECT 1
+                  FROM pokemon_image_variants piv
+                  WHERE piv.pokemon_id = $1
+                    AND piv.image_credit_id = ci.image_credit_id
+                )
             ) AS variants
             LEFT JOIN image_credits ic ON ic.id = variants.image_credit_id
             ORDER BY variants.display_order ASC, variants.image_credit_id ASC
