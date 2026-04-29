@@ -22,6 +22,8 @@ from bot.ui.pokemon_cards import (
     build_image_switch_label,
     build_pokemon_card_keyboard,
     build_search_card_session_payload,
+    format_pokemon_display_id,
+    format_pokemon_display_name,
     normalize_image_selection,
     PokemonCardData,
     send_pokemon_card,
@@ -90,7 +92,7 @@ async def show_profile_screen(
             parse_mode="HTML",
             message_thread_id=msg_context.message_thread_id,
         )
-        session_id = session_store.create_session(
+        session_id = await session_store.create_session_async(
             chat_id=msg_context.chat_id,
             message_id=sent_message.message_id,
             user_id=msg_context.user_id,
@@ -119,7 +121,7 @@ async def show_profile_screen(
         text=_render_profile_text(summary, user_label),
         summary=summary,
     )
-    session_id = session_store.create_session(
+    session_id = await session_store.create_session_async(
         chat_id=msg_context.chat_id,
         message_id=sent_message.message_id,
         user_id=msg_context.user_id,
@@ -137,7 +139,7 @@ async def handle_profile_text_input(update: Update, context: ContextTypes.DEFAUL
     if not update.effective_chat or not update.effective_user or not update.effective_message:
         return
 
-    pending = session_store.get_pending_input(
+    pending = await session_store.get_pending_input_async(
         chat_id=update.effective_chat.id,
         user_id=update.effective_user.id,
     )
@@ -146,7 +148,7 @@ async def handle_profile_text_input(update: Update, context: ContextTypes.DEFAUL
 
     db = _get_db(context)
     if not db:
-        session_store.clear_pending_input(chat_id=update.effective_chat.id, user_id=update.effective_user.id)
+        await session_store.clear_pending_input_async(chat_id=update.effective_chat.id, user_id=update.effective_user.id)
         return
 
     if pending.action == PROFILE_PENDING_ACTION_COVER:
@@ -168,14 +170,14 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, se
                 query,
                 session,
                 "👤 <b>Профиль временно недоступен</b>\n\nБаза данных не подключена.",
-                build_back_button(_create_session(session)),
+                build_back_button(await _create_session(session)),
             )
             return
 
         username = update.effective_user.username if update.effective_user else None
 
         if section == "profile":
-            session_store.clear_pending_input(chat_id=session.chat_id, user_id=session.user_id)
+            await session_store.clear_pending_input_async(chat_id=session.chat_id, user_id=session.user_id)
             summary = await db.get_profile_summary(session.user_id, username)
             user_label = _display_self_profile_owner(update, summary)
             logger.info("profile_render_start", section=section, user_id=session.user_id, chat_id=session.chat_id, source="callback")
@@ -184,38 +186,38 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, se
                     query,
                     session,
                     _render_profile_text(summary, user_label),
-                    _build_profile_keyboard(_create_session(session)),
+                    _build_profile_keyboard(await _create_session(session)),
                 )
             else:
                 await show_profile_screen(update, context, summary=summary, user_label=user_label, allow_manage=True)
             return
 
         if section == "prs":
-            session_store.clear_pending_input(chat_id=session.chat_id, user_id=session.user_id)
+            await session_store.clear_pending_input_async(chat_id=session.chat_id, user_id=session.user_id)
             summary = await db.get_profile_summary(session.user_id, username)
             user_label = _display_self_profile_owner(update, summary)
             await _edit_profile_message(
                 query,
                 session,
                 _render_settings_text(summary, user_label),
-                _build_settings_keyboard(_create_session(session)),
+                _build_settings_keyboard(await _create_session(session)),
             )
             return
 
         if section == "prl":
-            session_store.clear_pending_input(chat_id=session.chat_id, user_id=session.user_id)
+            await session_store.clear_pending_input_async(chat_id=session.chat_id, user_id=session.user_id)
             summary = await db.get_profile_summary(session.user_id, username)
             user_label = _display_self_profile_owner(update, summary)
             await _edit_profile_message(
                 query,
                 session,
                 _render_language_text(summary, user_label),
-                _build_language_keyboard(_create_session(session), summary.language),
+                _build_language_keyboard(await _create_session(session), summary.language),
             )
             return
 
         if section in {"prlr", "prle"}:
-            session_store.clear_pending_input(chat_id=session.chat_id, user_id=session.user_id)
+            await session_store.clear_pending_input_async(chat_id=session.chat_id, user_id=session.user_id)
             language = "ru" if section == "prlr" else "en"
             saved_language = await db.update_profile_language(session.user_id, username, language)
             summary = await db.get_profile_summary(session.user_id, username)
@@ -228,12 +230,12 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, se
                     user_label,
                     status_text=f"🌐 Язык сохранён: <b>{_language_label(saved_language)}</b>\n\nПока это меняется только в базе данных.",
                 ),
-                _build_settings_keyboard(_create_session(session)),
+                _build_settings_keyboard(await _create_session(session)),
             )
             return
 
         if section == "prr":
-            session_store.clear_pending_input(chat_id=session.chat_id, user_id=session.user_id)
+            await session_store.clear_pending_input_async(chat_id=session.chat_id, user_id=session.user_id)
             referral = await db.get_profile_referral(session.user_id, username, _extract_bot_username(update))
             summary = await db.get_profile_summary(session.user_id, username)
             user_label = _display_self_profile_owner(update, summary)
@@ -241,27 +243,27 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, se
                 query,
                 session,
                 _render_referral_text(user_label, referral),
-                _build_nested_profile_keyboard(_create_session(session), back_section="profile"),
+                _build_nested_profile_keyboard(await _create_session(session), back_section="profile"),
             )
             return
 
         if section == "prt":
-            session_store.clear_pending_input(chat_id=session.chat_id, user_id=session.user_id)
+            await session_store.clear_pending_input_async(chat_id=session.chat_id, user_id=session.user_id)
             await _edit_profile_message(
                 query,
                 session,
                 "🛡 <b>Боевая команда</b>\n\nЭтот раздел пока в разработке.",
-                _build_nested_profile_keyboard(_create_session(session), back_section="profile"),
+                _build_nested_profile_keyboard(await _create_session(session), back_section="profile"),
             )
             return
 
         if section == "prv":
-            session_store.clear_pending_input(chat_id=session.chat_id, user_id=session.user_id)
+            await session_store.clear_pending_input_async(chat_id=session.chat_id, user_id=session.user_id)
             await _edit_profile_message(
                 query,
                 session,
                 "⭐ <b>VIP</b>\n\nЭтот раздел пока в разработке.",
-                _build_nested_profile_keyboard(_create_session(session), back_section="profile"),
+                _build_nested_profile_keyboard(await _create_session(session), back_section="profile"),
             )
             return
 
@@ -281,14 +283,14 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, se
                         "Подставьте туда ваш новый ник."
                     ),
                 ),
-                _build_nickname_prompt_keyboard(_create_session(session)),
+                _build_nickname_prompt_keyboard(await _create_session(session)),
             )
             return
 
         if section == "prc":
             summary = await db.get_profile_summary(session.user_id, username)
             user_label = _display_self_profile_owner(update, summary)
-            session_store.set_pending_input(
+            await session_store.set_pending_input_async(
                 action=PROFILE_PENDING_ACTION_COVER,
                 chat_id=session.chat_id,
                 user_id=session.user_id,
@@ -307,13 +309,13 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, se
                         "Я поищу только среди ваших покемонов с доступной картинкой."
                     ),
                 ),
-                _build_cover_prompt_keyboard(_create_session(session)),
+                _build_cover_prompt_keyboard(await _create_session(session)),
             )
             logger.info("profile_cover_prompt_opened", user_id=session.user_id, chat_id=session.chat_id)
             return
 
         if section.startswith("prcd"):
-            session_store.clear_pending_input(chat_id=session.chat_id, user_id=session.user_id)
+            await session_store.clear_pending_input_async(chat_id=session.chat_id, user_id=session.user_id)
             index = int(section.removeprefix("prcd")) - 1
             candidate_payloads = session.data.get("cover_candidates")
             if not candidate_payloads or not isinstance(candidate_payloads, list) or index >= len(candidate_payloads):
@@ -341,7 +343,7 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, se
                     user_label,
                     status_text=f"🖼 Обложка сохранена: <b>{candidate.name}</b>",
                 ),
-                _build_settings_keyboard(_create_session(session)),
+                _build_settings_keyboard(await _create_session(session)),
             )
             return
 
@@ -360,7 +362,7 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, se
             query,
             session,
             _render_profile_text(summary, user_label, "⚠️ Неизвестное действие профиля."),
-            _build_profile_keyboard(_create_session(session)),
+            _build_profile_keyboard(await _create_session(session)),
         )
 
     except ShopError as exc:
@@ -407,7 +409,8 @@ def _render_profile_text(summary: ProfileSummary, user_label: str, status_text: 
         f"👤 <b>{escape_html(user_label)}</b>, ваш профиль:",
         f"🆔 <code>{summary.telegram_id}</code>",
         "",
-        f"📦 У вас <b>{summary.total_unique_owned}</b> уникальных покемонов из <b>{summary.total_catalog}</b> ({summary.total_unique_percent}%)",
+        f"📦 Базовый покедекс: <b>{summary.total_unique_owned}</b> из <b>{summary.total_catalog}</b> ({summary.total_unique_percent}%)",
+        f"🧬 Все формы: <b>{summary.total_form_owned}</b> из <b>{summary.total_form_catalog}</b> ({summary.total_form_percent}%)",
         *rarity_lines,
         "",
         f"⏳ Возраст аккаунта: <b>{_humanize_account_age(summary.created_at)}</b>",
@@ -472,10 +475,15 @@ def _render_search_results_text(user_label: str, results: list[PokemonSearchEntr
     ]
     for index, entry in enumerate(results, start=1):
         lines.append(
-            f"{index}. <b>{escape_html(entry.name)}</b> | {escape_html(entry.rarity)} | id: <code>{entry.pokemon_id}</code>"
+            f"{index}. <b>{escape_html(format_pokemon_display_name(entry.name, entry.form_badge))}</b> | {escape_html(entry.rarity)} | id: <code>{escape_html(format_pokemon_display_id(entry.pokemon_id, entry.dex_form_code))}</code>"
         )
     lines.extend(["", "Выберите покемона из списка:"])
     return "\n".join(lines)
+
+
+def _format_search_lookup_button_label(entry: PokemonSearchEntry) -> str:
+    shiny_marker = " ▫️" if entry.form_badge == "Shiny" else ""
+    return f"🔎 {format_pokemon_display_id(entry.pokemon_id, entry.dex_form_code)}{shiny_marker}"
 
 
 def _build_profile_keyboard(session_id: str) -> InlineKeyboardMarkup:
@@ -559,7 +567,7 @@ def _build_search_results_keyboard(session_id: str, results: list[PokemonSearchE
         rows.append(
             [
                 InlineKeyboardButton(
-                    f"🔎 {entry.pokemon_id}",
+                    _format_search_lookup_button_label(entry),
                     callback_data=f"menu:psc{index}:{session_id}",
                 )
             ]
@@ -598,12 +606,14 @@ async def _send_pokemon_search_card(
             pokemon_id=entry.pokemon_id,
             name=entry.name,
             rarity=entry.rarity,
+            form_badge=entry.form_badge,
             pokemon_type=entry.pokemon_type,
             base_hp=entry.base_hp,
             base_attack=entry.base_attack,
             base_defense=entry.base_defense,
             base_stamina=entry.base_stamina,
             trainer_label=user_label,
+            dex_form_code=entry.dex_form_code,
             image_credit_id=image_selection.image_credit_id or entry.image_credit_id,
             image_variant_position=image_selection.position,
             image_variant_total=image_selection.total,
@@ -611,7 +621,7 @@ async def _send_pokemon_search_card(
         image_path=FALLBACK_IMAGE_PATH,
     )
 
-    detail_session_id = session_store.create_session(
+    detail_session_id = await session_store.create_session_async(
         chat_id=session.chat_id,
         message_id=message.message_id,
         user_id=session.user_id,
@@ -623,8 +633,10 @@ async def _send_pokemon_search_card(
         )
         | build_search_card_session_payload(
             pokemon_id=entry.pokemon_id,
+            dex_form_code=entry.dex_form_code,
             name=entry.name,
             rarity=entry.rarity,
+            form_badge=entry.form_badge,
             pokemon_type=entry.pokemon_type,
             base_hp=entry.base_hp,
             base_attack=entry.base_attack,
@@ -766,7 +778,7 @@ async def _handle_profile_cover_search_input(
             pokemon_id=candidate.pokemon_id,
             image_credit_id=candidate.image_credit_id,
         )
-        session_store.clear_pending_input(chat_id=update.effective_chat.id, user_id=update.effective_user.id)
+        await session_store.clear_pending_input_async(chat_id=update.effective_chat.id, user_id=update.effective_user.id)
         summary = await db.get_profile_summary(update.effective_user.id, update.effective_user.username)
         if pending.source_message_id is not None:
             await _edit_profile_message_by_ids(
@@ -778,7 +790,7 @@ async def _handle_profile_cover_search_input(
                     status_text=f"🖼 Обложка сохранена: <b>{candidate.name}</b>",
                 ),
                 _build_settings_keyboard(
-                    session_store.create_session(
+                    await session_store.create_session_async(
                         chat_id=pending.chat_id,
                         message_id=pending.source_message_id,
                         user_id=pending.user_id,
@@ -793,10 +805,10 @@ async def _handle_profile_cover_search_input(
         )
         return
 
-    session_store.clear_pending_input(chat_id=update.effective_chat.id, user_id=update.effective_user.id)
+        await session_store.clear_pending_input_async(chat_id=update.effective_chat.id, user_id=update.effective_user.id)
     if pending.source_message_id is None:
         return
-    result_session_id = session_store.create_session(
+    result_session_id = await session_store.create_session_async(
         chat_id=pending.chat_id,
         message_id=pending.source_message_id,
         user_id=pending.user_id,
@@ -835,8 +847,8 @@ async def handle_pokemon_search_command(update: Update, context: ContextTypes.DE
 
     numeric_query = query_text.strip()
     if numeric_query.isdigit():
-        entry = await db.get_pokemon_catalog_entry(int(numeric_query))
-        if entry is not None:
+        numeric_results = await db.get_pokemon_catalog_entries_by_display_id(numeric_query)
+        if len(numeric_results) == 1:
             await _send_pokemon_search_card(
                 context,
                 MenuSession(
@@ -846,8 +858,23 @@ async def handle_pokemon_search_command(update: Update, context: ContextTypes.DE
                     user_id=update.effective_user.id,
                     message_thread_id=getattr(update.effective_message, "message_thread_id", None),
                 ),
-                entry,
+                numeric_results[0],
             )
+            return
+        if len(numeric_results) > 1:
+            sent_message = await update.effective_chat.send_message(
+                text=_render_search_results_text(_display_user(update), numeric_results),
+                parse_mode="HTML",
+                message_thread_id=getattr(update.effective_message, "message_thread_id", None),
+            )
+            session_id = await session_store.create_session_async(
+                chat_id=update.effective_chat.id,
+                message_id=sent_message.message_id,
+                user_id=update.effective_user.id,
+                message_thread_id=getattr(update.effective_message, "message_thread_id", None),
+                data={"search_results": [entry.as_session_payload() for entry in numeric_results]},
+            )
+            await sent_message.edit_reply_markup(reply_markup=_build_search_results_keyboard(session_id, numeric_results))
             return
 
     results = await db.search_pokemon_catalog(query_text, limit=PROFILE_SEARCH_RESULT_LIMIT)
@@ -877,7 +904,7 @@ async def handle_pokemon_search_command(update: Update, context: ContextTypes.DE
         parse_mode="HTML",
         message_thread_id=getattr(update.effective_message, "message_thread_id", None),
     )
-    session_id = session_store.create_session(
+    session_id = await session_store.create_session_async(
         chat_id=update.effective_chat.id,
         message_id=sent_message.message_id,
         user_id=update.effective_user.id,
@@ -887,8 +914,8 @@ async def handle_pokemon_search_command(update: Update, context: ContextTypes.DE
     await sent_message.edit_reply_markup(reply_markup=_build_search_results_keyboard(session_id, results))
 
 
-def _create_session(session: MenuSession) -> str:
-    return session_store.create_session(
+async def _create_session(session: MenuSession) -> str:
+    return await session_store.create_session_async(
         chat_id=session.chat_id,
         message_id=session.message_id,
         user_id=session.user_id,

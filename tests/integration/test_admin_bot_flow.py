@@ -8,6 +8,12 @@ from telegram.ext import ContextTypes
 
 from bot.admin.config import AdminBotSettings
 from bot.admin.handlers import (
+    ADMIN_CREATE_FORM_KIND_CONFIRM_SECTION,
+    ADMIN_CREATE_RARITY_CONFIRM_SECTION,
+    ADMIN_CREATE_TYPE_CONFIRM_SECTION,
+    ADMIN_FORM_KIND_SELECT_SECTIONS,
+    ADMIN_RARITY_SELECT_SECTIONS,
+    ADMIN_TYPE_TOGGLE_SECTIONS,
     handle_admin_callback_query,
     handle_admin_media_input,
     handle_admin_text_input,
@@ -20,7 +26,7 @@ from bot.admin.handlers import (
 )
 from bot.admin.pending import AdminPendingAction
 from bot.admin.session import admin_session_store
-from bot.admin.ui import SECTION_AUDIT, SECTION_AUDIT_EXPORT, SECTION_BROADCAST, SECTION_CANCEL, SECTION_CONFIRM, SECTION_CREATE_POKEMON, SECTION_EDIT_POKEMON, SECTION_EDIT_POKEMON_RARITY, SECTION_GRANT_POKEDOLLAR, SECTION_GRANT_POKEMON, SECTION_GRANTS, SECTION_IMAGE_EDIT_SOURCE, SECTION_IMAGE_EDIT_VARIANT, SECTION_IMAGE_UPLOAD_VARIANT, SECTION_IMAGES, SECTION_POKEMON
+from bot.admin.ui import SECTION_AUDIT, SECTION_AUDIT_EXPORT, SECTION_BROADCAST, SECTION_CANCEL, SECTION_CONFIRM, SECTION_CREATE_POKEMON, SECTION_CREATE_POKEMON_FORM, SECTION_EDIT_POKEMON, SECTION_EDIT_POKEMON_RARITY, SECTION_GRANT_POKEDOLLAR, SECTION_GRANT_POKEMON, SECTION_GRANTS, SECTION_IMAGE_EDIT_SOURCE, SECTION_IMAGE_EDIT_VARIANT, SECTION_IMAGE_UPLOAD_VARIANT, SECTION_IMAGES, SECTION_POKEMON
 from bot.db.database import PokemonSearchEntry, UserLookupResult
 
 
@@ -729,7 +735,7 @@ async def test_admin_pokemon_grant_flow_from_buttons_to_confirm() -> None:
 
 
 @pytest.mark.asyncio
-async def test_admin_create_pokemon_flow_from_buttons_to_confirm() -> None:
+async def test_admin_create_pokemon_flow_from_buttons_to_execute() -> None:
     set_admin_settings_for_tests(_allowed_settings())
     register_admin_routes()
 
@@ -781,7 +787,7 @@ async def test_admin_create_pokemon_flow_from_buttons_to_confirm() -> None:
 
     await handle_admin_callback_query(create_update, context)
 
-    for value in ["999", "Testmon", "-", "Epic", "80", "95", "70", "88"]:
+    for value in ["999", "Testmon"]:
         field_message = Mock(spec=Message)
         field_message.chat = chat
         field_message.chat_id = chat.id
@@ -796,33 +802,394 @@ async def test_admin_create_pokemon_flow_from_buttons_to_confirm() -> None:
 
         await handle_admin_text_input(field_update, context)
 
-    confirm_session_id = list(admin_session_store._sessions.keys())[-1]
-    confirm_callback = Mock(spec=CallbackQuery)
-    confirm_callback.id = "cb-confirm-create-pokemon"
-    confirm_callback.data = f"menu:{SECTION_CONFIRM}:{confirm_session_id}"
-    confirm_callback.message = sent_message
-    confirm_callback.answer = AsyncMock()
+    type_session_id = list(admin_session_store._sessions.keys())[-1]
+    type_callback = Mock(spec=CallbackQuery)
+    type_callback.id = "cb-create-type-water"
+    type_callback.data = f"menu:{ADMIN_TYPE_TOGGLE_SECTIONS['Water']}:{type_session_id}"
+    type_callback.message = sent_message
+    type_callback.answer = AsyncMock()
 
-    confirm_update = Mock(spec=Update)
-    confirm_update.effective_user = user
-    confirm_update.effective_chat = chat
-    confirm_update.callback_query = confirm_callback
-    confirm_update.effective_message = sent_message
+    type_update = Mock(spec=Update)
+    type_update.effective_user = user
+    type_update.effective_chat = chat
+    type_update.callback_query = type_callback
+    type_update.effective_message = sent_message
 
-    await handle_admin_callback_query(confirm_update, context)
+    await handle_admin_callback_query(type_update, context)
+
+    type_confirm_callback = Mock(spec=CallbackQuery)
+    type_confirm_callback.id = "cb-create-type-confirm"
+    type_confirm_callback.data = f"menu:{ADMIN_CREATE_TYPE_CONFIRM_SECTION}:{type_session_id}"
+    type_confirm_callback.message = sent_message
+    type_confirm_callback.answer = AsyncMock()
+
+    type_confirm_update = Mock(spec=Update)
+    type_confirm_update.effective_user = user
+    type_confirm_update.effective_chat = chat
+    type_confirm_update.callback_query = type_confirm_callback
+    type_confirm_update.effective_message = sent_message
+
+    await handle_admin_callback_query(type_confirm_update, context)
+
+    rarity_session_id = list(admin_session_store._sessions.keys())[-1]
+    rarity_callback = Mock(spec=CallbackQuery)
+    rarity_callback.id = "cb-create-rarity-epic"
+    rarity_callback.data = f"menu:{ADMIN_RARITY_SELECT_SECTIONS['Epic']}:{rarity_session_id}"
+    rarity_callback.message = sent_message
+    rarity_callback.answer = AsyncMock()
+
+    rarity_update = Mock(spec=Update)
+    rarity_update.effective_user = user
+    rarity_update.effective_chat = chat
+    rarity_update.callback_query = rarity_callback
+    rarity_update.effective_message = sent_message
+
+    await handle_admin_callback_query(rarity_update, context)
+
+    rarity_confirm_callback = Mock(spec=CallbackQuery)
+    rarity_confirm_callback.id = "cb-create-rarity-confirm"
+    rarity_confirm_callback.data = f"menu:{ADMIN_CREATE_RARITY_CONFIRM_SECTION}:{rarity_session_id}"
+    rarity_confirm_callback.message = sent_message
+    rarity_confirm_callback.answer = AsyncMock()
+
+    rarity_confirm_update = Mock(spec=Update)
+    rarity_confirm_update.effective_user = user
+    rarity_confirm_update.effective_chat = chat
+    rarity_confirm_update.callback_query = rarity_confirm_callback
+    rarity_confirm_update.effective_message = sent_message
+
+    await handle_admin_callback_query(rarity_confirm_update, context)
+
+    for value in ["80", "95", "70", "88"]:
+        field_message = Mock(spec=Message)
+        field_message.chat = chat
+        field_message.chat_id = chat.id
+        field_message.from_user = user
+        field_message.text = value
+        field_message.message_thread_id = None
+
+        field_update = Mock(spec=Update)
+        field_update.effective_user = user
+        field_update.effective_chat = chat
+        field_update.effective_message = field_message
+
+        await handle_admin_text_input(field_update, context)
 
     db.admin_create_pokemon_species.assert_awaited_once_with(
         pokemon_id=999,
         name="Testmon",
-        pokemon_type=None,
+        pokemon_type="Water",
         rarity="Epic",
         base_hp=80,
         base_attack=95,
         base_defense=70,
         base_stamina=88,
     )
-    edited_text = _extract_edited_text(sent_message.edit_text.call_args)
-    assert "Создан покемон" in edited_text
+    assert chat.send_message.await_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_admin_create_pokemon_form_flow_from_buttons_to_execute() -> None:
+    set_admin_settings_for_tests(_allowed_settings())
+    register_admin_routes()
+
+    update, user, chat, _ = _private_update()
+    sent_message = Mock(spec=Message)
+    sent_message.message_id = 101
+    sent_message.chat_id = chat.id
+    sent_message.message_thread_id = None
+    sent_message.edit_reply_markup = AsyncMock()
+    sent_message.edit_text = AsyncMock()
+    chat.send_message = AsyncMock(return_value=sent_message)
+
+    base_entry = PokemonSearchEntry(
+        pokemon_id=120,
+        name="Staryu",
+        pokemon_type="Water",
+        rarity="Rare",
+        base_hp=30,
+        base_attack=45,
+        base_defense=55,
+        base_stamina=85,
+        image_credit_id=77,
+        dex_form_code="120",
+        form_badge=None,
+    )
+
+    db = AsyncMock()
+    db.get_pokemon_catalog_entry_by_id = AsyncMock(return_value=base_entry)
+    db.get_next_catalog_pokemon_id = AsyncMock(return_value=10020)
+    db.admin_create_pokemon_form = AsyncMock(return_value=10020)
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+
+    await menu_admin_command(update, context)
+    root_session_id = next(iter(admin_session_store._sessions.keys()))
+
+    catalog_callback = Mock(spec=CallbackQuery)
+    catalog_callback.id = "cb-catalog-form"
+    catalog_callback.data = f"menu:{SECTION_POKEMON}:{root_session_id}"
+    catalog_callback.message = sent_message
+    catalog_callback.answer = AsyncMock()
+
+    catalog_update = Mock(spec=Update)
+    catalog_update.effective_user = user
+    catalog_update.effective_chat = chat
+    catalog_update.callback_query = catalog_callback
+    catalog_update.effective_message = sent_message
+
+    await handle_admin_callback_query(catalog_update, context)
+
+    catalog_session_id = list(admin_session_store._sessions.keys())[-1]
+    create_callback = Mock(spec=CallbackQuery)
+    create_callback.id = "cb-create-pokemon-form"
+    create_callback.data = f"menu:{SECTION_CREATE_POKEMON_FORM}:{catalog_session_id}"
+    create_callback.message = sent_message
+    create_callback.answer = AsyncMock()
+
+    create_update = Mock(spec=Update)
+    create_update.effective_user = user
+    create_update.effective_chat = chat
+    create_update.callback_query = create_callback
+    create_update.effective_message = sent_message
+
+    await handle_admin_callback_query(create_update, context)
+
+    base_message = Mock(spec=Message)
+    base_message.chat = chat
+    base_message.chat_id = chat.id
+    base_message.from_user = user
+    base_message.text = "120"
+    base_message.message_thread_id = None
+
+    base_update = Mock(spec=Update)
+    base_update.effective_user = user
+    base_update.effective_chat = chat
+    base_update.effective_message = base_message
+
+    await handle_admin_text_input(base_update, context)
+
+    form_session_id = list(admin_session_store._sessions.keys())[-1]
+    form_callback = Mock(spec=CallbackQuery)
+    form_callback.id = "cb-form-shiny"
+    form_callback.data = f"menu:{ADMIN_FORM_KIND_SELECT_SECTIONS['shiny']}:{form_session_id}"
+    form_callback.message = sent_message
+    form_callback.answer = AsyncMock()
+
+    form_update = Mock(spec=Update)
+    form_update.effective_user = user
+    form_update.effective_chat = chat
+    form_update.callback_query = form_callback
+    form_update.effective_message = sent_message
+
+    await handle_admin_callback_query(form_update, context)
+
+    form_confirm_callback = Mock(spec=CallbackQuery)
+    form_confirm_callback.id = "cb-form-shiny-confirm"
+    form_confirm_callback.data = f"menu:{ADMIN_CREATE_FORM_KIND_CONFIRM_SECTION}:{form_session_id}"
+    form_confirm_callback.message = sent_message
+    form_confirm_callback.answer = AsyncMock()
+
+    form_confirm_update = Mock(spec=Update)
+    form_confirm_update.effective_user = user
+    form_confirm_update.effective_chat = chat
+    form_confirm_update.callback_query = form_confirm_callback
+    form_confirm_update.effective_message = sent_message
+
+    await handle_admin_callback_query(form_confirm_update, context)
+
+    skip_image_message = Mock(spec=Message)
+    skip_image_message.chat = chat
+    skip_image_message.chat_id = chat.id
+    skip_image_message.from_user = user
+    skip_image_message.text = "-"
+    skip_image_message.message_thread_id = None
+
+    skip_image_update = Mock(spec=Update)
+    skip_image_update.effective_user = user
+    skip_image_update.effective_chat = chat
+    skip_image_update.effective_message = skip_image_message
+
+    await handle_admin_text_input(skip_image_update, context)
+
+    db.admin_create_pokemon_form.assert_awaited_once_with(
+        pokemon_id=10020,
+        base_pokemon_id=120,
+        form_kind="shiny",
+        pokemon_type="Water",
+        rarity="Rare",
+        base_hp=30,
+        base_attack=45,
+        base_defense=55,
+        base_stamina=85,
+    )
+    assert chat.send_message.await_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_admin_create_pokemon_form_flow_attaches_uploaded_image() -> None:
+    set_admin_settings_for_tests(_allowed_settings())
+    register_admin_routes()
+
+    update, user, chat, bot = _private_update()
+    sent_message = Mock(spec=Message)
+    sent_message.message_id = 101
+    sent_message.chat_id = chat.id
+    sent_message.message_thread_id = None
+    sent_message.edit_reply_markup = AsyncMock()
+    sent_message.edit_text = AsyncMock()
+    chat.send_message = AsyncMock(return_value=sent_message)
+
+    base_entry = PokemonSearchEntry(
+        pokemon_id=120,
+        name="Staryu",
+        pokemon_type="Water",
+        rarity="Rare",
+        base_hp=30,
+        base_attack=45,
+        base_defense=55,
+        base_stamina=85,
+        image_credit_id=77,
+        dex_form_code="120",
+        form_badge=None,
+    )
+
+    telegram_file = AsyncMock()
+    telegram_file.download_as_bytearray = AsyncMock(return_value=bytearray(b"image-bytes"))
+    bot.get_file = AsyncMock(return_value=telegram_file)
+
+    db = AsyncMock()
+    db.get_pokemon_catalog_entry_by_id = AsyncMock(return_value=base_entry)
+    db.get_next_catalog_pokemon_id = AsyncMock(return_value=10020)
+    db.admin_create_pokemon_form = AsyncMock(return_value=10020)
+    db.admin_attach_image_variant = AsyncMock(return_value=5555)
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+    context.bot = bot
+
+    await menu_admin_command(update, context)
+    root_session_id = next(iter(admin_session_store._sessions.keys()))
+
+    catalog_callback = Mock(spec=CallbackQuery)
+    catalog_callback.id = "cb-catalog-form-image"
+    catalog_callback.data = f"menu:{SECTION_POKEMON}:{root_session_id}"
+    catalog_callback.message = sent_message
+    catalog_callback.answer = AsyncMock()
+
+    catalog_update = Mock(spec=Update)
+    catalog_update.effective_user = user
+    catalog_update.effective_chat = chat
+    catalog_update.callback_query = catalog_callback
+    catalog_update.effective_message = sent_message
+
+    await handle_admin_callback_query(catalog_update, context)
+
+    catalog_session_id = list(admin_session_store._sessions.keys())[-1]
+    create_callback = Mock(spec=CallbackQuery)
+    create_callback.id = "cb-create-pokemon-form-image"
+    create_callback.data = f"menu:{SECTION_CREATE_POKEMON_FORM}:{catalog_session_id}"
+    create_callback.message = sent_message
+    create_callback.answer = AsyncMock()
+
+    create_update = Mock(spec=Update)
+    create_update.effective_user = user
+    create_update.effective_chat = chat
+    create_update.callback_query = create_callback
+    create_update.effective_message = sent_message
+
+    await handle_admin_callback_query(create_update, context)
+
+    base_message = Mock(spec=Message)
+    base_message.chat = chat
+    base_message.chat_id = chat.id
+    base_message.from_user = user
+    base_message.text = "120"
+    base_message.message_thread_id = None
+
+    base_update = Mock(spec=Update)
+    base_update.effective_user = user
+    base_update.effective_chat = chat
+    base_update.effective_message = base_message
+
+    await handle_admin_text_input(base_update, context)
+
+    form_session_id = list(admin_session_store._sessions.keys())[-1]
+    form_callback = Mock(spec=CallbackQuery)
+    form_callback.id = "cb-form-shiny-image"
+    form_callback.data = f"menu:{ADMIN_FORM_KIND_SELECT_SECTIONS['shiny']}:{form_session_id}"
+    form_callback.message = sent_message
+    form_callback.answer = AsyncMock()
+
+    form_update = Mock(spec=Update)
+    form_update.effective_user = user
+    form_update.effective_chat = chat
+    form_update.callback_query = form_callback
+    form_update.effective_message = sent_message
+
+    await handle_admin_callback_query(form_update, context)
+
+    form_confirm_callback = Mock(spec=CallbackQuery)
+    form_confirm_callback.id = "cb-form-shiny-image-confirm"
+    form_confirm_callback.data = f"menu:{ADMIN_CREATE_FORM_KIND_CONFIRM_SECTION}:{form_session_id}"
+    form_confirm_callback.message = sent_message
+    form_confirm_callback.answer = AsyncMock()
+
+    form_confirm_update = Mock(spec=Update)
+    form_confirm_update.effective_user = user
+    form_confirm_update.effective_chat = chat
+    form_confirm_update.callback_query = form_confirm_callback
+    form_confirm_update.effective_message = sent_message
+
+    await handle_admin_callback_query(form_confirm_update, context)
+
+    media_message = Mock(spec=Message)
+    media_message.chat = chat
+    media_message.chat_id = chat.id
+    media_message.from_user = user
+    media_message.message_thread_id = None
+    media_message.photo = [
+        PhotoSize(file_id="file-1", file_unique_id="uniq-1", width=100, height=100, file_size=1234)
+    ]
+    media_message.document = None
+
+    media_update = Mock(spec=Update)
+    media_update.effective_user = user
+    media_update.effective_chat = chat
+    media_update.effective_message = media_message
+
+    await handle_admin_media_input(media_update, context)
+
+    source_message = Mock(spec=Message)
+    source_message.chat = chat
+    source_message.chat_id = chat.id
+    source_message.from_user = user
+    source_message.text = "https://example.com/art/staryu"
+    source_message.message_thread_id = None
+
+    source_update = Mock(spec=Update)
+    source_update.effective_user = user
+    source_update.effective_chat = chat
+    source_update.effective_message = source_message
+
+    with patch("bot.admin.handlers.upload_admin_image_bytes", new=AsyncMock(return_value=("pokemon-assets", "pokemon/10020/staryu-uniq-1.jpg", "etag-1"))):
+        await handle_admin_text_input(source_update, context)
+
+    db.admin_create_pokemon_form.assert_awaited_once()
+    bot.get_file.assert_awaited_once_with("file-1")
+    db.admin_attach_image_variant.assert_awaited_once_with(
+        pokemon_id=10020,
+        storage_bucket="pokemon-assets",
+        object_key="pokemon/10020/staryu-uniq-1.jpg",
+        content_type="image/jpeg",
+        etag="etag-1",
+        source="https://example.com/art/staryu",
+        display_order=1,
+        is_default=True,
+    )
 
 
 @pytest.mark.asyncio
@@ -1235,7 +1602,7 @@ async def test_admin_currency_grant_flow_can_be_canceled_before_execution() -> N
 
 
 @pytest.mark.asyncio
-async def test_admin_create_pokemon_flow_can_be_canceled_before_execution() -> None:
+async def test_admin_create_pokemon_flow_does_not_execute_before_last_stat_step() -> None:
     set_admin_settings_for_tests(_allowed_settings())
     register_admin_routes()
 
@@ -1287,7 +1654,7 @@ async def test_admin_create_pokemon_flow_can_be_canceled_before_execution() -> N
 
     await handle_admin_callback_query(create_update, context)
 
-    for value in ["999", "Testmon", "Water", "Rare", "10", "20", "30", "40"]:
+    for value in ["999", "Testmon"]:
         field_message = Mock(spec=Message)
         field_message.chat = chat
         field_message.chat_id = chat.id
@@ -1302,26 +1669,22 @@ async def test_admin_create_pokemon_flow_can_be_canceled_before_execution() -> N
 
         await handle_admin_text_input(field_update, context)
 
-    confirm_session_id = list(admin_session_store._sessions.keys())[-1]
-    cancel_callback = Mock(spec=CallbackQuery)
-    cancel_callback.id = "cb-create-confirm-cancel"
-    cancel_callback.data = f"menu:{SECTION_CANCEL}:{confirm_session_id}"
-    cancel_callback.message = sent_message
-    cancel_callback.answer = AsyncMock()
+    type_session_id = list(admin_session_store._sessions.keys())[-1]
+    type_callback = Mock(spec=CallbackQuery)
+    type_callback.id = "cb-create-cancel-water"
+    type_callback.data = f"menu:{ADMIN_TYPE_TOGGLE_SECTIONS['Water']}:{type_session_id}"
+    type_callback.message = sent_message
+    type_callback.answer = AsyncMock()
 
-    cancel_update = Mock(spec=Update)
-    cancel_update.effective_user = user
-    cancel_update.effective_chat = chat
-    cancel_update.callback_query = cancel_callback
-    cancel_update.effective_message = sent_message
+    type_update = Mock(spec=Update)
+    type_update.effective_user = user
+    type_update.effective_chat = chat
+    type_update.callback_query = type_callback
+    type_update.effective_message = sent_message
 
-    await handle_admin_callback_query(cancel_update, context)
+    await handle_admin_callback_query(type_update, context)
 
     db.admin_create_pokemon_species.assert_not_awaited()
-    edited_text = _extract_edited_text(sent_message.edit_text.call_args)
-    assert "Действие отменено" in edited_text
-    assert db.record_admin_action_audit.await_count == 2
-    assert db.record_admin_action_audit.await_args.kwargs["status"] == "canceled"
 
 
 @pytest.mark.asyncio

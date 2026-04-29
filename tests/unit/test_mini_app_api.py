@@ -18,10 +18,12 @@ class _FakeCollectionPage:
         self.entries = [
             SimpleNamespace(
                 pokemon_id=25,
+                dex_form_code="25-0",
                 sample_user_pokemon_id=1001,
                 name="Pikachu",
                 pokemon_type="Electric",
                 rarity="Rare",
+                form_badge="Shiny",
                 quantity=1,
                 base_hp=35,
                 base_attack=55,
@@ -87,6 +89,8 @@ async def test_build_mini_app_collection_payload_with_filters_shapes_response(mo
         "lockedOnly": False,
     }
     assert payload["entries"][0]["name"] == "Pikachu"
+    assert payload["entries"][0]["dexFormCode"] == "25-0"
+    assert payload["entries"][0]["formBadge"] == "Shiny"
     assert payload["entries"][0]["imageUrl"] == "https://app.pokemoncollection.ru/storage/pokemon-assets/pikachu/main.png"
 
 
@@ -103,7 +107,11 @@ async def test_build_mini_app_profile_payload_contains_profile_summary_fields(mo
                 total_unique_owned=164,
                 total_unique_percent=16,
                 total_catalog=1025,
+                total_form_owned=185,
+                total_form_catalog=1105,
+                total_form_percent=16,
                 created_at=datetime.now(UTC) - timedelta(days=40),
+                profile_pic_credit_id=None,
                 cover_pokemon_name="Cloyster",
                 rarity_progress=[
                     SimpleNamespace(rarity="Legendary", owned_unique=14, total_catalog=65, percent=21),
@@ -124,6 +132,12 @@ async def test_build_mini_app_profile_payload_contains_profile_summary_fields(mo
     assert payload["pokemonCount"] == 164
     assert payload["coins"] == 1250
     assert payload["totalCatalog"] == 1025
+    assert payload["baseDexCount"] == 164
+    assert payload["baseDexCatalog"] == 1025
+    assert payload["baseDexCompletionPercent"] == 16
+    assert payload["totalFormCount"] == 185
+    assert payload["totalFormCatalog"] == 1105
+    assert payload["totalFormCompletionPercent"] == 16
     assert payload["coverPokemonName"] == "Cloyster"
     assert payload["accountAgeLabel"]
     assert payload["rarityProgress"][0]["rarity"] == "Legendary"
@@ -148,7 +162,9 @@ async def test_build_mini_app_market_listing_detail_payload_uses_active_variant(
         get_pokemon_catalog_entry_by_id=AsyncMock(
             return_value=SimpleNamespace(
                 pokemon_id=91,
+                dex_form_code="91-2",
                 image_credit_id=12,
+                form_badge="Gigantamax",
                 base_hp=50,
                 base_attack=95,
                 base_defense=180,
@@ -182,8 +198,10 @@ async def test_build_mini_app_market_listing_detail_payload_uses_active_variant(
 
     assert payload["listingId"] == 10
     assert payload["pokemonId"] == 91
+    assert payload["dexFormCode"] == "91-2"
     assert payload["price"] == 900
     assert payload["sellerLabel"] == "@seller"
+    assert payload["formBadge"] == "Gigantamax"
     assert payload["imageCreditId"] == 88
     assert payload["imageVariant"] == {"position": 2, "total": 4, "canSwitch": True}
     assert payload["sourceUrl"] == "https://example.com/cloyster-alt"
@@ -203,6 +221,7 @@ async def test_mini_app_pokemon_lock_toggle_returns_refreshed_detail(monkeypatch
 
     payload = await main.mini_app_pokemon_lock_toggle(
         42,
+        request=SimpleNamespace(headers={}),
         x_telegram_init_data="init-data",
         x_dev_telegram_id=None,
     )

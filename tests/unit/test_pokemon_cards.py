@@ -4,6 +4,8 @@ from bot.ui.pokemon_cards import (
     PokemonCardData,
     build_image_switch_label,
     build_pokemon_card_keyboard,
+    format_pokemon_display_id,
+    format_pokemon_display_name,
     render_pokemon_card_caption,
 )
 
@@ -67,6 +69,18 @@ def test_render_pokemon_card_caption_escapes_html_fields() -> None:
     assert "Rare&lt;script&gt;" in caption
     assert "electric&amp;fire" in caption
     assert "@ash&lt;&amp;&gt;" in caption
+
+
+def test_format_pokemon_display_name_appends_lowercased_form_in_parentheses() -> None:
+    assert format_pokemon_display_name("Latias", "Shiny") == "Latias (shiny)"
+    assert format_pokemon_display_name("Latias", None) == "Latias"
+
+
+def test_format_pokemon_display_id_uses_base_dex_number_for_forms() -> None:
+    assert format_pokemon_display_id(10112, "112-0") == "112"
+    assert format_pokemon_display_id(10112, "112-1") == "112"
+    assert format_pokemon_display_id(112, "112") == "112"
+    assert format_pokemon_display_id(112, None) == "112"
 
 
 def test_build_pokemon_card_keyboard_can_include_market_button() -> None:

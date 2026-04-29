@@ -6,16 +6,19 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from telegram import CallbackQuery, Chat, Message, Update, User
+from telegram import CallbackQuery, Chat, Message, PhotoSize, Update, User
 from telegram.ext import ContextTypes
 
 from bot.admin.config import AdminBotSettings
 from bot.admin.handlers import (
+    ADMIN_ACTION_CREATE_POKEMON_FORM,
     ADMIN_ACTION_CREATE_POKEMON,
+    ADMIN_PENDING_CREATE_POKEMON_FORM_FIELD,
     ADMIN_PENDING_CREATE_POKEMON_FIELD,
     ADMIN_PENDING_GRANT_POKEMON_ID,
     ADMIN_PENDING_GRANT_POKEMON_USERNAME,
     _confirm_pending_action,
+    _execute_create_pokemon_form,
     _execute_create_pokemon,
     _normalize_create_pokemon_field,
     _execute_update_pokemon_species,
@@ -95,6 +98,11 @@ def test_pending_action_round_trip_and_expiry() -> None:
 def test_normalize_create_pokemon_field_rejects_invalid_rarity() -> None:
     with pytest.raises(ShopError, match="Редкость должна быть одной из"):
         _normalize_create_pokemon_field(field_key="rarity", raw_value="Mythic")
+
+
+def test_normalize_create_pokemon_field_rejects_invalid_form_kind() -> None:
+    with pytest.raises(ShopError, match="Форма должна быть одной из"):
+        _normalize_create_pokemon_field(field_key="form_kind", raw_value="alolan")
 
 
 @pytest.mark.asyncio
@@ -177,7 +185,7 @@ async def test_handle_admin_text_input_builds_create_pokemon_confirmation() -> N
         user_id=user.id,
         source_message_id=99,
         data={
-            "field_index": 7,
+            "field_index": 5,
             "draft": {
                 "pokemon_id": 120,
                 "name": "Staryu",
@@ -196,18 +204,116 @@ async def test_handle_admin_text_input_builds_create_pokemon_confirmation() -> N
     context = Mock(spec=ContextTypes.DEFAULT_TYPE)
     context.application = application
 
+    db.admin_create_pokemon_species = AsyncMock(return_value=120)
+
     await handle_admin_text_input(update, context)
 
-    pending_sessions = [
-        session for session in admin_session_store._sessions.values()
-        if session.data.get("screen") == "pending_action"
+    db.admin_create_pokemon_species.assert_awaited_once()
+    assert chat.send_message.await_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_handle_admin_text_input_builds_create_form_confirmation() -> None:
+    set_admin_settings_for_tests(_allowed_settings())
+    register_admin_routes()
+
+    update, user, chat, _ = _private_update(text="120")
+    admin_session_store.set_pending_input(
+        action=ADMIN_PENDING_CREATE_POKEMON_FORM_FIELD,
+        chat_id=chat.id,
+        user_id=user.id,
+        source_message_id=99,
+        data={
+            "phase": "stats",
+            "field_index": 4,
+            "draft": {
+                "pokemon_id": 10020,
+                "base_pokemon_id": 120,
+                "base_name": "Staryu",
+                "base_dex_form_code": "120",
+                "form_kind": "shiny",
+                "dex_form_code": "120-0",
+                "pokemon_type": "Water",
+                "rarity": "Epic",
+                "base_hp": 30,
+                "base_attack": 45,
+                "base_defense": 55,
+            },
+        },
+    )
+
+    db = AsyncMock()
+    db.admin_create_pokemon_form = AsyncMock(return_value=10020)
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+
+    await handle_admin_text_input(update, context)
+
+    db.admin_create_pokemon_form.assert_not_awaited()
+    assert chat.send_message.await_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_handle_admin_media_input_accepts_create_form_image_and_prompts_source() -> None:
+    from bot.admin.handlers import handle_admin_media_input
+
+    set_admin_settings_for_tests(_allowed_settings())
+    register_admin_routes()
+
+    update, user, chat, _ = _private_update()
+    media_message = Mock(spec=Message)
+    media_message.chat = chat
+    media_message.chat_id = chat.id
+    media_message.from_user = user
+    media_message.message_thread_id = None
+    media_message.photo = [
+        PhotoSize(file_id="file-1", file_unique_id="uniq-1", width=100, height=100, file_size=1234)
     ]
-    assert len(pending_sessions) == 1
-    pending_action = AdminPendingAction.from_session_payload(pending_sessions[0].data.get("pending_action"))
-    assert pending_action is not None
-    assert pending_action.action_type == ADMIN_ACTION_CREATE_POKEMON
-    assert pending_action.input_payload["name"] == "Staryu"
-    assert pending_action.input_payload["base_stamina"] == 120
+    media_message.document = None
+
+    media_update = Mock(spec=Update)
+    media_update.effective_user = user
+    media_update.effective_chat = chat
+    media_update.effective_message = media_message
+
+    admin_session_store.set_pending_input(
+        action=ADMIN_PENDING_CREATE_POKEMON_FORM_FIELD,
+        chat_id=chat.id,
+        user_id=user.id,
+        source_message_id=99,
+        data={
+            "phase": "image",
+            "draft": {
+                "pokemon_id": 10020,
+                "base_pokemon_id": 120,
+                "base_name": "Staryu",
+                "base_dex_form_code": "120",
+                "form_kind": "shiny",
+                "dex_form_code": "120-0",
+                "pokemon_type": "Water",
+                "rarity": "Rare",
+                "base_hp": 30,
+                "base_attack": 45,
+                "base_defense": 55,
+                "base_stamina": 85,
+            },
+        },
+    )
+
+    application = Mock()
+    application.bot_data = {"db": AsyncMock()}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+
+    await handle_admin_media_input(media_update, context)
+
+    pending = admin_session_store.get_pending_input(chat_id=chat.id, user_id=user.id)
+    assert pending is not None
+    assert pending.data["phase"] == "image_source"
+    assert pending.data["draft"]["telegram_file_id"] == "file-1"
+    chat.send_message.assert_awaited()
 
 
 @pytest.mark.asyncio
@@ -237,6 +343,38 @@ async def test_execute_create_pokemon_surfaces_duplicate_id_error() -> None:
 
     with pytest.raises(ShopError, match="уже существует"):
         await _execute_create_pokemon(Mock(spec=Update), context, pending_action)
+
+
+@pytest.mark.asyncio
+async def test_execute_create_pokemon_form_surfaces_duplicate_form_error() -> None:
+    pending_action = AdminPendingAction(
+        action_type=ADMIN_ACTION_CREATE_POKEMON_FORM,
+        title="Создать форму",
+        description="Будет создана shiny-форма.",
+        input_payload={
+            "pokemon_id": 10020,
+            "base_pokemon_id": 120,
+            "base_name": "Staryu",
+            "form_kind": "shiny",
+            "dex_form_code": "120-0",
+            "pokemon_type": "Water",
+            "rarity": "Epic",
+            "base_hp": 30,
+            "base_attack": 45,
+            "base_defense": 55,
+            "base_stamina": 120,
+        },
+    )
+
+    db = AsyncMock()
+    db.admin_create_pokemon_form = AsyncMock(side_effect=ShopError("Форма с таким dex_form_code уже существует."))
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+
+    with pytest.raises(ShopError, match="dex_form_code"):
+        await _execute_create_pokemon_form(Mock(spec=Update), context, pending_action)
 
 
 @pytest.mark.asyncio

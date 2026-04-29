@@ -391,7 +391,7 @@ async def test_search_command_single_result_sends_card_with_market_button() -> N
 
 
 @pytest.mark.asyncio
-async def test_search_command_numeric_id_sends_exact_card() -> None:
+async def test_search_command_numeric_id_sends_exact_card_when_only_one_form_exists() -> None:
     user = Mock(spec=User)
     user.id = 12345
     user.first_name = "Ash"
@@ -417,8 +417,8 @@ async def test_search_command_numeric_id_sends_exact_card() -> None:
     update.effective_message = message
 
     db = AsyncMock()
-    db.get_pokemon_catalog_entry = AsyncMock(
-        return_value=PokemonSearchEntry(151, "Mew", "Legendary", "psychic", 100, 100, 100, 100, None)
+    db.get_pokemon_catalog_entries_by_display_id = AsyncMock(
+        return_value=[PokemonSearchEntry(151, "Mew", "Legendary", "psychic", 100, 100, 100, 100, None)]
     )
     application = Mock()
     application.bot_data = {"db": db}
@@ -430,6 +430,53 @@ async def test_search_command_numeric_id_sends_exact_card() -> None:
 
     await search_command(update, context)
 
-    assert db.get_pokemon_catalog_entry.called
+    assert db.get_pokemon_catalog_entries_by_display_id.called
     assert not db.search_pokemon_catalog.called
     assert sent_message.edit_reply_markup.called
+
+
+@pytest.mark.asyncio
+async def test_search_command_numeric_id_sends_choice_list_when_multiple_forms_exist() -> None:
+    user = Mock(spec=User)
+    user.id = 12345
+    user.first_name = "Ash"
+    user.username = "ash"
+
+    chat = Mock(spec=Chat)
+    chat.id = 12345
+    chat.type = "private"
+
+    sent_message = Mock(spec=Message)
+    sent_message.message_id = 142
+    sent_message.edit_reply_markup = AsyncMock()
+    chat.send_message = AsyncMock(return_value=sent_message)
+
+    message = Mock(spec=Message)
+    message.message_id = 124
+    message.chat = chat
+    message.message_thread_id = None
+    message.text = "/search 197"
+
+    update = Mock(spec=Update)
+    update.effective_chat = chat
+    update.effective_user = user
+    update.effective_message = message
+
+    db = AsyncMock()
+    db.get_pokemon_catalog_entries_by_display_id = AsyncMock(
+        return_value=[
+            PokemonSearchEntry(197, "Umbreon", "Epic", "dark", 95, 65, 110, 130, None, dex_form_code="197"),
+            PokemonSearchEntry(10197, "Umbreon", "Legendary", "dark", 95, 65, 110, 130, None, dex_form_code="197-0", form_badge="Shiny"),
+        ]
+    )
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+
+    await search_command(update, context)
+
+    assert chat.send_message.called
+    assert sent_message.edit_reply_markup.called
+    text = chat.send_message.call_args.kwargs["text"]
+    assert "Umbreon (shiny)" in text

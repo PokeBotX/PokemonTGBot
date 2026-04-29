@@ -55,7 +55,10 @@ DB_SCHEMA_PATH = os.getenv("DB_SCHEMA_PATH", "sql/schema.sql")
 REDIS_ENABLED = os.getenv("REDIS_ENABLED", "false").lower() == "true"
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
 SESSION_REDIS_ENABLED = os.getenv("SESSION_REDIS_ENABLED", "false").lower() == "true"
-DROP_PENDING_UPDATES = os.getenv("DROP_PENDING_UPDATES", "false").lower() == "true"
+DROP_PENDING_UPDATES = os.getenv(
+    "POLLING_DROP_PENDING_UPDATES",
+    os.getenv("DROP_PENDING_UPDATES", "false"),
+).lower() == "true"
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN not set in .env")
 
@@ -108,7 +111,7 @@ async def post_init(application: Application) -> None:
     )
     session_store.disable_redis()
     if REDIS_ENABLED and SESSION_REDIS_ENABLED:
-        session_store.configure_redis(REDIS_URL)
+        await session_store.configure_redis_async(REDIS_URL)
         application.bot_data["redis_url"] = REDIS_URL
         logger.info("redis_ready", redis_url=REDIS_URL, mode="session_store")
 
@@ -164,7 +167,7 @@ async def post_shutdown(application: Application) -> None:
     db = application.bot_data.get("db")
     if db:
         await db.close()
-    session_store.disable_redis()
+    await session_store.disable_redis_async()
 
 
 def build_application() -> Application:

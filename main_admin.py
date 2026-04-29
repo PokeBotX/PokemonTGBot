@@ -37,7 +37,7 @@ DB_SCHEMA_PATH = os.getenv("DB_SCHEMA_PATH", "sql/schema.sql")
 REDIS_ENABLED = os.getenv("REDIS_ENABLED", "false").lower() == "true"
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
 SESSION_REDIS_ENABLED = os.getenv("SESSION_REDIS_ENABLED", "false").lower() == "true"
-DROP_PENDING_UPDATES = os.getenv("DROP_PENDING_UPDATES", "false").lower() == "true"
+DROP_PENDING_UPDATES = os.getenv("WEBHOOK_DROP_PENDING_UPDATES", "false").lower() == "true"
 
 admin_bot_app: Application | None = None
 db: Database | None = None
@@ -79,7 +79,7 @@ async def lifespan(app: FastAPI):
     register_admin_routes()
     admin_session_store.disable_redis()
     if REDIS_ENABLED and SESSION_REDIS_ENABLED:
-        admin_session_store.configure_redis(REDIS_URL)
+        await admin_session_store.configure_redis_async(REDIS_URL)
 
     admin_bot_app = Application.builder().token(settings.token).build()
     admin_bot_app.add_handler(CommandHandler("start", start_admin_command))
@@ -130,7 +130,7 @@ async def lifespan(app: FastAPI):
             if broadcast_bot.token != settings.token:
                 await broadcast_bot.shutdown()
             broadcast_bot = None
-        admin_session_store.disable_redis()
+        await admin_session_store.disable_redis_async()
 
 
 app = FastAPI(title="PokéCollect Admin Bot", lifespan=lifespan)
@@ -145,12 +145,20 @@ async def root() -> dict[str, str]:
 @app.get("/health")
 async def health_check() -> JSONResponse:
     """Operational health endpoint for the admin bot."""
-    healthy = admin_bot_app is not None and ((not DB_ENABLED) or db is not None)
+    db_connected = not DB_ENABLED
+    redis_configured = not REDIS_ENABLED
+    if DB_ENABLED and db is not None:
+        probe = await db.probe()
+        db_connected = probe["db_ok"]
+        redis_configured = probe["redis_ok"] if REDIS_ENABLED else True
+    healthy = admin_bot_app is not None and db_connected and redis_configured
     payload = {
         "status": "healthy" if healthy else "degraded",
         "bot_initialized": admin_bot_app is not None,
         "db_enabled": DB_ENABLED,
-        "db_connected": (not DB_ENABLED) or db is not None,
+        "db_connected": db_connected,
+        "redis_enabled": REDIS_ENABLED,
+        "redis_configured": redis_configured,
     }
     return JSONResponse(content=payload, status_code=200 if healthy else 503)
 

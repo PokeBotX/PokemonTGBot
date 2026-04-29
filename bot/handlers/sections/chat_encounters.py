@@ -416,12 +416,14 @@ async def _send_encounter_card(
             pokemon_id=entry.pokemon_id,
             name=entry.name,
             rarity=entry.rarity,
+            form_badge=entry.form_badge,
             pokemon_type=entry.pokemon_type,
             base_hp=entry.base_hp,
             base_attack=entry.base_attack,
             base_defense=entry.base_defense,
             base_stamina=entry.base_stamina,
             user_pokemon_id=entry.sample_user_pokemon_id,
+            dex_form_code=entry.dex_form_code,
             image_credit_id=image_selection.image_credit_id or entry.image_credit_id,
             image_variant_position=image_selection.position,
             image_variant_total=image_selection.total,
@@ -429,7 +431,7 @@ async def _send_encounter_card(
     )
     if viewer_user_id is not None:
         viewer_is_owner = owner_user_id is not None and viewer_user_id == owner_user_id
-        session_id = session_store.create_session(
+        session_id = await session_store.create_session_async(
             chat_id=source_message.chat.id,
             message_id=message.message_id,
             user_id=viewer_user_id,
@@ -478,12 +480,14 @@ def _render_encounter_card_caption(entry: CollectionEntry) -> str:
             pokemon_id=entry.pokemon_id,
             name=entry.name,
             rarity=entry.rarity,
+            form_badge=entry.form_badge,
             pokemon_type=entry.pokemon_type,
             base_hp=entry.base_hp,
             base_attack=entry.base_attack,
             base_defense=entry.base_defense,
             base_stamina=entry.base_stamina,
             user_pokemon_id=entry.sample_user_pokemon_id,
+            dex_form_code=entry.dex_form_code,
             image_credit_id=entry.image_credit_id,
         )
     )

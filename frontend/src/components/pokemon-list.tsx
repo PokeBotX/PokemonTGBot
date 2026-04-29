@@ -129,11 +129,13 @@ export function PokemonList({
           scroll={false}
           className="block"
         >
-          <PokemonCard
-            pokemonId={pokemon.id}
-            name={pokemon.name}
+            <PokemonCard
+              pokemonId={pokemon.id}
+              dexFormCode={pokemon.dexFormCode}
+              name={pokemon.name}
             type={pokemon.type}
             rarity={normalizePokemonRarity(pokemon.rarity)}
+            formBadge={pokemon.formBadge}
             imageUrl={pokemon.imageUrl}
           />
         </Link>

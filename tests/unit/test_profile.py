@@ -36,6 +36,9 @@ def _summary(created_at: datetime) -> ProfileSummary:
         ),
         profile_pic_credit_id=None,
         cover_pokemon_name=None,
+        total_form_owned=131,
+        total_form_catalog=1080,
+        total_form_percent=12,
     )
 
 
@@ -57,8 +60,12 @@ def test_humanize_account_age_uses_months_for_mid_age_accounts() -> None:
 def test_render_profile_text_includes_total_and_rarity_progress() -> None:
     text = _render_profile_text(_summary(datetime.now(UTC) - timedelta(days=40)), "Артём")
     assert "ваш профиль" in text
+    assert "Базовый покедекс" in text
+    assert "Все формы" in text
     assert "128" in text
+    assert "131" in text
     assert "1025" in text
+    assert "1080" in text
     assert "Legendary" in text
     assert "Epic" in text
     assert "Возраст аккаунта" in text

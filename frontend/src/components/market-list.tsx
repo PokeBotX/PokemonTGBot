@@ -69,11 +69,13 @@ export function MarketList() {
     <div className="grid grid-cols-2 gap-4">
       {entries.map((entry) => (
         <Link key={entry.listingId} href={`/shop/listing?id=${entry.listingId}`} className="block">
-          <PokemonCard
-            pokemonId={entry.pokemonId}
-            name={entry.name}
+            <PokemonCard
+              pokemonId={entry.pokemonId}
+              dexFormCode={entry.dexFormCode}
+              name={entry.name}
             type={entry.type}
             rarity={normalizePokemonRarity(entry.rarity)}
+            formBadge={entry.formBadge}
             imageUrl={entry.imageUrl}
             priceLabel={`🪙 ${entry.price}`}
           />

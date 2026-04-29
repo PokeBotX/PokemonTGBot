@@ -14,6 +14,7 @@ from bot.handlers.sections.trade import (
     TRADE_ROUTE_CANCEL,
     TRADE_ROUTE_TOGGLE_READY,
     _reflect_trade_maintenance,
+    _render_active_trade_text,
     trade_handler,
 )
 from bot.db.database import TradeMaintenanceResult, TradeReadyToggleResult
@@ -61,6 +62,24 @@ def _trade_summary(*, status: str = "pending", request_message_id: int | None = 
         initiator=_participant(111, "ash"),
         target=_participant(222, "misty"),
     )
+
+
+def test_render_active_trade_text_includes_form_name_for_shiny_offer() -> None:
+    trade = _trade_summary(status="active", active_message_id=500)
+    trade.initiator.offers = [
+        TradeOfferLine(
+            user_pokemon_id=10197,
+            pokemon_id=197,
+            name="Umbreon",
+            rarity="Legendary",
+            dex_form_code="197-0",
+            form_badge="Shiny",
+        )
+    ]
+
+    text = _render_active_trade_text(trade)
+
+    assert "Umbreon (shiny)" in text
 
 
 @pytest.mark.asyncio

@@ -14,6 +14,12 @@ type MiniAppProfile = {
   language: string;
   completionPercent: number;
   totalCatalog: number;
+  baseDexCount: number;
+  baseDexCatalog: number;
+  baseDexCompletionPercent: number;
+  totalFormCount: number;
+  totalFormCatalog: number;
+  totalFormCompletionPercent: number;
   accountAgeLabel: string;
   coverPokemonName: string | null;
   coverPokemonImageUrl: string | null;
@@ -27,11 +33,13 @@ type MiniAppProfile = {
 
 export type MiniAppCollectionEntry = {
   id: number;
+  dexFormCode?: string | null;
   userPokemonId: number | null;
   name: string;
   type: string;
   level: number;
   rarity: string;
+  formBadge?: string | null;
   quantity: number;
   baseHp: number;
   baseAttack: number;
@@ -45,10 +53,12 @@ export type MiniAppCollectionEntry = {
 export type MiniAppMarketEntry = {
   listingId: number;
   pokemonId: number;
+  dexFormCode?: string | null;
   userPokemonId: number;
   name: string;
   type: string;
   rarity: string;
+  formBadge?: string | null;
   price: number;
   sellerLabel: string;
   daysRemaining: number;
@@ -60,8 +70,10 @@ export type MiniAppMarketDetail = {
   listingId: number;
   userPokemonId: number;
   pokemonId: number;
+  dexFormCode?: string | null;
   name: string;
   rarity: string;
+  formBadge?: string | null;
   type: string;
   price: number;
   sellerLabel: string;
@@ -82,9 +94,11 @@ export type MiniAppMarketDetail = {
 
 export type MiniAppPokemonDetail = {
   id: number;
+  dexFormCode?: string | null;
   userPokemonId: number;
   name: string;
   rarity: string;
+  formBadge?: string | null;
   type: string;
   quantity: number;
   baseHp: number;
@@ -220,6 +234,12 @@ function getMockProfile(): MiniAppProfile {
     language: "ru",
     completionPercent: 16,
     totalCatalog: 1025,
+    baseDexCount: 3,
+    baseDexCatalog: 1025,
+    baseDexCompletionPercent: 16,
+    totalFormCount: 3,
+    totalFormCatalog: 1025,
+    totalFormCompletionPercent: 16,
     accountAgeLabel: "1 месяц",
     coverPokemonName: "Pikachu",
     coverPokemonImageUrl: null,
@@ -242,6 +262,7 @@ function getMockCollection(): MiniAppCollectionResponse {
         type: "Electric",
         level: 1,
         rarity: "Rare",
+        formBadge: null,
         quantity: 1,
         baseHp: 35,
         baseAttack: 55,
@@ -258,6 +279,7 @@ function getMockCollection(): MiniAppCollectionResponse {
         type: "Grass",
         level: 1,
         rarity: "Common",
+        formBadge: null,
         quantity: 2,
         baseHp: 45,
         baseAttack: 49,
@@ -296,6 +318,7 @@ function getMockMarket(): MiniAppMarketResponse {
         name: "Pikachu",
         type: "Electric",
         rarity: "Rare",
+        formBadge: null,
         price: 240,
         sellerLabel: "termenater",
         daysRemaining: 6,
@@ -309,6 +332,7 @@ function getMockMarket(): MiniAppMarketResponse {
         name: "Charizard",
         type: "Fire/Flying",
         rarity: "Epic",
+        formBadge: null,
         price: 1200,
         sellerLabel: "termenater",
         daysRemaining: 5,
@@ -335,6 +359,7 @@ function getMockMarketDetail(listingId: number): MiniAppMarketDetail {
     pokemonId: 25,
     name: "Pikachu",
     rarity: "Rare",
+    formBadge: null,
     type: "Electric",
     price: 240,
     sellerLabel: "termenater",
@@ -360,6 +385,7 @@ function getMockPokemonDetail(userPokemonId: number): MiniAppPokemonDetail {
     userPokemonId,
     name: "Pikachu",
     rarity: "Rare",
+    formBadge: null,
     type: "Electric",
     quantity: 1,
     baseHp: 35,

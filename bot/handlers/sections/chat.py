@@ -17,7 +17,7 @@ async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, sessi
     
     try:
         # Create new session for back button
-        new_session_id = session_store.create_session(
+        new_session_id = await session_store.create_session_async(
             chat_id=session.chat_id,
             message_id=session.message_id,
             user_id=session.user_id,

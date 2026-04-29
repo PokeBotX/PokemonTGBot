@@ -23,6 +23,7 @@ SECTION_GRANT_POKECOIN = "ag2"
 SECTION_GRANT_POKEMON = "ag3"
 SECTION_CREATE_POKEMON = "ap1"
 SECTION_EDIT_POKEMON = "ap2"
+SECTION_CREATE_POKEMON_FORM = "ap3"
 SECTION_EDIT_POKEMON_NAME = "apn"
 SECTION_EDIT_POKEMON_TYPE = "apt"
 SECTION_EDIT_POKEMON_RARITY = "apr"
@@ -100,6 +101,7 @@ def build_admin_pokemon_keyboard(session_id: str) -> InlineKeyboardMarkup:
         [
             [
                 InlineKeyboardButton("🆕 Создать покемона", callback_data=build_admin_callback(SECTION_CREATE_POKEMON, session_id)),
+                InlineKeyboardButton("✨ Создать форму", callback_data=build_admin_callback(SECTION_CREATE_POKEMON_FORM, session_id)),
             ],
             [
                 InlineKeyboardButton("✏️ Редактировать вид", callback_data=build_admin_callback(SECTION_EDIT_POKEMON, session_id)),
@@ -205,7 +207,7 @@ def get_pokemon_section_text() -> str:
     """Return the pokemon catalog section text."""
     return (
         "🆕 <b>Каталог покемонов</b>\n\n"
-        "Здесь можно создать нового покемона с полным набором полей каталога или точечно исправить существующий вид.\n"
+        "Здесь можно создать нового базового покемона, создать форму для существующего вида или точечно исправить каталог.\n"
         "Перед сохранением бот покажет итоговый preview."
     )
 
@@ -529,6 +531,46 @@ def get_create_pokemon_summary_text(*, pokemon_id: int, name: str, pokemon_type:
         "Будет создан новый покемон:\n"
         f"• ID: <code>{pokemon_id}</code>\n"
         f"• Имя: <b>{escape_html(name)}</b>\n"
+        f"• Тип: <b>{escape_html(pokemon_type_text)}</b>\n"
+        f"• Редкость: <b>{escape_html(rarity)}</b>\n"
+        f"• HP: <b>{base_hp}</b>\n"
+        f"• ATK: <b>{base_attack}</b>\n"
+        f"• DEF: <b>{base_defense}</b>\n"
+        f"• SPD: <b>{base_stamina}</b>"
+    )
+
+
+def get_create_form_intro_text() -> str:
+    """Return intro text before the pokemon-form creation wizard starts."""
+    return (
+        "✨ <b>Создание формы покемона</b>\n\n"
+        "Сначала бот спросит внутренний id новой формы, затем базовый вид, тип формы и оставшиеся поля каталога.\n"
+        "Имя будет унаследовано от базового вида автоматически."
+    )
+
+
+def get_create_form_summary_text(
+    *,
+    pokemon_id: int,
+    base_pokemon_id: int,
+    base_name: str,
+    form_kind: str,
+    dex_form_code: str,
+    pokemon_type: str | None,
+    rarity: str,
+    base_hp: int,
+    base_attack: int,
+    base_defense: int,
+    base_stamina: int,
+) -> str:
+    """Return human-readable summary of one form draft."""
+    pokemon_type_text = pokemon_type or "—"
+    return (
+        "Будет создана новая форма:\n"
+        f"• ID: <code>{pokemon_id}</code>\n"
+        f"• Базовый вид: <b>{escape_html(base_name)}</b> (#{base_pokemon_id})\n"
+        f"• Форма: <b>{escape_html(form_kind)}</b>\n"
+        f"• dex_form_code: <code>{escape_html(dex_form_code)}</code>\n"
         f"• Тип: <b>{escape_html(pokemon_type_text)}</b>\n"
         f"• Редкость: <b>{escape_html(rarity)}</b>\n"
         f"• HP: <b>{base_hp}</b>\n"

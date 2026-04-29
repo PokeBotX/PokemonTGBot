@@ -11,7 +11,9 @@ import { PageHeader } from "@/components/page-header";
 import { SectionCard } from "@/components/section-card";
 import { TopHeader } from "@/components/top-header";
 import { Button } from "@/components/ui/button";
+import { formatPokemonDisplayId, formatPokemonDisplayName } from "@/lib/pokemon-display";
 import { normalizePokemonRarity } from "@/components/pokemon-rarity";
+import { PokemonFormBadge } from "@/components/pokemon-form-badge";
 import { PokemonTypeIcons } from "@/components/pokemon-type-icon";
 import {
   usePokemonDetail,
@@ -75,9 +77,13 @@ function PokemonDetailScreen() {
         <>
           <SectionCard>
             <PageHeader
-              eyebrow={`#${data.id}`}
-              title={data.name}
-              description={`Редкость: ${normalizePokemonRarity(data.rarity).toUpperCase()}`}
+              eyebrow={`#${formatPokemonDisplayId(data.id, data.dexFormCode)}`}
+              title={formatPokemonDisplayName(data.name, data.formBadge)}
+              description={
+                data.formBadge
+                  ? `Редкость: ${normalizePokemonRarity(data.rarity).toUpperCase()} • Форма: ${data.formBadge}`
+                  : `Редкость: ${normalizePokemonRarity(data.rarity).toUpperCase()}`
+              }
             />
 
             <div className="mt-5">
@@ -85,7 +91,7 @@ function PokemonDetailScreen() {
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
                   src={data.imageUrl}
-                  alt={data.name}
+                  alt={formatPokemonDisplayName(data.name, data.formBadge)}
                   className="mx-auto h-40 w-40 rounded-3xl object-cover"
                 />
               ) : (
@@ -102,6 +108,12 @@ function PokemonDetailScreen() {
                 Экземпляр #{data.userPokemonId}
               </span>
             </div>
+
+            {data.formBadge ? (
+              <div className="mt-3">
+                <PokemonFormBadge formBadge={data.formBadge} />
+              </div>
+            ) : null}
 
             <div className="mt-4 grid grid-cols-2 gap-3">
               <Button

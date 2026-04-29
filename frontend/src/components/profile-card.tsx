@@ -103,10 +103,19 @@ export function ProfileCard() {
 
         <div className="rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-3 text-sm text-slate-300">
           <p>
-            📦 У вас <span className="font-semibold text-slate-100">{data.pokemonCount}</span>{" "}
-            уникальных покемонов из{" "}
-            <span className="font-semibold text-slate-100">{data.totalCatalog}</span> (
-            <span className="font-semibold text-slate-100">{data.completionPercent}%</span>)
+            📦 Базовый покедекс:{" "}
+            <span className="font-semibold text-slate-100">{data.baseDexCount}</span> из{" "}
+            <span className="font-semibold text-slate-100">{data.baseDexCatalog}</span> (
+            <span className="font-semibold text-slate-100">{data.baseDexCompletionPercent}%</span>)
+          </p>
+          <p className="mt-2">
+            🧬 Все формы:{" "}
+            <span className="font-semibold text-slate-100">{data.totalFormCount}</span> из{" "}
+            <span className="font-semibold text-slate-100">{data.totalFormCatalog}</span> (
+            <span className="font-semibold text-slate-100">{data.totalFormCompletionPercent}%</span>)
+          </p>
+          <p className="mt-2 text-xs text-slate-400">
+            Формы включают shiny, mega и gigantamax версии.
           </p>
           <p className="mt-2">
             ⏳ Возраст аккаунта:{" "}
@@ -136,7 +145,7 @@ export function ProfileCard() {
             Язык: {data.language.toUpperCase()}
           </Button>
           <Button className="rounded-xl bg-slate-700 text-slate-100 hover:bg-slate-600">
-            Всего видов: {data.totalCatalog}
+            Всего форм: {data.totalFormCatalog}
           </Button>
         </div>
       </CardContent>

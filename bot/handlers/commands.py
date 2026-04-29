@@ -314,7 +314,7 @@ async def changename_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return
 
-    session_store.clear_pending_input(chat_id=update.effective_chat.id, user_id=update.effective_user.id)
+    await session_store.clear_pending_input_async(chat_id=update.effective_chat.id, user_id=update.effective_user.id)
     await update.effective_chat.send_message(
         f"✅ Ник сохранён: <b>{escape_html(saved_nickname)}</b>",
         parse_mode="HTML",
@@ -519,7 +519,7 @@ async def _show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, *,
         )
         
         # Create session after message is sent (to get message_id)
-        session_id = session_store.create_session(
+        session_id = await session_store.create_session_async(
             chat_id=msg_context.chat_id,
             message_id=sent_message.message_id,
             user_id=msg_context.user_id,
@@ -588,7 +588,7 @@ async def _show_placeholder_section(update: Update, section: str) -> None:
             parse_mode="HTML",
             message_thread_id=msg_context.message_thread_id,
         )
-        session_id = session_store.create_session(
+        session_id = await session_store.create_session_async(
             chat_id=msg_context.chat_id,
             message_id=sent_message.message_id,
             user_id=msg_context.user_id,

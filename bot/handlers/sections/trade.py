@@ -21,6 +21,7 @@ from bot.navigation.context import extract_context
 from bot.navigation.router import NavigationRouter
 from bot.navigation.session import MenuSession, session_store
 from bot.ui.html import escape_html
+from bot.ui.pokemon_cards import format_pokemon_display_name
 
 logger = structlog.get_logger()
 
@@ -56,7 +57,7 @@ async def trade_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, sess
         if section == TRADE_ROUTE_ACCEPT:
             trade_id = _require_trade_id(session)
             trade = await db.accept_trade_request(trade_id, update.effective_user.id)
-            next_session_id = _create_trade_session(trade)
+            next_session_id = await _create_trade_session(trade)
             await _edit_trade_message(
                 query,
                 _render_active_trade_text(trade),
@@ -104,7 +105,7 @@ async def trade_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, sess
                     message_thread_id=getattr(query.message, "message_thread_id", None),
                 )
             else:
-                next_session_id = _create_trade_session(result.trade)
+                next_session_id = await _create_trade_session(result.trade)
                 await _edit_trade_message(
                     query,
                     _render_active_trade_text(result.trade),
@@ -181,7 +182,7 @@ async def start_trade_request(
         chat_id=msg_context.chat_id,
         message_thread_id=msg_context.message_thread_id,
     )
-    request_session_id = session_store.create_session(
+    request_session_id = await session_store.create_session_async(
         chat_id=msg_context.chat_id,
         message_id=0,
         user_id=trade.target.telegram_id,
@@ -194,8 +195,8 @@ async def start_trade_request(
         reply_markup=_build_pending_trade_keyboard(request_session_id),
         message_thread_id=msg_context.message_thread_id,
     )
-    session_store.delete_session(request_session_id)
-    final_session_id = session_store.create_session(
+    await session_store.delete_session_async(request_session_id)
+    final_session_id = await session_store.create_session_async(
         chat_id=msg_context.chat_id,
         message_id=sent_message.message_id,
         user_id=trade.target.telegram_id,
@@ -314,7 +315,7 @@ async def _reflect_trade_maintenance(context: ContextTypes.DEFAULT_TYPE, result:
 
 
 async def _refresh_trade_projection(context: ContextTypes.DEFAULT_TYPE, trade: TradeSessionSummary) -> None:
-    session_id = _create_trade_session(trade)
+    session_id = await _create_trade_session(trade)
     await _edit_trade_message_by_ids(
         context,
         trade.chat_id,
@@ -361,7 +362,7 @@ def _render_trade_side(title: str, participant: TradeParticipantState) -> str:
         return "\n".join(lines)
     for offer in participant.offers:
         lines.append(
-            f"• {escape_html(offer.name)} [{offer.user_pokemon_id}] | {escape_html(offer.rarity)}"
+            f"• {escape_html(format_pokemon_display_name(offer.name, offer.form_badge))} [{offer.user_pokemon_id}] | {escape_html(offer.rarity)}"
         )
     return "\n".join(lines)
 
@@ -398,7 +399,7 @@ def _render_trade_completion_side(title: str, participant: TradeParticipantState
         return "\n".join(lines)
     for offer in participant.offers:
         lines.append(
-            f"• {escape_html(offer.name)} [{offer.user_pokemon_id}] | {escape_html(offer.rarity)}"
+            f"• {escape_html(format_pokemon_display_name(offer.name, offer.form_badge))} [{offer.user_pokemon_id}] | {escape_html(offer.rarity)}"
         )
     return "\n".join(lines)
 
@@ -431,11 +432,11 @@ def _build_active_trade_keyboard(session_id: str, trade: TradeSessionSummary) ->
     )
 
 
-def _create_trade_session(trade: TradeSessionSummary) -> str:
+async def _create_trade_session(trade: TradeSessionSummary) -> str:
     message_id = trade.message_id
     if message_id is None:
         raise ValueError("Trade message id is missing")
-    return session_store.create_session(
+    return await session_store.create_session_async(
         chat_id=trade.chat_id,
         message_id=message_id,
         user_id=trade.initiator.telegram_id,

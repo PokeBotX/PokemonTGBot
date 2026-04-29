@@ -2,7 +2,13 @@
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-from bot.navigation.session import PendingInput, SessionStore
+from bot.navigation.session import (
+    MAX_IN_MEMORY_CALLBACK_LOCKS,
+    MAX_IN_MEMORY_PENDING_INPUTS,
+    MAX_IN_MEMORY_SESSIONS,
+    PendingInput,
+    SessionStore,
+)
 
 
 class FakeRedis:
@@ -253,3 +259,19 @@ def test_pending_input_redis_backend_roundtrip() -> None:
 
     store.clear_pending_input(chat_id=5, user_id=15)
     assert store.get_pending_input(chat_id=5, user_id=15) is None
+
+
+def test_in_memory_store_trims_oldest_entries_when_limits_are_exceeded() -> None:
+    store = SessionStore()
+
+    for index in range(MAX_IN_MEMORY_SESSIONS + 5):
+        store.create_session(chat_id=index, message_id=index, user_id=index)
+    assert len(store._sessions) == MAX_IN_MEMORY_SESSIONS
+
+    for index in range(MAX_IN_MEMORY_CALLBACK_LOCKS + 5):
+        store.lock_callback(f"callback_{index}")
+    assert len(store._callback_locks) == MAX_IN_MEMORY_CALLBACK_LOCKS
+
+    for index in range(MAX_IN_MEMORY_PENDING_INPUTS + 5):
+        store.set_pending_input(action="test", chat_id=index, user_id=index)
+    assert len(store._pending_inputs) == MAX_IN_MEMORY_PENDING_INPUTS

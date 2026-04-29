@@ -39,6 +39,29 @@ def test_build_health_payload_reports_degraded_when_enabled_dependency_missing(m
     assert main._health_status_code(payload) == 503
 
 
+def test_resolve_mini_app_identity_dev_fallback_is_limited_to_localhost(monkeypatch) -> None:
+    monkeypatch.setattr(main, "MINI_APP_DEV_FALLBACK_ENABLED", True)
+    monkeypatch.setattr(main, "MINI_APP_DEV_FALLBACK_TELEGRAM_ID", 1640978922)
+    monkeypatch.setattr(main, "MINI_APP_DEV_FALLBACK_USERNAME", "termenater")
+
+    telegram_id, username = main._resolve_mini_app_identity(
+        x_telegram_init_data=None,
+        x_dev_telegram_id="1640978922",
+        request_host="127.0.0.1:3000",
+    )
+
+    assert (telegram_id, username) == (1640978922, "termenater")
+
+    with pytest.raises(main.HTTPException) as exc_info:
+        main._resolve_mini_app_identity(
+            x_telegram_init_data=None,
+            x_dev_telegram_id="1640978922",
+            request_host="app.pokemoncollection.ru",
+        )
+
+    assert exc_info.value.status_code == 401
+
+
 @pytest.mark.asyncio
 async def test_setup_webhook_respects_drop_pending_updates(monkeypatch) -> None:
     monkeypatch.setattr(main, "DROP_PENDING_UPDATES", True)

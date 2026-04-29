@@ -118,7 +118,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         await _sync_user_with_db(update, context)
 
         # Check for duplicate callback (double-click protection)
-        if session_store.is_callback_locked(query.id):
+        if await session_store.is_callback_locked_async(query.id):
             logger.info("callback_duplicate_answer_start", callback_id=query.id)
             await query.answer(ERROR_PROCESSING, show_alert=False)
             logger.info("callback_duplicate_answer_done", callback_id=query.id)
@@ -126,7 +126,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             return
         
         # Lock callback to prevent duplicates
-        session_store.lock_callback(query.id)
+        await session_store.lock_callback_async(query.id)
         
         # Parse callback data
         callback_data = parse_callback_data(query.data)
@@ -145,7 +145,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         )
         
         # Validate session
-        session = session_store.get_session(callback_data.session_id)
+        session = await session_store.get_session_async(callback_data.session_id)
         if not session:
             logger.info(
                 "callback_missing_session_answer_start",

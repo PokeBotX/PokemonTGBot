@@ -83,6 +83,26 @@ RARITY_PROBABILITIES = {
     "Common": 70.3,
 }
 RARITY_ORDER = ("Legendary", "Epic", "Rare", "Common")
+FORM_KIND_BASE = "base"
+FORM_KIND_SHINY = "shiny"
+FORM_KIND_MEGA = "mega"
+FORM_KIND_GIGANTAMAX = "gigantamax"
+FORM_BADGE_MAP = {
+    FORM_KIND_SHINY: "Shiny",
+    FORM_KIND_MEGA: "Mega",
+    FORM_KIND_GIGANTAMAX: "Gigantamax",
+}
+FORM_SUFFIX_MAP = {
+    FORM_KIND_SHINY: "0",
+    FORM_KIND_MEGA: "1",
+    FORM_KIND_GIGANTAMAX: "2",
+}
+FORM_SUFFIX_TO_KIND = {suffix: kind for kind, suffix in FORM_SUFFIX_MAP.items()}
+FORM_ENCOUNTER_OVERLAY_PROBABILITIES = {
+    FORM_KIND_SHINY: 10.0,
+    FORM_KIND_MEGA: 5.0,
+    FORM_KIND_GIGANTAMAX: 5.0,
+}
 
 
 def _coerce_json_object(value: object) -> dict[str, object] | None:
@@ -98,6 +118,67 @@ def _coerce_json_object(value: object) -> dict[str, object] | None:
             return {"raw": value}
         return dict(parsed) if isinstance(parsed, dict) else {"raw": parsed}
     return {"raw": value}
+
+
+def _base_dex_from_form_code(dex_form_code: str | None) -> str | None:
+    """Return the base dex portion from one form code."""
+    if not dex_form_code:
+        return None
+    normalized = dex_form_code.strip()
+    if not normalized:
+        return None
+    return normalized.split("-", 1)[0]
+
+
+def _form_kind_from_dex_form_code(dex_form_code: str | None) -> str:
+    """Resolve first-wave form kind from one external form code."""
+    if not dex_form_code or "-" not in dex_form_code:
+        return FORM_KIND_BASE
+    suffix = dex_form_code.rsplit("-", 1)[-1]
+    return FORM_SUFFIX_TO_KIND.get(suffix, FORM_KIND_BASE)
+
+
+def _form_badge_from_dex_form_code(dex_form_code: str | None) -> str | None:
+    """Return user-facing form badge text for one form code."""
+    return FORM_BADGE_MAP.get(_form_kind_from_dex_form_code(dex_form_code))
+
+
+def _build_base_dex_form_code(pokemon_id: int) -> str:
+    """Build the default base-form code for a catalog entry."""
+    return str(pokemon_id)
+
+
+def _dex_form_sort_sql(*, qualified_column: str) -> str:
+    """Build SQL for natural ordering of dex-form codes like 202, 202-0, 203."""
+    normalized = f"COALESCE({qualified_column}, '')"
+    return (
+        f"split_part({normalized}, '-', 1)::int ASC, "
+        f"CASE "
+        f"WHEN {normalized} = '' THEN -1 "
+        f"WHEN position('-' in {normalized}) = 0 THEN -1 "
+        f"ELSE split_part({normalized}, '-', 2)::int "
+        f"END ASC"
+    )
+
+
+def _choose_form_overlay_kind(
+    available_form_kinds: Sequence[str],
+    *,
+    roll: float | None = None,
+) -> str:
+    """Choose one first-wave encounter overlay form or fall back to base."""
+    normalized_available = set(available_form_kinds)
+    if roll is None:
+        roll = random.uniform(0.0, 100.0)
+
+    cumulative = 0.0
+    for form_kind in (FORM_KIND_SHINY, FORM_KIND_MEGA, FORM_KIND_GIGANTAMAX):
+        if form_kind not in normalized_available:
+            continue
+        cumulative += FORM_ENCOUNTER_OVERLAY_PROBABILITIES[form_kind]
+        if roll < cumulative:
+            return form_kind
+    return FORM_KIND_BASE
 
 
 class ShopError(RuntimeError):
@@ -165,6 +246,7 @@ class PokemonReward:
 
     user_pokemon_id: int
     pokemon_id: int
+    dex_form_code: Optional[str]
     name: str
     rarity: str
     pokemon_type: Optional[str]
@@ -173,12 +255,14 @@ class PokemonReward:
     base_defense: int
     base_stamina: int
     image_credit_id: Optional[int]
+    form_badge: Optional[str]
 
     def as_session_payload(self) -> dict[str, object]:
         """Convert reward to a JSON-like payload for in-memory sessions."""
         return {
             "user_pokemon_id": self.user_pokemon_id,
             "pokemon_id": self.pokemon_id,
+            "dex_form_code": self.dex_form_code,
             "name": self.name,
             "rarity": self.rarity,
             "pokemon_type": self.pokemon_type,
@@ -187,6 +271,7 @@ class PokemonReward:
             "base_defense": self.base_defense,
             "base_stamina": self.base_stamina,
             "image_credit_id": self.image_credit_id,
+            "form_badge": self.form_badge,
         }
 
 
@@ -259,6 +344,8 @@ class CollectionEntry:
     base_stamina: int
     image_credit_id: Optional[int]
     is_locked: bool = False
+    dex_form_code: Optional[str] = None
+    form_badge: Optional[str] = None
 
     def as_session_payload(self) -> dict[str, object]:
         """Serialize entry for session storage."""
@@ -275,6 +362,8 @@ class CollectionEntry:
             "base_stamina": self.base_stamina,
             "image_credit_id": self.image_credit_id,
             "is_locked": self.is_locked,
+            "dex_form_code": self.dex_form_code,
+            "form_badge": self.form_badge,
         }
 
     @classmethod
@@ -293,6 +382,8 @@ class CollectionEntry:
             base_stamina=int(payload["base_stamina"]),
             image_credit_id=payload.get("image_credit_id"),
             is_locked=bool(payload.get("is_locked", False)),
+            dex_form_code=payload.get("dex_form_code"),
+            form_badge=payload.get("form_badge"),
         )
 
 
@@ -357,6 +448,9 @@ class ProfileSummary:
     rarity_progress: tuple[ProfileRarityProgress, ...]
     profile_pic_credit_id: Optional[int]
     cover_pokemon_name: Optional[str]
+    total_form_owned: int = 0
+    total_form_catalog: int = 0
+    total_form_percent: int = 0
 
 
 @dataclass(slots=True)
@@ -413,6 +507,8 @@ class PokemonSearchEntry:
     base_defense: int
     base_stamina: int
     image_credit_id: Optional[int]
+    dex_form_code: Optional[str] = None
+    form_badge: Optional[str] = None
 
     def as_session_payload(self) -> dict[str, object]:
         return {
@@ -425,6 +521,8 @@ class PokemonSearchEntry:
             "base_defense": self.base_defense,
             "base_stamina": self.base_stamina,
             "image_credit_id": self.image_credit_id,
+            "dex_form_code": self.dex_form_code,
+            "form_badge": self.form_badge,
         }
 
     @classmethod
@@ -439,6 +537,8 @@ class PokemonSearchEntry:
             base_defense=int(payload["base_defense"]),
             base_stamina=int(payload["base_stamina"]),
             image_credit_id=payload.get("image_credit_id"),
+            dex_form_code=payload.get("dex_form_code"),
+            form_badge=payload.get("form_badge"),
         )
 
 
@@ -554,6 +654,8 @@ class MarketListingSummary:
     expires_at: datetime
     days_remaining: int
     image_credit_id: Optional[int]
+    dex_form_code: Optional[str] = None
+    form_badge: Optional[str] = None
 
 
 @dataclass(slots=True)
@@ -572,6 +674,8 @@ class MarketBuyRequestSummary:
     status: str
     created_at: datetime
     image_credit_id: Optional[int]
+    dex_form_code: Optional[str] = None
+    form_badge: Optional[str] = None
     matching_user_pokemon_id: Optional[int] = None
 
 
@@ -679,6 +783,8 @@ class TradeOfferLine:
     pokemon_id: int
     name: str
     rarity: str
+    dex_form_code: Optional[str] = None
+    form_badge: Optional[str] = None
 
 
 @dataclass(slots=True)
@@ -771,8 +877,14 @@ class Database:
         if os.getenv("REDIS_ENABLED", "false").lower() == "true":
             redis_url = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
             try:
-                self.redis = Redis.from_url(redis_url, decode_responses=True)
-                self.redis.ping()
+                self.redis = Redis.from_url(
+                    redis_url,
+                    decode_responses=True,
+                    socket_connect_timeout=1,
+                    socket_timeout=1,
+                    health_check_interval=30,
+                )
+                await asyncio.to_thread(self.redis.ping)
                 logger.info("db_redis_ready", redis_url=redis_url)
             except RedisError as exc:
                 self.redis = None
@@ -792,6 +904,25 @@ class Database:
                 pass
             self.redis = None
         logger.info("db_closed")
+
+    async def probe(self) -> dict[str, bool]:
+        """Perform lightweight dependency probes for runtime health checks."""
+        db_ok = False
+        redis_ok = self.redis is None
+
+        if self.pool is not None:
+            try:
+                db_ok = (await self.pool.fetchval("SELECT 1")) == 1
+            except Exception:
+                db_ok = False
+
+        if self.redis is not None:
+            try:
+                redis_ok = bool(await asyncio.to_thread(self.redis.ping))
+            except RedisError:
+                redis_ok = False
+
+        return {"db_ok": db_ok, "redis_ok": redis_ok}
 
     async def init_schema(self, schema_path: str = "sql/schema.sql") -> None:
         """Apply SQL schema from file."""
@@ -945,7 +1076,7 @@ class Database:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT id, name, type, rarity, base_hp, base_attack, base_defense, base_stamina, image_credit_id
+                SELECT id, dex_form_code, name, type, rarity, base_hp, base_attack, base_defense, base_stamina, image_credit_id
                 FROM pokemon_catalog
                 WHERE id = $1
                 """,
@@ -963,6 +1094,8 @@ class Database:
             base_defense=int(row["base_defense"]),
             base_stamina=int(row["base_stamina"]),
             image_credit_id=row["image_credit_id"],
+            dex_form_code=row["dex_form_code"],
+            form_badge=_form_badge_from_dex_form_code(row["dex_form_code"]),
         )
 
     async def admin_grant_currency(self, *, target_user_id: int, currency_code: str, amount: int) -> int:
@@ -1058,6 +1191,7 @@ class Database:
                     """
                     INSERT INTO pokemon_catalog (
                         id,
+                        dex_form_code,
                         name,
                         type,
                         rarity,
@@ -1066,10 +1200,11 @@ class Database:
                         base_defense,
                         base_stamina
                     )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                     RETURNING id
                     """,
                     pokemon_id,
+                    _build_base_dex_form_code(pokemon_id),
                     normalized_name,
                     normalized_type,
                     normalized_rarity,
@@ -1083,6 +1218,117 @@ class Database:
             pokemon_id=created_id,
             name=normalized_name,
             rarity=normalized_rarity,
+        )
+        return int(created_id)
+
+    async def get_next_catalog_pokemon_id(self) -> int:
+        """Return the next free internal catalog id."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            next_id = await conn.fetchval("SELECT COALESCE(MAX(id), 0) + 1 FROM pokemon_catalog")
+        return int(next_id)
+
+    async def admin_create_pokemon_form(
+        self,
+        *,
+        pokemon_id: int,
+        base_pokemon_id: int,
+        form_kind: str,
+        pokemon_type: Optional[str],
+        rarity: str,
+        base_hp: int,
+        base_attack: int,
+        base_defense: int,
+        base_stamina: int,
+    ) -> int:
+        """Create a new catalog form bound to one existing base species."""
+        normalized_type = pokemon_type.strip() if isinstance(pokemon_type, str) else None
+        normalized_type = normalized_type or None
+        normalized_rarity = rarity.strip()
+        normalized_form_kind = form_kind.strip().lower()
+
+        if pokemon_id <= 0:
+            raise ShopError("pokemon_id должен быть больше нуля.")
+        if base_pokemon_id <= 0:
+            raise ShopError("base_pokemon_id должен быть больше нуля.")
+        if normalized_form_kind not in FORM_SUFFIX_MAP:
+            raise ShopError("Форма должна быть одной из: shiny, mega, gigantamax.")
+        if not normalized_rarity:
+            raise ShopError("Редкость не может быть пустой.")
+        numeric_fields = {
+            "base_hp": base_hp,
+            "base_attack": base_attack,
+            "base_defense": base_defense,
+            "base_stamina": base_stamina,
+        }
+        for field_name, value in numeric_fields.items():
+            if value < 0:
+                raise ShopError(f"{field_name} не может быть отрицательным.")
+
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                existing_id = await conn.fetchval(
+                    "SELECT 1 FROM pokemon_catalog WHERE id = $1",
+                    pokemon_id,
+                )
+                if existing_id:
+                    raise ShopError("Покемон с таким id уже существует.")
+
+                base_row = await conn.fetchrow(
+                    """
+                    SELECT id, name, dex_form_code
+                    FROM pokemon_catalog
+                    WHERE id = $1
+                    """,
+                    base_pokemon_id,
+                )
+                if base_row is None:
+                    raise ShopError("Базовый покемон с таким id не найден.")
+
+                base_form_code = _base_dex_from_form_code(base_row["dex_form_code"]) or str(base_row["id"])
+                if base_row["dex_form_code"] and "-" in str(base_row["dex_form_code"]):
+                    raise ShopError("Нужно привязывать форму именно к базовому виду, а не к другой форме.")
+
+                dex_form_code = f"{base_form_code}-{FORM_SUFFIX_MAP[normalized_form_kind]}"
+                existing_form_code = await conn.fetchval(
+                    "SELECT 1 FROM pokemon_catalog WHERE dex_form_code = $1",
+                    dex_form_code,
+                )
+                if existing_form_code:
+                    raise ShopError("Форма с таким dex_form_code уже существует.")
+
+                created_id = await conn.fetchval(
+                    """
+                    INSERT INTO pokemon_catalog (
+                        id,
+                        dex_form_code,
+                        name,
+                        type,
+                        rarity,
+                        base_hp,
+                        base_attack,
+                        base_defense,
+                        base_stamina
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    RETURNING id
+                    """,
+                    pokemon_id,
+                    dex_form_code,
+                    str(base_row["name"]),
+                    normalized_type,
+                    normalized_rarity,
+                    base_hp,
+                    base_attack,
+                    base_defense,
+                    base_stamina,
+                )
+        logger.info(
+            "admin_pokemon_form_created",
+            pokemon_id=created_id,
+            base_pokemon_id=base_pokemon_id,
+            form_kind=normalized_form_kind,
         )
         return int(created_id)
 
@@ -1629,14 +1875,25 @@ class Database:
     async def _fetch_profile_summary_by_user_id(self, conn: asyncpg.Connection, user_id: int) -> ProfileSummary:
         summary_row = await conn.fetchrow(
             """
-            WITH owned_unique AS (
-              SELECT COUNT(DISTINCT pokemon_id)::int AS total_unique_owned
+            WITH owned_base AS (
+              SELECT COUNT(DISTINCT split_part(COALESCE(pc.dex_form_code, pc.id::text), '-', 1))::int AS total_unique_owned
+              FROM user_pokemon
+              JOIN pokemon_catalog pc ON pc.id = user_pokemon.pokemon_id
+              WHERE owner_user_id = $1
+                AND released_at IS NULL
+            ),
+            owned_forms AS (
+              SELECT COUNT(DISTINCT pokemon_id)::int AS total_form_owned
               FROM user_pokemon
               WHERE owner_user_id = $1
                 AND released_at IS NULL
             ),
-            total_catalog AS (
-              SELECT COUNT(*)::int AS total_catalog
+            total_base_catalog AS (
+              SELECT COUNT(DISTINCT split_part(COALESCE(dex_form_code, id::text), '-', 1))::int AS total_catalog
+              FROM pokemon_catalog
+            ),
+            total_form_catalog AS (
+              SELECT COUNT(*)::int AS total_form_catalog
               FROM pokemon_catalog
             )
             SELECT
@@ -1648,12 +1905,16 @@ class Database:
               us.language,
               us.profile_pic_credit_id,
               cover_pc.name AS cover_pokemon_name,
-              COALESCE(ou.total_unique_owned, 0) AS total_unique_owned,
-              tc.total_catalog
+              COALESCE(ob.total_unique_owned, 0) AS total_unique_owned,
+              tbc.total_catalog,
+              COALESCE(ofm.total_form_owned, 0) AS total_form_owned,
+              tfc.total_form_catalog
             FROM users u
             JOIN user_settings us ON us.user_id = u.id
-            CROSS JOIN total_catalog tc
-            LEFT JOIN owned_unique ou ON TRUE
+            CROSS JOIN total_base_catalog tbc
+            CROSS JOIN total_form_catalog tfc
+            LEFT JOIN owned_base ob ON TRUE
+            LEFT JOIN owned_forms ofm ON TRUE
             LEFT JOIN pokemon_catalog cover_pc ON cover_pc.image_credit_id = us.profile_pic_credit_id
             WHERE u.id = $1
             """,
@@ -1666,13 +1927,14 @@ class Database:
             """
             SELECT
               pc.rarity,
-              COUNT(*)::int AS total_catalog,
-              COUNT(DISTINCT up.pokemon_id)::int AS owned_unique
+              COUNT(DISTINCT split_part(COALESCE(pc.dex_form_code, pc.id::text), '-', 1))::int AS total_catalog,
+              COUNT(DISTINCT split_part(COALESCE(owned_pc.dex_form_code, owned_pc.id::text), '-', 1))::int AS owned_unique
             FROM pokemon_catalog pc
             LEFT JOIN user_pokemon up
               ON up.pokemon_id = pc.id
              AND up.owner_user_id = $1
              AND up.released_at IS NULL
+            LEFT JOIN pokemon_catalog owned_pc ON owned_pc.id = up.pokemon_id
             WHERE pc.rarity IS NOT NULL
             GROUP BY pc.rarity
             """,
@@ -1697,6 +1959,8 @@ class Database:
         )
         total_unique_owned = int(summary_row["total_unique_owned"])
         total_catalog = int(summary_row["total_catalog"])
+        total_form_owned = int(summary_row["total_form_owned"])
+        total_form_catalog = int(summary_row["total_form_catalog"])
         return ProfileSummary(
             user_id=int(summary_row["user_id"]),
             telegram_id=int(summary_row["tg_user_id"]),
@@ -1710,6 +1974,9 @@ class Database:
             rarity_progress=rarity_progress,
             profile_pic_credit_id=summary_row["profile_pic_credit_id"],
             cover_pokemon_name=summary_row["cover_pokemon_name"],
+            total_form_owned=total_form_owned,
+            total_form_catalog=total_form_catalog,
+            total_form_percent=_calculate_percent(total_form_owned, total_form_catalog),
         )
 
     async def search_profile_cover_candidates(
@@ -1831,9 +2098,10 @@ class Database:
         self._ensure_pool()
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
-                """
+                f"""
                 SELECT
                   id AS pokemon_id,
+                  dex_form_code,
                   name,
                   rarity,
                   type,
@@ -1847,7 +2115,7 @@ class Database:
                 ORDER BY
                   CASE WHEN lower(name) = lower($1) THEN 0 ELSE 1 END,
                   length(name) ASC,
-                  id ASC
+                  {_dex_form_sort_sql(qualified_column="dex_form_code")}
                 LIMIT $2
                 """,
                 normalized,
@@ -1865,6 +2133,8 @@ class Database:
                 base_defense=int(row["base_defense"]),
                 base_stamina=int(row["base_stamina"]),
                 image_credit_id=row["image_credit_id"],
+                dex_form_code=row["dex_form_code"],
+                form_badge=_form_badge_from_dex_form_code(row["dex_form_code"]),
             )
             for row in rows
         ]
@@ -1877,6 +2147,7 @@ class Database:
                 """
                 SELECT
                   id AS pokemon_id,
+                  dex_form_code,
                   name,
                   rarity,
                   type,
@@ -1902,7 +2173,54 @@ class Database:
             base_defense=int(row["base_defense"]),
             base_stamina=int(row["base_stamina"]),
             image_credit_id=row["image_credit_id"],
+            dex_form_code=row["dex_form_code"],
+            form_badge=_form_badge_from_dex_form_code(row["dex_form_code"]),
         )
+
+    async def get_pokemon_catalog_entries_by_display_id(self, display_id: str) -> list[PokemonSearchEntry]:
+        """Load all catalog entries that share the same player-facing base dex id."""
+        normalized = display_id.strip()
+        if not normalized:
+            return []
+
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"""
+                SELECT
+                  id AS pokemon_id,
+                  dex_form_code,
+                  name,
+                  rarity,
+                  type,
+                  base_hp,
+                  base_attack,
+                  base_defense,
+                  base_stamina,
+                  image_credit_id
+                FROM pokemon_catalog
+                WHERE split_part(COALESCE(dex_form_code, id::text), '-', 1) = $1
+                ORDER BY {_dex_form_sort_sql(qualified_column="dex_form_code")}
+                """,
+                normalized,
+            )
+
+        return [
+            PokemonSearchEntry(
+                pokemon_id=int(row["pokemon_id"]),
+                name=str(row["name"]),
+                rarity=str(row["rarity"]),
+                pokemon_type=row["type"],
+                base_hp=int(row["base_hp"]),
+                base_attack=int(row["base_attack"]),
+                base_defense=int(row["base_defense"]),
+                base_stamina=int(row["base_stamina"]),
+                image_credit_id=row["image_credit_id"],
+                dex_form_code=row["dex_form_code"],
+                form_badge=_form_badge_from_dex_form_code(row["dex_form_code"]),
+            )
+            for row in rows
+        ]
 
     async def get_image_credit(self, image_credit_id: int) -> Optional[ImageCreditRecord]:
         """Load one stored object reference by image credit id."""
@@ -2238,6 +2556,7 @@ class Database:
                       u.tg_username AS seller_username,
                       ml.pokemon_instance_id AS user_pokemon_id,
                       pc.id AS pokemon_id,
+                      pc.dex_form_code,
                       pc.name,
                       pc.rarity,
                       pc.type,
@@ -2277,6 +2596,7 @@ class Database:
                       u.nickname AS requester_nickname,
                       u.tg_username AS requester_username,
                       mbr.pokemon_id,
+                      pc.dex_form_code,
                       pc.name,
                       pc.rarity,
                       pc.type,
@@ -2316,6 +2636,7 @@ class Database:
                       u.nickname AS requester_nickname,
                       u.tg_username AS requester_username,
                       mbr.pokemon_id,
+                      pc.dex_form_code,
                       pc.name,
                       pc.rarity,
                       pc.type,
@@ -4090,6 +4411,7 @@ class Database:
                   pc.name,
                   pc.rarity,
                   pc.type,
+                  pc.dex_form_code,
                   (
                     SELECT COUNT(*)
                     FROM user_pokemon up_count
@@ -4125,6 +4447,8 @@ class Database:
             base_stamina=int(row["base_stamina"]),
             image_credit_id=row["image_credit_id"],
             is_locked=bool(row["is_locked"]),
+            dex_form_code=row["dex_form_code"],
+            form_badge=_form_badge_from_dex_form_code(row["dex_form_code"]),
         )
 
     async def get_owned_user_pokemon_entry(
@@ -4147,6 +4471,7 @@ class Database:
                       pc.name,
                       pc.rarity,
                       pc.type,
+                      pc.dex_form_code,
                       (
                         SELECT COUNT(*)
                         FROM user_pokemon up_count
@@ -4184,6 +4509,8 @@ class Database:
             base_stamina=int(row["base_stamina"]),
             image_credit_id=row["image_credit_id"],
             is_locked=bool(row["is_locked"]),
+            dex_form_code=row["dex_form_code"],
+            form_badge=_form_badge_from_dex_form_code(row["dex_form_code"]),
         )
 
     async def get_user_pokemon_instances_for_species(
@@ -4207,6 +4534,7 @@ class Database:
                   pc.name,
                   pc.rarity,
                   pc.type,
+                  pc.dex_form_code,
                   COUNT(*) OVER (PARTITION BY up.owner_user_id, up.pokemon_id)::int AS quantity,
                   pc.base_hp,
                   pc.base_attack,
@@ -4240,6 +4568,8 @@ class Database:
                 base_stamina=int(row["base_stamina"]),
                 image_credit_id=row["image_credit_id"],
                 is_locked=bool(row["is_locked"]),
+                dex_form_code=row["dex_form_code"],
+                form_badge=_form_badge_from_dex_form_code(row["dex_form_code"]),
             )
             for row in rows
         ]
@@ -4658,7 +4988,8 @@ class Database:
               toi.user_pokemon_id,
               pc.id AS pokemon_id,
               pc.name,
-              pc.rarity
+              pc.rarity,
+              pc.dex_form_code
             FROM trade_offer_items toi
             JOIN user_pokemon up ON up.id = toi.user_pokemon_id
             JOIN pokemon_catalog pc ON pc.id = up.pokemon_id
@@ -4678,6 +5009,8 @@ class Database:
                 pokemon_id=int(offer["pokemon_id"]),
                 name=str(offer["name"]),
                 rarity=str(offer["rarity"]),
+                dex_form_code=offer["dex_form_code"],
+                form_badge=_form_badge_from_dex_form_code(offer["dex_form_code"]),
             )
             if int(offer["user_id"]) == initiator_user_id:
                 initiator_offers.append(line)
@@ -5060,7 +5393,8 @@ class Database:
         legendary_counter: int,
     ) -> PokemonReward:
         reward_rarity = _resolve_roll_rarity(epic_counter, legendary_counter)
-        pokemon_row = await self._select_random_pokemon(conn, reward_rarity)
+        base_pokemon_row = await self._select_random_base_pokemon(conn, reward_rarity)
+        pokemon_row = await self._select_encounter_overlay_variant(conn, base_pokemon_row=base_pokemon_row)
         inserted = await conn.fetchrow(
             """
             INSERT INTO user_pokemon (owner_user_id, pokemon_id)
@@ -5073,6 +5407,7 @@ class Database:
         return PokemonReward(
             user_pokemon_id=int(inserted["id"]),
             pokemon_id=int(pokemon_row["id"]),
+            dex_form_code=pokemon_row["dex_form_code"],
             name=str(pokemon_row["name"]),
             rarity=str(pokemon_row["rarity"]),
             pokemon_type=pokemon_row["type"],
@@ -5081,6 +5416,7 @@ class Database:
             base_defense=int(pokemon_row["base_defense"]),
             base_stamina=int(pokemon_row["base_stamina"]),
             image_credit_id=pokemon_row["image_credit_id"],
+            form_badge=_form_badge_from_dex_form_code(pokemon_row["dex_form_code"]),
         )
 
     async def _select_random_pokemon(
@@ -5089,7 +5425,7 @@ class Database:
         rarities = _rarity_pool_for_target(target_rarity)
         row = await conn.fetchrow(
             """
-            SELECT id, name, type, rarity, base_hp, base_attack, base_defense, base_stamina, image_credit_id
+            SELECT id, dex_form_code, name, type, rarity, base_hp, base_attack, base_defense, base_stamina, image_credit_id
             FROM pokemon_catalog
             WHERE rarity = ANY($1::text[])
             ORDER BY random()
@@ -5100,6 +5436,54 @@ class Database:
         if not row:
             raise ShopError(f"No pokemon found for rarity pool {rarities}")
         return row
+
+    async def _select_random_base_pokemon(
+        self,
+        conn: asyncpg.Connection,
+        target_rarity: str,
+    ) -> asyncpg.Record:
+        """Select one random base-form pokemon for encounter overlays."""
+        rarities = _rarity_pool_for_target(target_rarity)
+        row = await conn.fetchrow(
+            """
+            SELECT id, dex_form_code, name, type, rarity, base_hp, base_attack, base_defense, base_stamina, image_credit_id
+            FROM pokemon_catalog
+            WHERE rarity = ANY($1::text[])
+              AND COALESCE(dex_form_code, id::text) NOT LIKE '%-%'
+            ORDER BY random()
+            LIMIT 1
+            """,
+            list(rarities),
+        )
+        if not row:
+            raise ShopError(f"No base pokemon found for rarity pool {rarities}")
+        return row
+
+    async def _select_encounter_overlay_variant(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        base_pokemon_row: asyncpg.Record,
+    ) -> asyncpg.Record:
+        """Resolve optional shiny/mega/gigantamax overlay for one base encounter species."""
+        base_form_code = _base_dex_from_form_code(base_pokemon_row["dex_form_code"]) or str(base_pokemon_row["id"])
+        rows = await conn.fetch(
+            """
+            SELECT id, dex_form_code, name, type, rarity, base_hp, base_attack, base_defense, base_stamina, image_credit_id
+            FROM pokemon_catalog
+            WHERE split_part(COALESCE(dex_form_code, id::text), '-', 1) = $1
+            """,
+            base_form_code,
+        )
+        if not rows:
+            return base_pokemon_row
+
+        variants_by_kind = {
+            _form_kind_from_dex_form_code(row["dex_form_code"]): row
+            for row in rows
+        }
+        selected_kind = _choose_form_overlay_kind(tuple(variants_by_kind.keys()))
+        return variants_by_kind.get(selected_kind, variants_by_kind.get(FORM_KIND_BASE, base_pokemon_row))
 
     async def _grant_pokemon_by_id(
         self,
@@ -5178,6 +5562,7 @@ class Database:
               pc.name,
               pc.rarity,
               pc.type,
+              pc.dex_form_code,
               COUNT(*)::int AS quantity,
               pc.base_hp,
               pc.base_attack,
@@ -5192,13 +5577,14 @@ class Database:
               pc.name,
               pc.rarity,
               pc.type,
+              pc.dex_form_code,
               pc.base_hp,
               pc.base_attack,
               pc.base_defense,
               pc.base_stamina,
               pc.image_credit_id
             {having_sql}
-            ORDER BY pc.id ASC
+            ORDER BY {_dex_form_sort_sql(qualified_column="pc.dex_form_code")}
             LIMIT ${limit_index}
             OFFSET ${offset_index}
             """,
@@ -5217,6 +5603,8 @@ class Database:
                 base_defense=int(row["base_defense"]),
                 base_stamina=int(row["base_stamina"]),
                 image_credit_id=row["image_credit_id"],
+                dex_form_code=row["dex_form_code"],
+                form_badge=_form_badge_from_dex_form_code(row["dex_form_code"]),
             )
             for row in rows
         ]
@@ -5267,7 +5655,8 @@ class Database:
         now: datetime,
     ) -> ChatEncounter:
         target_rarity = _weighted_rarity_choice(RARITY_PROBABILITIES)
-        pokemon_row = await self._select_random_pokemon(conn, target_rarity)
+        base_pokemon_row = await self._select_random_base_pokemon(conn, target_rarity)
+        pokemon_row = await self._select_encounter_overlay_variant(conn, base_pokemon_row=base_pokemon_row)
         expires_at = now + timedelta(seconds=CHAT_ENCOUNTER_TIMEOUT_SECONDS)
         encounter_row = await conn.fetchrow(
             """
@@ -5319,6 +5708,8 @@ class Database:
             encounter_id=int(encounter_row["id"]),
             pokemon_id=int(pokemon_row["id"]),
             rarity=str(pokemon_row["rarity"]),
+            dex_form_code=pokemon_row["dex_form_code"],
+            form_kind=_form_kind_from_dex_form_code(pokemon_row["dex_form_code"]),
         )
         return _map_chat_encounter(merged_row)
 
@@ -5436,6 +5827,7 @@ class Database:
               u.tg_username AS seller_username,
               ml.pokemon_instance_id AS user_pokemon_id,
               pc.id AS pokemon_id,
+              pc.dex_form_code,
               pc.name,
               pc.rarity,
               pc.type,
@@ -5502,6 +5894,7 @@ class Database:
               u.tg_username AS seller_username,
               ml.pokemon_instance_id AS user_pokemon_id,
               pc.id AS pokemon_id,
+              pc.dex_form_code,
               pc.name,
               pc.rarity,
               pc.type,
@@ -5535,6 +5928,7 @@ class Database:
               u.nickname AS requester_nickname,
               u.tg_username AS requester_username,
               mbr.pokemon_id,
+              pc.dex_form_code,
               pc.name,
               pc.rarity,
               pc.type,
@@ -5678,12 +6072,8 @@ def _weighted_rarity_choice(weights: dict[str, float]) -> str:
 
 
 def _rarity_pool_for_target(target_rarity: str) -> Sequence[str]:
-    if target_rarity == "Legendary":
-        return ("Legendary",)
-    if target_rarity == "Epic":
-        return ("Legendary", "Epic")
-    if target_rarity == "Rare":
-        return ("Rare",)
+    if target_rarity in {"Legendary", "Epic", "Rare", "Common"}:
+        return (target_rarity,)
     return ("Common",)
 
 
@@ -5785,6 +6175,8 @@ def _map_market_listing_summary(row: asyncpg.Record | dict[str, object]) -> Mark
         expires_at=expires_at,
         days_remaining=_market_days_remaining(expires_at),
         image_credit_id=data.get("image_credit_id"),
+        dex_form_code=data.get("dex_form_code"),
+        form_badge=_form_badge_from_dex_form_code(data.get("dex_form_code")),
     )
 
 
@@ -5803,6 +6195,8 @@ def _map_market_buy_request_summary(row: asyncpg.Record | dict[str, object]) -> 
         status=str(data["status"]),
         created_at=_normalize_timestamp(data["created_at"]),
         image_credit_id=data.get("image_credit_id"),
+        dex_form_code=data.get("dex_form_code"),
+        form_badge=_form_badge_from_dex_form_code(data.get("dex_form_code")),
         matching_user_pokemon_id=(
             int(data["matching_user_pokemon_id"]) if data.get("matching_user_pokemon_id") is not None else None
         ),

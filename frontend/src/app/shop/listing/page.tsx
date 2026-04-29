@@ -11,7 +11,9 @@ import { PageHeader } from "@/components/page-header";
 import { SectionCard } from "@/components/section-card";
 import { TopHeader } from "@/components/top-header";
 import { Button } from "@/components/ui/button";
+import { formatPokemonDisplayId, formatPokemonDisplayName } from "@/lib/pokemon-display";
 import { normalizePokemonRarity } from "@/components/pokemon-rarity";
+import { PokemonFormBadge } from "@/components/pokemon-form-badge";
 import { PokemonTypeIcons } from "@/components/pokemon-type-icon";
 import { useMarketDetail } from "@/hooks/use-market-detail";
 
@@ -69,9 +71,13 @@ function MarketListingDetailScreen() {
         <>
           <SectionCard>
             <PageHeader
-              eyebrow={`Лот #${data.listingId}`}
-              title={data.name}
-              description={`Редкость: ${normalizePokemonRarity(data.rarity).toUpperCase()}`}
+              eyebrow={`#${formatPokemonDisplayId(data.pokemonId, data.dexFormCode)} • Лот #${data.listingId}`}
+              title={formatPokemonDisplayName(data.name, data.formBadge)}
+              description={
+                data.formBadge
+                  ? `Редкость: ${normalizePokemonRarity(data.rarity).toUpperCase()} • Форма: ${data.formBadge}`
+                  : `Редкость: ${normalizePokemonRarity(data.rarity).toUpperCase()}`
+              }
             />
 
             <div className="mt-5">
@@ -79,7 +85,7 @@ function MarketListingDetailScreen() {
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
                   src={data.imageUrl}
-                  alt={data.name}
+                  alt={formatPokemonDisplayName(data.name, data.formBadge)}
                   className="mx-auto h-40 w-40 rounded-3xl object-cover"
                 />
               ) : (
@@ -92,8 +98,16 @@ function MarketListingDetailScreen() {
                 <PokemonTypeIcons types={data.type} iconClassName="h-5 w-5" />
                 <span className="text-sm text-slate-300">{data.type}</span>
               </div>
-              <span className="text-sm text-slate-400">#{data.pokemonId}</span>
+              <span className="text-sm text-slate-400">
+                #{formatPokemonDisplayId(data.pokemonId, data.dexFormCode)}
+              </span>
             </div>
+
+            {data.formBadge ? (
+              <div className="mt-3">
+                <PokemonFormBadge formBadge={data.formBadge} />
+              </div>
+            ) : null}
 
             <div className="mt-4 space-y-3 rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-3 text-sm">
               <InfoRow label="Цена" value={`🪙 ${data.price}`} />

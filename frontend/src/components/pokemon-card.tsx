@@ -1,5 +1,7 @@
 import { Card, CardContent, CardTitle } from "@/components/ui/card";
+import { formatPokemonDisplayId, formatPokemonDisplayName } from "@/lib/pokemon-display";
 import { PokemonTypeIcons } from "@/components/pokemon-type-icon";
+import { PokemonFormBadge } from "@/components/pokemon-form-badge";
 import {
   getRarityBorderClass,
   getRarityLabel,
@@ -9,21 +11,28 @@ import {
 
 type PokemonCardProps = {
   pokemonId: number;
+  dexFormCode?: string | null;
   name: string;
   type: string;
   rarity: PokemonRarity;
+  formBadge?: string | null;
   imageUrl?: string | null;
   priceLabel?: string | null;
 };
 
 export function PokemonCard({
   pokemonId,
+  dexFormCode,
   name,
   type,
   rarity,
+  formBadge,
   imageUrl,
   priceLabel,
 }: PokemonCardProps) {
+  const displayName = formatPokemonDisplayName(name, formBadge);
+  const displayId = formatPokemonDisplayId(pokemonId, dexFormCode);
+
   return (
     <Card
       className={`relative overflow-hidden rounded-2xl border bg-slate-900 py-3 text-slate-100 shadow-[0_2px_12px_rgba(0,0,0,0.35)] ${getRarityBorderClass(rarity)}`}
@@ -39,7 +48,7 @@ export function PokemonCard({
           // eslint-disable-next-line @next/next/no-img-element
           <img
             src={imageUrl}
-            alt={name}
+            alt={displayName}
             className="mx-auto mb-3 mt-2 h-28 w-28 rounded-2xl object-cover"
             loading="lazy"
           />
@@ -47,9 +56,16 @@ export function PokemonCard({
           <div className="mx-auto mb-3 mt-2 h-28 w-28 rounded-2xl bg-slate-700" />
         )}
 
-        <CardTitle className="text-sm font-medium leading-snug">{name}</CardTitle>
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <CardTitle className="text-sm font-medium leading-snug">{displayName}</CardTitle>
+            <div className="mt-2">
+              <PokemonFormBadge formBadge={formBadge} className="text-[10px]" />
+            </div>
+          </div>
+        </div>
         <p className="mt-2 text-xs font-medium uppercase tracking-[0.14em] text-slate-400">
-          #{pokemonId}
+          #{displayId}
         </p>
         {priceLabel ? (
           <p className="mt-3 text-right text-xs font-semibold text-amber-300">{priceLabel}</p>

@@ -33,7 +33,10 @@ DB_SCHEMA_PATH = os.getenv("DB_SCHEMA_PATH", "sql/schema.sql")
 REDIS_ENABLED = os.getenv("REDIS_ENABLED", "false").lower() == "true"
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
 SESSION_REDIS_ENABLED = os.getenv("SESSION_REDIS_ENABLED", "false").lower() == "true"
-DROP_PENDING_UPDATES = os.getenv("DROP_PENDING_UPDATES", "false").lower() == "true"
+DROP_PENDING_UPDATES = os.getenv(
+    "POLLING_DROP_PENDING_UPDATES",
+    os.getenv("DROP_PENDING_UPDATES", "false"),
+).lower() == "true"
 broadcast_bot: Bot | None = None
 
 
@@ -50,7 +53,7 @@ async def post_init(application: Application) -> None:
     )
     admin_session_store.disable_redis()
     if REDIS_ENABLED and SESSION_REDIS_ENABLED:
-        admin_session_store.configure_redis(REDIS_URL)
+        await admin_session_store.configure_redis_async(REDIS_URL)
         application.bot_data["redis_url"] = REDIS_URL
 
     if DB_ENABLED:
@@ -89,7 +92,7 @@ async def post_shutdown(application: Application) -> None:
         if broadcast_bot.token != settings.token:
             await broadcast_bot.shutdown()
         broadcast_bot = None
-    admin_session_store.disable_redis()
+    await admin_session_store.disable_redis_async()
 
 
 def build_application() -> Application:

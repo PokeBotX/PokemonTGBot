@@ -1,5 +1,6 @@
 """Unit tests for database helpers."""
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -7,8 +8,17 @@ import pytest
 from bot.db.database import (
     CHAT_ENCOUNTER_COUNTER_TTL_SECONDS,
     Database,
+    FORM_KIND_BASE,
+    FORM_KIND_GIGANTAMAX,
+    FORM_KIND_MEGA,
+    FORM_KIND_SHINY,
     POKEDOLLAR_CODE,
     WELCOME_POKEDOLLAR_AMOUNT,
+    _build_base_dex_form_code,
+    _dex_form_sort_sql,
+    _choose_form_overlay_kind,
+    _form_badge_from_dex_form_code,
+    _form_kind_from_dex_form_code,
 )
 
 
@@ -90,6 +100,7 @@ async def test_get_user_pokemon_entry_counts_owned_duplicates() -> None:
             "name": "Ribombee",
             "rarity": "Epic",
             "type": "fairy",
+            "dex_form_code": "743-0",
             "quantity": 2,
             "base_hp": 60,
             "base_attack": 55,
@@ -105,6 +116,8 @@ async def test_get_user_pokemon_entry_counts_owned_duplicates() -> None:
 
     assert entry is not None
     assert entry.quantity == 2
+    assert entry.dex_form_code == "743-0"
+    assert entry.form_badge == "Shiny"
     assert "SELECT COUNT(*)" in conn.fetchrow.call_args.args[0]
 
 
@@ -121,6 +134,7 @@ async def test_get_user_pokemon_instances_for_species_propagates_total_quantity(
                 "name": "Ribombee",
                 "rarity": "Epic",
                 "type": "fairy",
+                "dex_form_code": "743",
                 "quantity": 2,
                 "base_hp": 60,
                 "base_attack": 55,
@@ -135,6 +149,7 @@ async def test_get_user_pokemon_instances_for_species_propagates_total_quantity(
                 "name": "Ribombee",
                 "rarity": "Epic",
                 "type": "fairy",
+                "dex_form_code": "743-1",
                 "quantity": 2,
                 "base_hp": 60,
                 "base_attack": 55,
@@ -151,7 +166,167 @@ async def test_get_user_pokemon_instances_for_species_propagates_total_quantity(
     entries = await db.get_user_pokemon_instances_for_species(12345, "ash", pokemon_id=743)
 
     assert [entry.quantity for entry in entries] == [2, 2]
+    assert [entry.form_badge for entry in entries] == [None, "Mega"]
     assert "COUNT(*) OVER" in conn.fetch.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_search_pokemon_catalog_returns_all_matching_forms_with_badges() -> None:
+    db = Database()
+    conn = AsyncMock()
+    conn.fetch = AsyncMock(
+        return_value=[
+            {
+                "pokemon_id": 133,
+                "dex_form_code": "133",
+                "name": "Eevee",
+                "rarity": "Common",
+                "type": "Normal",
+                "base_hp": 55,
+                "base_attack": 55,
+                "base_defense": 50,
+                "base_stamina": 55,
+                "image_credit_id": None,
+            },
+            {
+                "pokemon_id": 10133,
+                "dex_form_code": "133-0",
+                "name": "Eevee",
+                "rarity": "Epic",
+                "type": "Normal",
+                "base_hp": 55,
+                "base_attack": 55,
+                "base_defense": 50,
+                "base_stamina": 55,
+                "image_credit_id": None,
+            },
+            {
+                "pokemon_id": 10134,
+                "dex_form_code": "133-1",
+                "name": "Eevee",
+                "rarity": "Legendary",
+                "type": "Normal",
+                "base_hp": 65,
+                "base_attack": 65,
+                "base_defense": 60,
+                "base_stamina": 65,
+                "image_credit_id": None,
+            },
+        ]
+    )
+    db.pool = _FakePool(conn)
+
+    results = await db.search_pokemon_catalog("Eevee", limit=10)
+
+    assert [entry.dex_form_code for entry in results] == ["133", "133-0", "133-1"]
+    assert [entry.form_badge for entry in results] == [None, "Shiny", "Mega"]
+    query = conn.fetch.call_args.args[0]
+    assert "split_part(COALESCE(dex_form_code, ''), '-', 1)::int ASC" in query
+
+
+@pytest.mark.asyncio
+async def test_get_pokemon_catalog_entries_by_display_id_returns_all_matching_forms() -> None:
+    db = Database()
+    conn = AsyncMock()
+    conn.fetch = AsyncMock(
+        return_value=[
+            {
+                "pokemon_id": 197,
+                "dex_form_code": "197",
+                "name": "Umbreon",
+                "rarity": "Epic",
+                "type": "Dark",
+                "base_hp": 95,
+                "base_attack": 65,
+                "base_defense": 110,
+                "base_stamina": 130,
+                "image_credit_id": None,
+            },
+            {
+                "pokemon_id": 10197,
+                "dex_form_code": "197-0",
+                "name": "Umbreon",
+                "rarity": "Legendary",
+                "type": "Dark",
+                "base_hp": 95,
+                "base_attack": 65,
+                "base_defense": 110,
+                "base_stamina": 130,
+                "image_credit_id": None,
+            },
+        ]
+    )
+    db.pool = _FakePool(conn)
+
+    results = await db.get_pokemon_catalog_entries_by_display_id("197")
+
+    assert [entry.dex_form_code for entry in results] == ["197", "197-0"]
+    assert [entry.form_badge for entry in results] == [None, "Shiny"]
+    query = conn.fetch.call_args.args[0]
+    assert "split_part(COALESCE(dex_form_code, id::text), '-', 1) = $1" in query
+
+
+@pytest.mark.asyncio
+async def test_profile_rarity_progress_counts_base_forms_only() -> None:
+    db = Database()
+    conn = AsyncMock()
+    conn.fetchrow = AsyncMock(
+        return_value={
+            "user_id": 1,
+            "tg_user_id": 12345,
+            "tg_username": "ash",
+            "nickname": "Ash",
+            "created_at": datetime(2026, 4, 1, tzinfo=UTC),
+            "language": "ru",
+            "profile_pic_credit_id": None,
+            "cover_pokemon_name": None,
+            "total_unique_owned": 10,
+            "total_catalog": 1025,
+            "total_form_owned": 13,
+            "total_form_catalog": 1100,
+        }
+    )
+    conn.fetch = AsyncMock(
+        return_value=[
+            {"rarity": "Legendary", "total_catalog": 65, "owned_unique": 14},
+            {"rarity": "Epic", "total_catalog": 154, "owned_unique": 16},
+            {"rarity": "Rare", "total_catalog": 306, "owned_unique": 40},
+            {"rarity": "Common", "total_catalog": 514, "owned_unique": 94},
+        ]
+    )
+
+    summary = await db._fetch_profile_summary_by_user_id(conn, 1)
+
+    assert summary.rarity_progress[0].owned_unique == 14
+    assert summary.rarity_progress[0].total_catalog == 65
+    rarity_query = conn.fetch.call_args.args[0]
+    assert "COUNT(DISTINCT split_part(COALESCE(pc.dex_form_code, pc.id::text), '-', 1))::int AS total_catalog" in rarity_query
+    assert "COUNT(DISTINCT split_part(COALESCE(owned_pc.dex_form_code, owned_pc.id::text), '-', 1))::int AS owned_unique" in rarity_query
+
+
+def test_dex_form_sort_sql_orders_base_before_form_suffixes() -> None:
+    sql = _dex_form_sort_sql(qualified_column="pc.dex_form_code")
+
+    assert "split_part(COALESCE(pc.dex_form_code, ''), '-', 1)::int ASC" in sql
+    assert "WHEN position('-' in COALESCE(pc.dex_form_code, '')) = 0 THEN -1" in sql
+    assert "ELSE split_part(COALESCE(pc.dex_form_code, ''), '-', 2)::int" in sql
+
+
+@pytest.mark.asyncio
+async def test_collection_page_orders_entries_by_dex_form_code_instead_of_internal_id() -> None:
+    db = Database()
+    conn = AsyncMock()
+    conn.transaction = Mock(return_value=_AcquireContext(None))
+    conn.fetchval = AsyncMock(side_effect=[3, 3])
+    conn.fetch = AsyncMock(return_value=[])
+    db.pool = _FakePool(conn)
+    db._ensure_user = AsyncMock(return_value=77)
+
+    await db.get_mini_app_collection_page(12345, "ash", page_size=24)
+
+    query = conn.fetch.call_args.args[0]
+    assert "ORDER BY split_part(COALESCE(pc.dex_form_code, ''), '-', 1)::int ASC" in query
+    assert "WHEN position('-' in COALESCE(pc.dex_form_code, '')) = 0 THEN -1" in query
 
 
 @pytest.mark.asyncio
@@ -294,3 +469,50 @@ async def test_ensure_catalog_image_variant_materialized_uses_next_order_when_va
     assert image_credit_id == 55
     assert display_order == 2
     assert is_default is True
+
+
+def test_form_helpers_resolve_first_wave_form_codes() -> None:
+    assert _build_base_dex_form_code(1) == "1"
+    assert _form_kind_from_dex_form_code("1") == FORM_KIND_BASE
+    assert _form_kind_from_dex_form_code("1-0") == FORM_KIND_SHINY
+    assert _form_kind_from_dex_form_code("1-1") == FORM_KIND_MEGA
+    assert _form_kind_from_dex_form_code("1-2") == FORM_KIND_GIGANTAMAX
+    assert _form_badge_from_dex_form_code("1") is None
+    assert _form_badge_from_dex_form_code("1-0") == "Shiny"
+    assert _form_badge_from_dex_form_code("1-1") == "Mega"
+    assert _form_badge_from_dex_form_code("1-2") == "Gigantamax"
+
+
+def test_choose_form_overlay_kind_uses_first_wave_probabilities() -> None:
+    assert _choose_form_overlay_kind((FORM_KIND_SHINY, FORM_KIND_MEGA, FORM_KIND_GIGANTAMAX), roll=0.0) == FORM_KIND_SHINY
+    assert _choose_form_overlay_kind((FORM_KIND_SHINY, FORM_KIND_MEGA, FORM_KIND_GIGANTAMAX), roll=10.0) == FORM_KIND_MEGA
+    assert _choose_form_overlay_kind((FORM_KIND_SHINY, FORM_KIND_MEGA, FORM_KIND_GIGANTAMAX), roll=15.0) == FORM_KIND_GIGANTAMAX
+    assert _choose_form_overlay_kind((FORM_KIND_SHINY, FORM_KIND_MEGA, FORM_KIND_GIGANTAMAX), roll=20.0) == FORM_KIND_BASE
+    assert _choose_form_overlay_kind((FORM_KIND_MEGA,), roll=3.0) == FORM_KIND_MEGA
+    assert _choose_form_overlay_kind((FORM_KIND_MEGA,), roll=6.0) == FORM_KIND_BASE
+
+
+@pytest.mark.asyncio
+async def test_admin_create_pokemon_species_assigns_base_dex_form_code() -> None:
+    db = Database()
+    conn = AsyncMock()
+    conn.transaction = Mock(return_value=_AcquireContext(None))
+    conn.fetchval = AsyncMock(side_effect=[None, None, 25])
+    db.pool = _FakePool(conn)
+
+    created_id = await db.admin_create_pokemon_species(
+        pokemon_id=25,
+        name="Pikachu",
+        pokemon_type="Electric",
+        rarity="Rare",
+        base_hp=35,
+        base_attack=55,
+        base_defense=40,
+        base_stamina=90,
+    )
+
+    assert created_id == 25
+    insert_query, pokemon_id, dex_form_code, *_ = conn.fetchval.call_args.args
+    assert "INSERT INTO pokemon_catalog" in insert_query
+    assert pokemon_id == 25
+    assert dex_form_code == "25"

@@ -14,8 +14,10 @@ from bot.db.database import (
     BonusClaimResult,
     BonusNotReadyError,
     Database,
+    EPIC_PITY_THRESHOLD,
     InsufficientFundsError,
     ItemPurchaseResult,
+    LEGENDARY_PITY_THRESHOLD,
     MASTERBALL_PRICE,
     POKEDOLLAR_CODE,
     PokemonReward,
@@ -34,6 +36,7 @@ from bot.ui.menu import build_back_button
 from bot.ui.pokemon_cards import (
     PokemonCardData,
     build_pokemon_card_keyboard,
+    format_pokemon_display_name,
     send_captioned_image,
     send_pokemon_card,
 )
@@ -89,7 +92,7 @@ async def show_shop_screen(
             parse_mode="HTML",
             message_thread_id=msg_context.message_thread_id,
         )
-        session_id = session_store.create_session(
+        session_id = await session_store.create_session_async(
             chat_id=msg_context.chat_id,
             message_id=sent_message.message_id,
             user_id=msg_context.user_id,
@@ -106,7 +109,7 @@ async def show_shop_screen(
         parse_mode="HTML",
         message_thread_id=msg_context.message_thread_id,
     )
-    session_id = session_store.create_session(
+    session_id = await session_store.create_session_async(
         chat_id=msg_context.chat_id,
         message_id=sent_message.message_id,
         user_id=msg_context.user_id,
@@ -141,7 +144,7 @@ async def shop_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, sessi
                 query,
                 session,
                 "🛒 <b>Магазин временно недоступен</b>\n\nБаза данных не подключена.",
-                build_back_button(_create_session(session)),
+                build_back_button(await _create_session(session)),
             )
             return
 
@@ -225,7 +228,7 @@ async def shop_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, sessi
             query,
             session,
             _render_shop_text(shop_view, status_text, screen, _display_user(update)),
-            _build_shop_keyboard(_create_session(session), shop_view, screen),
+            _build_shop_keyboard(await _create_session(session), shop_view, screen),
         )
         logger.info("shop_edit_done", section=section, user_id=session.user_id, screen=screen)
         logger.info("shop_action_completed", section=section, user_id=session.user_id)
@@ -244,7 +247,7 @@ async def shop_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, sessi
                 SHOP_VIEW_MAIN,
                 _display_user(update),
             ),
-            _build_shop_keyboard(_create_session(session), shop_view, SHOP_VIEW_MAIN),
+            _build_shop_keyboard(await _create_session(session), shop_view, SHOP_VIEW_MAIN),
         )
         logger.info("shop_edit_done", section=section, user_id=session.user_id, screen=SHOP_VIEW_MAIN)
         logger.info("shop_bonus_not_ready", user_id=session.user_id, remaining_seconds=exc.remaining_seconds)
@@ -267,7 +270,7 @@ async def shop_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, sessi
                 target_screen,
                 _display_user(update),
             ),
-            _build_shop_keyboard(_create_session(session), shop_view, target_screen),
+            _build_shop_keyboard(await _create_session(session), shop_view, target_screen),
         )
         logger.info("shop_edit_done", section=section, user_id=session.user_id, screen=target_screen)
         logger.info("shop_insufficient_funds", section=section, user_id=session.user_id)
@@ -329,7 +332,15 @@ def _render_pokemon_shop_text(user_label: str, shop_view: ShopView) -> str:
     ]
     if shop_view.balance >= SPIN_PRICE * 5:
         lines.append(f"🎲 - случайный персонаж x5: 💵{SPIN_PRICE * 5}")
-    lines.extend(["", f"👛 Ваш баланс: 💵{shop_view.balance}"])
+    lines.extend(
+        [
+            "",
+            f"🟣 Epic pity: {shop_view.epic_pity_counter}/{EPIC_PITY_THRESHOLD}",
+            f"🟠 Legendary pity: {shop_view.legendary_pity_counter}/{LEGENDARY_PITY_THRESHOLD}",
+            "",
+            f"👛 Ваш баланс: 💵{shop_view.balance}",
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -389,8 +400,8 @@ def _get_db(context: ContextTypes.DEFAULT_TYPE) -> Optional[Database]:
     return db
 
 
-def _create_session(session: MenuSession, data: Optional[dict[str, object]] = None) -> str:
-    return session_store.create_session(
+async def _create_session(session: MenuSession, data: Optional[dict[str, object]] = None) -> str:
+    return await session_store.create_session_async(
         chat_id=session.chat_id,
         message_id=session.message_id,
         user_id=session.user_id,
@@ -486,7 +497,7 @@ async def _send_reward_card(
     logger.info("shop_reward_send_done", user_id=session.user_id, reward_name=reward.name, image_credit_id=reward.image_credit_id)
 
     if shop_view is not None:
-        reward_session_id = session_store.create_session(
+        reward_session_id = await session_store.create_session_async(
             chat_id=session.chat_id,
             message_id=message.message_id,
             user_id=session.user_id,
@@ -501,7 +512,7 @@ async def _send_reward_card(
 
 def _render_reward_caption(reward: PokemonReward, user_label: Optional[str] = None) -> str:
     return "\n".join(line for line in [
-            f"🏆 <b>{escape_html(reward.name)}</b>",
+            f"🏆 <b>{escape_html(format_pokemon_display_name(reward.name, reward.form_badge))}</b>",
             (f"Тренер: <b>{escape_html(user_label)}</b>" if user_label else ""),
             f"Редкость: <b>{escape_html(reward.rarity)}</b>",
         ] if line
@@ -513,7 +524,9 @@ async def _send_batch_summary(
 ) -> None:
     summary_lines = ["🎰 <b>Результаты x5 крутки</b>", ""]
     for index, reward in enumerate(spin_result.rewards, start=1):
-        summary_lines.append(f"{index}. <b>{escape_html(reward.name)}</b> — {escape_html(reward.rarity)}")
+        summary_lines.append(
+            f"{index}. <b>{escape_html(format_pokemon_display_name(reward.name, reward.form_badge))}</b> — {escape_html(reward.rarity)}"
+        )
     summary_text = "\n".join(summary_lines)
 
     logger.info("shop_summary_send_start", user_id=session.user_id, rewards_count=len(spin_result.rewards))
@@ -524,7 +537,7 @@ async def _send_batch_summary(
         parse_mode="HTML",
     )
     logger.info("shop_summary_send_done", user_id=session.user_id, rewards_count=len(spin_result.rewards))
-    summary_session_id = session_store.create_session(
+    summary_session_id = await session_store.create_session_async(
         chat_id=session.chat_id,
         message_id=sent_message.message_id,
         user_id=session.user_id,
@@ -556,6 +569,7 @@ async def _handle_spin_detail(
     reward = PokemonReward(
         user_pokemon_id=int(rewards[index]["user_pokemon_id"]),
         pokemon_id=int(rewards[index]["pokemon_id"]),
+        dex_form_code=rewards[index].get("dex_form_code"),
         name=str(rewards[index]["name"]),
         rarity=str(rewards[index]["rarity"]),
         pokemon_type=rewards[index].get("pokemon_type"),
@@ -564,6 +578,7 @@ async def _handle_spin_detail(
         base_defense=int(rewards[index]["base_defense"]),
         base_stamina=int(rewards[index]["base_stamina"]),
         image_credit_id=rewards[index].get("image_credit_id"),
+        form_badge=rewards[index].get("form_badge"),
     )
     logger.info("shop_detail_send_start", user_id=session.user_id, reward_name=reward.name, index=index + 1)
     db = _get_db(context)
@@ -585,6 +600,7 @@ async def _handle_reward_full_card(
     reward = PokemonReward(
         user_pokemon_id=int(reward_payload["user_pokemon_id"]),
         pokemon_id=int(reward_payload["pokemon_id"]),
+        dex_form_code=reward_payload.get("dex_form_code"),
         name=str(reward_payload["name"]),
         rarity=str(reward_payload["rarity"]),
         pokemon_type=reward_payload.get("pokemon_type"),
@@ -593,6 +609,7 @@ async def _handle_reward_full_card(
         base_defense=int(reward_payload["base_defense"]),
         base_stamina=int(reward_payload["base_stamina"]),
         image_credit_id=reward_payload.get("image_credit_id"),
+        form_badge=reward_payload.get("form_badge"),
     )
     db = _get_db(context)
     has_active_trade = bool(db and await db.get_active_trade_for_user(session.user_id, None))
@@ -610,10 +627,12 @@ async def _handle_reward_full_card(
             base_defense=reward.base_defense,
             base_stamina=reward.base_stamina,
             user_pokemon_id=reward.user_pokemon_id,
+            dex_form_code=reward.dex_form_code,
             image_credit_id=reward.image_credit_id,
+            form_badge=reward.form_badge,
         ),
     )
-    card_session_id = session_store.create_session(
+    card_session_id = await session_store.create_session_async(
         chat_id=session.chat_id,
         message_id=message.message_id,
         user_id=session.user_id,

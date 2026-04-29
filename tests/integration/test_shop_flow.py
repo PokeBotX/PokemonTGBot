@@ -187,6 +187,7 @@ async def test_single_spin_sends_reward_card() -> None:
                 PokemonReward(
                     user_pokemon_id=10,
                     pokemon_id=25,
+                    dex_form_code="25",
                     name="Pikachu",
                     rarity="Rare",
                     pokemon_type="electric",
@@ -195,6 +196,7 @@ async def test_single_spin_sends_reward_card() -> None:
                     base_defense=40,
                     base_stamina=90,
                     image_credit_id=None,
+                    form_badge=None,
                 )
             ],
             spent_amount=500,
@@ -244,6 +246,7 @@ async def test_shop_reward_card_caption_is_compact() -> None:
                 PokemonReward(
                     user_pokemon_id=10,
                     pokemon_id=25,
+                    dex_form_code="25",
                     name="Pikachu",
                     rarity="Rare",
                     pokemon_type="electric",
@@ -252,6 +255,7 @@ async def test_shop_reward_card_caption_is_compact() -> None:
                     base_defense=40,
                     base_stamina=90,
                     image_credit_id=None,
+                    form_badge=None,
                 )
             ],
             spent_amount=500,
@@ -279,6 +283,7 @@ async def test_shop_reward_full_card_button_sends_full_owned_card() -> None:
     reward = PokemonReward(
         user_pokemon_id=10,
         pokemon_id=25,
+        dex_form_code="25-0",
         name="Pikachu",
         rarity="Rare",
         pokemon_type="electric",
@@ -287,6 +292,7 @@ async def test_shop_reward_full_card_button_sends_full_owned_card() -> None:
         base_defense=40,
         base_stamina=90,
         image_credit_id=None,
+        form_badge="Shiny",
     )
     session = MenuSession(
         "session-reward-card",
@@ -309,7 +315,7 @@ async def test_shop_reward_full_card_button_sends_full_owned_card() -> None:
     assert context.application.bot.send_photo.called
     full_caption = context.application.bot.send_photo.call_args.kwargs["caption"]
     assert "HP:" in full_caption
-    assert "ID покемона:" in full_caption
+    assert "ID покемона: <b>25-0</b>" in full_caption
     assert sent_card.edit_reply_markup.called
     update.callback_query.answer.assert_awaited_with("Карточка открыта.", show_alert=False)
 
@@ -318,7 +324,7 @@ async def test_shop_reward_full_card_button_sends_full_owned_card() -> None:
 async def test_x5_spin_sends_summary_and_detail_messages() -> None:
     session = MenuSession("session-5", 1, 100, None, 1)
     rewards = [
-        PokemonReward(i, i, f"Pokemon{i}", "Common", "normal", 1, 2, 3, 4, None)
+        PokemonReward(i, i, str(i), f"Pokemon{i}", "Common", "normal", 1, 2, 3, 4, None, None)
         for i in range(1, 6)
     ]
     db = AsyncMock()

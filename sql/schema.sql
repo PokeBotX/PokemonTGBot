@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS "image_credits" (
 CREATE TABLE IF NOT EXISTS "pokemon_catalog" (
   "id" int PRIMARY KEY,
   "name" varchar(64) UNIQUE NOT NULL,
+  "dex_form_code" varchar(16),
   "type" varchar(32),
   "rarity" varchar(32),
   "base_hp" int NOT NULL DEFAULT 0,
@@ -85,6 +86,13 @@ CREATE TABLE IF NOT EXISTS "pokemon_catalog" (
   "base_stamina" int NOT NULL DEFAULT 0,
   "image_credit_id" bigint
 );
+
+ALTER TABLE "pokemon_catalog"
+  ADD COLUMN IF NOT EXISTS "dex_form_code" varchar(16);
+
+UPDATE "pokemon_catalog"
+SET "dex_form_code" = "id"::text
+WHERE "dex_form_code" IS NULL;
 
 CREATE TABLE IF NOT EXISTS "pokemon_image_variants" (
   "pokemon_id" int NOT NULL,
@@ -241,6 +249,10 @@ CREATE INDEX IF NOT EXISTS chat_encounters_expires_at_status_idx
 
 CREATE INDEX IF NOT EXISTS user_pokemon_owner_user_id_pokemon_id_idx
   ON "user_pokemon" ("owner_user_id", "pokemon_id");
+
+CREATE UNIQUE INDEX IF NOT EXISTS pokemon_catalog_dex_form_code_idx
+  ON "pokemon_catalog" ("dex_form_code")
+  WHERE "dex_form_code" IS NOT NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS pokemon_image_variants_default_idx
   ON "pokemon_image_variants" ("pokemon_id")

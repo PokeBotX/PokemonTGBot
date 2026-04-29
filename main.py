@@ -86,7 +86,7 @@ DB_SCHEMA_PATH = os.getenv("DB_SCHEMA_PATH", "sql/schema.sql")
 REDIS_ENABLED = os.getenv("REDIS_ENABLED", "false").lower() == "true"
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
 SESSION_REDIS_ENABLED = os.getenv("SESSION_REDIS_ENABLED", "false").lower() == "true"
-DROP_PENDING_UPDATES = os.getenv("DROP_PENDING_UPDATES", "false").lower() == "true"
+DROP_PENDING_UPDATES = os.getenv("WEBHOOK_DROP_PENDING_UPDATES", "false").lower() == "true"
 
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN not set in .env")
@@ -124,18 +124,20 @@ class TelegramAuthRequest(BaseModel):
     initData: str
 
 
-def _build_health_payload() -> dict[str, object]:
-    """Build a shallow operational health payload for runtime dependencies."""
+def _build_health_payload(*, db_connected: bool | None = None, redis_configured: bool | None = None) -> dict[str, object]:
+    """Build an operational health payload for runtime dependencies."""
     bot_initialized = bot_app is not None
-    db_connected = (not DB_ENABLED) or (db is not None and getattr(db, "pool", None) is not None)
-    redis_configured = (not REDIS_ENABLED) or (
-        (db is not None and getattr(db, "redis", None) is not None)
-        or (
-            bot_app is not None
-            and isinstance(getattr(bot_app, "bot_data", None), dict)
-            and bool(bot_app.bot_data.get("redis_url"))
+    if db_connected is None:
+        db_connected = (not DB_ENABLED) or (db is not None and getattr(db, "pool", None) is not None)
+    if redis_configured is None:
+        redis_configured = (not REDIS_ENABLED) or (
+            (db is not None and getattr(db, "redis", None) is not None)
+            or (
+                bot_app is not None
+                and isinstance(getattr(bot_app, "bot_data", None), dict)
+                and bool(bot_app.bot_data.get("redis_url"))
+            )
         )
-    )
     return {
         "status": "healthy" if bot_initialized and db_connected and redis_configured else "degraded",
         "bot_initialized": bot_initialized,
@@ -262,6 +264,7 @@ def _resolve_mini_app_identity(
     *,
     x_telegram_init_data: str | None,
     x_dev_telegram_id: str | None,
+    request_host: str | None = None,
 ) -> tuple[int, str | None]:
     """Resolve Mini App identity from Telegram initData or a local dev fallback."""
     normalized_init_data = (x_telegram_init_data or "").strip()
@@ -269,7 +272,9 @@ def _resolve_mini_app_identity(
         telegram_payload = _validate_telegram_init_data(normalized_init_data)
         return _extract_mini_app_identity(telegram_payload)
 
-    if MINI_APP_DEV_FALLBACK_ENABLED:
+    normalized_host = (request_host or "").split(":", 1)[0].strip().lower()
+    is_local_request = normalized_host in {"localhost", "127.0.0.1"}
+    if MINI_APP_DEV_FALLBACK_ENABLED and is_local_request:
         normalized_dev_id = (x_dev_telegram_id or "").strip()
         if normalized_dev_id and normalized_dev_id == str(MINI_APP_DEV_FALLBACK_TELEGRAM_ID):
             return MINI_APP_DEV_FALLBACK_TELEGRAM_ID, MINI_APP_DEV_FALLBACK_USERNAME
@@ -308,6 +313,12 @@ async def _build_mini_app_profile_payload(telegram_id: int, username: str | None
         "language": profile_summary.language,
         "completionPercent": profile_summary.total_unique_percent,
         "totalCatalog": profile_summary.total_catalog,
+        "baseDexCount": profile_summary.total_unique_owned,
+        "baseDexCatalog": profile_summary.total_catalog,
+        "baseDexCompletionPercent": profile_summary.total_unique_percent,
+        "totalFormCount": profile_summary.total_form_owned,
+        "totalFormCatalog": profile_summary.total_form_catalog,
+        "totalFormCompletionPercent": profile_summary.total_form_percent,
         "accountAgeLabel": _humanize_account_age(profile_summary.created_at),
         "coverPokemonName": profile_summary.cover_pokemon_name,
         "coverPokemonImageUrl": cover_image_url,
@@ -395,11 +406,13 @@ async def _build_mini_app_collection_payload_with_filters(
         "entries": [
             {
                 "id": entry.pokemon_id,
+                "dexFormCode": entry.dex_form_code,
                 "userPokemonId": entry.sample_user_pokemon_id,
                 "name": entry.name,
                 "type": entry.pokemon_type or "Unknown",
                 "level": 1,
                 "rarity": entry.rarity,
+                "formBadge": entry.form_badge,
                 "quantity": entry.quantity,
                 "baseHp": entry.base_hp,
                 "baseAttack": entry.base_attack,
@@ -459,10 +472,12 @@ async def _build_mini_app_market_payload(
             {
                 "listingId": entry.listing_id,
                 "pokemonId": entry.pokemon_id,
+                "dexFormCode": entry.dex_form_code,
                 "userPokemonId": entry.user_pokemon_id,
                 "name": entry.name,
                 "type": entry.pokemon_type or "Unknown",
                 "rarity": entry.rarity,
+                "formBadge": entry.form_badge,
                 "price": entry.price,
                 "sellerLabel": entry.seller_label or "Тренер",
                 "daysRemaining": entry.days_remaining,
@@ -520,8 +535,10 @@ async def _build_mini_app_market_listing_detail_payload(
         "listingId": listing.listing_id,
         "userPokemonId": listing.user_pokemon_id,
         "pokemonId": listing.pokemon_id,
+        "dexFormCode": pokemon.dex_form_code,
         "name": listing.name,
         "rarity": listing.rarity,
+        "formBadge": pokemon.form_badge,
         "type": listing.pokemon_type or "Unknown",
         "price": listing.price,
         "sellerLabel": listing.seller_label or "Тренер",
@@ -575,9 +592,11 @@ async def _build_mini_app_pokemon_detail_payload(
 
     return {
         "id": entry.pokemon_id,
+        "dexFormCode": entry.dex_form_code,
         "userPokemonId": entry.sample_user_pokemon_id,
         "name": entry.name,
         "rarity": entry.rarity,
+        "formBadge": entry.form_badge,
         "type": entry.pokemon_type or "Unknown",
         "quantity": entry.quantity,
         "baseHp": entry.base_hp,
@@ -803,7 +822,7 @@ async def lifespan(app: FastAPI):
     # Initialize database (optional)
     session_store.disable_redis()
     if REDIS_ENABLED and SESSION_REDIS_ENABLED:
-        session_store.configure_redis(REDIS_URL)
+        await session_store.configure_redis_async(REDIS_URL)
         bot_app.bot_data["redis_url"] = REDIS_URL
         logger.info("redis_ready", redis_url=REDIS_URL, mode="session_store")
 
@@ -848,7 +867,7 @@ async def lifespan(app: FastAPI):
     logger.info("bot_shutting_down")
     if db:
         await db.close()
-    session_store.disable_redis()
+    await session_store.disable_redis_async()
     await bot_app.stop()
     await bot_app.shutdown()
 
@@ -873,7 +892,16 @@ async def root():
 @app.get("/health")
 async def health():
     """Operational health check for bot runtime and backing services."""
-    payload = _build_health_payload()
+    db_connected = not DB_ENABLED
+    redis_configured = not REDIS_ENABLED
+    if DB_ENABLED and db is not None:
+        probe = await db.probe()
+        db_connected = probe["db_ok"]
+        redis_configured = probe["redis_ok"] if REDIS_ENABLED else True
+    payload = _build_health_payload(
+        db_connected=db_connected,
+        redis_configured=redis_configured,
+    )
     return JSONResponse(status_code=_health_status_code(payload), content=payload)
 
 
@@ -897,6 +925,7 @@ async def telegram_mini_app_auth(payload: TelegramAuthRequest):
 
 @app.get("/api/me")
 async def mini_app_me(
+    request: Request,
     x_telegram_init_data: str | None = Header(default=None, alias="X-Telegram-Init-Data"),
     x_dev_telegram_id: str | None = Header(default=None, alias="X-Dev-Telegram-Id"),
 ):
@@ -904,12 +933,14 @@ async def mini_app_me(
     telegram_id, username = _resolve_mini_app_identity(
         x_telegram_init_data=x_telegram_init_data,
         x_dev_telegram_id=x_dev_telegram_id,
+        request_host=request.headers.get("host"),
     )
     return await _build_mini_app_profile_payload(telegram_id, username)
 
 
 @app.get("/api/collection")
 async def mini_app_collection(
+    request: Request,
     x_telegram_init_data: str | None = Header(default=None, alias="X-Telegram-Init-Data"),
     x_dev_telegram_id: str | None = Header(default=None, alias="X-Dev-Telegram-Id"),
     page: int = Query(default=1, ge=1),
@@ -923,6 +954,7 @@ async def mini_app_collection(
     telegram_id, username = _resolve_mini_app_identity(
         x_telegram_init_data=x_telegram_init_data,
         x_dev_telegram_id=x_dev_telegram_id,
+        request_host=request.headers.get("host"),
     )
     filter_state = CollectionFilterState(
         rarities=_parse_csv_query_values(rarities),
@@ -941,6 +973,7 @@ async def mini_app_collection(
 
 @app.get("/api/market")
 async def mini_app_market(
+    request: Request,
     x_telegram_init_data: str | None = Header(default=None, alias="X-Telegram-Init-Data"),
     x_dev_telegram_id: str | None = Header(default=None, alias="X-Dev-Telegram-Id"),
     page: int = Query(default=1, ge=1),
@@ -949,6 +982,7 @@ async def mini_app_market(
     telegram_id, username = _resolve_mini_app_identity(
         x_telegram_init_data=x_telegram_init_data,
         x_dev_telegram_id=x_dev_telegram_id,
+        request_host=request.headers.get("host"),
     )
     return await _build_mini_app_market_payload(
         telegram_id,
@@ -960,6 +994,7 @@ async def mini_app_market(
 @app.get("/api/market/{listing_id}")
 async def mini_app_market_detail(
     listing_id: int,
+    request: Request,
     x_telegram_init_data: str | None = Header(default=None, alias="X-Telegram-Init-Data"),
     x_dev_telegram_id: str | None = Header(default=None, alias="X-Dev-Telegram-Id"),
 ):
@@ -967,6 +1002,7 @@ async def mini_app_market_detail(
     telegram_id, username = _resolve_mini_app_identity(
         x_telegram_init_data=x_telegram_init_data,
         x_dev_telegram_id=x_dev_telegram_id,
+        request_host=request.headers.get("host"),
     )
     return await _build_mini_app_market_listing_detail_payload(
         telegram_id,
@@ -977,6 +1013,7 @@ async def mini_app_market_detail(
 
 @app.get("/api/pokemon")
 async def mini_app_pokemon_detail(
+    request: Request,
     user_pokemon_id: int = Query(..., ge=1),
     x_telegram_init_data: str | None = Header(default=None, alias="X-Telegram-Init-Data"),
     x_dev_telegram_id: str | None = Header(default=None, alias="X-Dev-Telegram-Id"),
@@ -985,6 +1022,7 @@ async def mini_app_pokemon_detail(
     telegram_id, username = _resolve_mini_app_identity(
         x_telegram_init_data=x_telegram_init_data,
         x_dev_telegram_id=x_dev_telegram_id,
+        request_host=request.headers.get("host"),
     )
     return await _build_mini_app_pokemon_detail_payload(
         telegram_id,
@@ -996,6 +1034,7 @@ async def mini_app_pokemon_detail(
 @app.post("/api/pokemon/{user_pokemon_id}/lock-toggle")
 async def mini_app_pokemon_lock_toggle(
     user_pokemon_id: int,
+    request: Request,
     x_telegram_init_data: str | None = Header(default=None, alias="X-Telegram-Init-Data"),
     x_dev_telegram_id: str | None = Header(default=None, alias="X-Dev-Telegram-Id"),
 ):
@@ -1003,6 +1042,7 @@ async def mini_app_pokemon_lock_toggle(
     telegram_id, username = _resolve_mini_app_identity(
         x_telegram_init_data=x_telegram_init_data,
         x_dev_telegram_id=x_dev_telegram_id,
+        request_host=request.headers.get("host"),
     )
     try:
         await db.toggle_user_pokemon_lock(
@@ -1023,6 +1063,7 @@ async def mini_app_pokemon_lock_toggle(
 @app.post("/api/pokemon/{user_pokemon_id}/image-cycle")
 async def mini_app_pokemon_image_cycle(
     user_pokemon_id: int,
+    request: Request,
     x_telegram_init_data: str | None = Header(default=None, alias="X-Telegram-Init-Data"),
     x_dev_telegram_id: str | None = Header(default=None, alias="X-Dev-Telegram-Id"),
 ):
@@ -1030,6 +1071,7 @@ async def mini_app_pokemon_image_cycle(
     telegram_id, username = _resolve_mini_app_identity(
         x_telegram_init_data=x_telegram_init_data,
         x_dev_telegram_id=x_dev_telegram_id,
+        request_host=request.headers.get("host"),
     )
     entry = await db.get_owned_user_pokemon_entry(
         telegram_id,

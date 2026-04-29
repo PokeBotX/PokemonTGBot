@@ -31,6 +31,8 @@ from bot.ui.pokemon_cards import (
     CARD_KIND_SEARCH,
     edit_pokemon_card,
     EXTRA_CARD_SECTION,
+    format_pokemon_display_id,
+    format_pokemon_display_name,
     IMAGE_CARD_SECTION,
     normalize_image_selection,
     PokemonCardData,
@@ -185,7 +187,7 @@ async def show_collection_screen(
             parse_mode="HTML",
             message_thread_id=msg_context.message_thread_id,
         )
-        session_id = session_store.create_session(
+        session_id = await session_store.create_session_async(
             chat_id=msg_context.chat_id,
             message_id=sent_message.message_id,
             user_id=msg_context.user_id,
@@ -218,7 +220,7 @@ async def show_collection_screen(
         parse_mode="HTML",
         message_thread_id=msg_context.message_thread_id,
     )
-    session_id = session_store.create_session(
+    session_id = await session_store.create_session_async(
         chat_id=msg_context.chat_id,
         message_id=sent_message.message_id,
         user_id=msg_context.user_id,
@@ -289,7 +291,7 @@ async def collection_handler(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 query,
                 session,
                 "📦 <b>Коллекция временно недоступна</b>\n\nБаза данных не подключена.",
-                build_back_button(_create_session(session)),
+                build_back_button(await _create_session(session)),
             )
             return
 
@@ -337,7 +339,7 @@ async def collection_handler(update: Update, context: ContextTypes.DEFAULT_TYPE,
         owner_telegram_id, owner_username, owner_label, read_only = _collection_owner_from_session(session, update)
         collection_page = await db.get_collection_page(owner_telegram_id, owner_username, filter_state)
         logger.info("collection_db_fetch_done", section=section, user_id=session.user_id, screen=screen)
-        next_session_id = _create_session(
+        next_session_id = await _create_session(
             session,
             _collection_session_data(
                 collection_page,
@@ -443,8 +445,8 @@ def _collection_owner_from_session(
     return owner_id, owner_username, owner_label, read_only
 
 
-def _create_session(session: MenuSession, data: Optional[dict[str, object]] = None) -> str:
-    return session_store.create_session(
+async def _create_session(session: MenuSession, data: Optional[dict[str, object]] = None) -> str:
+    return await session_store.create_session_async(
         chat_id=session.chat_id,
         message_id=session.message_id,
         user_id=session.user_id,
@@ -582,7 +584,15 @@ def _render_active_filter_summary(filter_state: CollectionFilterState) -> str:
 
 
 def _format_collection_entry_line(entry: CollectionEntry) -> str:
-    return f"{_rarity_marker(entry.rarity)} {entry.name} x{entry.quantity} | id: {entry.pokemon_id}"
+    return (
+        f"{_rarity_marker(entry.rarity)} {format_pokemon_display_name(entry.name, entry.form_badge)} x{entry.quantity} | "
+        f"id: {format_pokemon_display_id(entry.pokemon_id, entry.dex_form_code)}"
+    )
+
+
+def _format_collection_lookup_button_label(entry: CollectionEntry) -> str:
+    shiny_marker = " ▫️" if entry.form_badge == "Shiny" else ""
+    return f"🔎 {format_pokemon_display_id(entry.pokemon_id, entry.dex_form_code)}{shiny_marker}"
 
 
 def _build_collection_keyboard(
@@ -635,7 +645,7 @@ def _build_collection_keyboard(
             for entry_index, entry in enumerate(collection_page.entries[index:index + 4], start=index + 1):
                 row.append(
                     InlineKeyboardButton(
-                        f"🔎 {entry.pokemon_id}",
+                        _format_collection_lookup_button_label(entry),
                         callback_data=f"menu:cd{entry_index}:{session_id}",
                     )
                 )
@@ -724,7 +734,7 @@ async def _send_collection_instance_picker(
         parse_mode="HTML",
         message_thread_id=session.message_thread_id,
     )
-    picker_session_id = session_store.create_session(
+    picker_session_id = await session_store.create_session_async(
         chat_id=session.chat_id,
         message_id=message.message_id,
         user_id=session.user_id,
@@ -782,6 +792,7 @@ async def _send_collection_card(
             pokemon_id=entry.pokemon_id,
             name=entry.name,
             rarity=entry.rarity,
+            form_badge=entry.form_badge,
             pokemon_type=entry.pokemon_type,
             quantity=entry.quantity,
             base_hp=entry.base_hp,
@@ -790,12 +801,13 @@ async def _send_collection_card(
             base_stamina=entry.base_stamina,
             trainer_label=user_label,
             user_pokemon_id=entry.sample_user_pokemon_id,
+            dex_form_code=entry.dex_form_code,
             image_credit_id=image_selection.image_credit_id or entry.image_credit_id,
             image_variant_position=image_selection.position,
             image_variant_total=image_selection.total,
         ),
     )
-    detail_session_id = session_store.create_session(
+    detail_session_id = await session_store.create_session_async(
         chat_id=session.chat_id,
         message_id=message.message_id,
         user_id=session.user_id,
@@ -851,7 +863,7 @@ async def _handle_release_prompt(update: Update, context: ContextTypes.DEFAULT_T
         return
 
     reward = POKEMON_RELEASE_REWARDS.get(entry.rarity, 32)
-    next_session_id = _create_session(session, dict(session.data))
+    next_session_id = await _create_session(session, dict(session.data))
     await _edit_collection_message(
         query,
         session,
@@ -890,7 +902,7 @@ async def _handle_extra_actions_prompt(update: Update, context: ContextTypes.DEF
         viewer_telegram_id=session.user_id,
         pokemon_id=entry.pokemon_id,
     )
-    next_session_id = _create_session(session, dict(session.data))
+    next_session_id = await _create_session(session, dict(session.data))
     await _edit_collection_message(
         query,
         session,
@@ -977,7 +989,7 @@ async def _handle_lock_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.answer("Статус изменён, но карточка больше недоступна.", show_alert=False)
         return
 
-    next_session_id = _create_session(session, dict(session.data))
+    next_session_id = await _create_session(session, dict(session.data))
     status_text = "🔒 Покемон залочен." if result.is_locked else "🔓 Покемон разблокирован."
     source_url = await _resolve_entry_source_url(
         db,
@@ -1021,7 +1033,7 @@ async def _handle_set_cover(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         await query.answer(error_message, show_alert=False)
         return
 
-    next_session_id = _create_session(session, dict(session.data))
+    next_session_id = await _create_session(session, dict(session.data))
     status_text = f"🖼 Обложка обновлена: <b>{entry.name}</b>."
     source_url = await _resolve_entry_source_url(
         db,
@@ -1053,7 +1065,7 @@ async def _handle_release_confirm(update: Update, context: ContextTypes.DEFAULT_
         update.effective_user.username if update.effective_user else None,
         user_pokemon_id=int(user_pokemon_id),
     )
-    next_session_id = _create_session(session)
+    next_session_id = await _create_session(session)
     await _edit_collection_message(
         query,
         session,
@@ -1124,7 +1136,7 @@ async def _edit_collection_card_message(
     image_selection = await _resolve_card_image_selection(db, session.user_id, entry.pokemon_id)
     user_label = session.data.get("card_user_label")
     read_only = bool(session.data.get("card_read_only", False))
-    next_session_id = _create_session(
+    next_session_id = await _create_session(
         session,
         build_market_entry_payload(
             action=resolve_market_card_action(not read_only),
@@ -1155,6 +1167,7 @@ async def _edit_collection_card_message(
             pokemon_id=entry.pokemon_id,
             name=entry.name,
             rarity=entry.rarity,
+            form_badge=entry.form_badge,
             pokemon_type=entry.pokemon_type,
             quantity=entry.quantity,
             base_hp=entry.base_hp,
@@ -1163,6 +1176,7 @@ async def _edit_collection_card_message(
             base_stamina=entry.base_stamina,
             trainer_label=user_label if isinstance(user_label, str) else None,
             user_pokemon_id=entry.sample_user_pokemon_id,
+            dex_form_code=entry.dex_form_code,
             image_credit_id=image_selection.image_credit_id or entry.image_credit_id,
             image_variant_position=image_selection.position,
             image_variant_total=image_selection.total,
@@ -1241,6 +1255,7 @@ def _render_collection_card_caption(entry: CollectionEntry, user_label: Optional
             pokemon_id=entry.pokemon_id,
             name=entry.name,
             rarity=entry.rarity,
+            form_badge=entry.form_badge,
             pokemon_type=entry.pokemon_type,
             quantity=entry.quantity,
             base_hp=entry.base_hp,
@@ -1249,6 +1264,7 @@ def _render_collection_card_caption(entry: CollectionEntry, user_label: Optional
             base_stamina=entry.base_stamina,
             trainer_label=user_label,
             user_pokemon_id=entry.sample_user_pokemon_id,
+            dex_form_code=entry.dex_form_code,
             image_credit_id=entry.image_credit_id,
         )
     )
@@ -1258,12 +1274,15 @@ def _search_card_from_session(session: MenuSession) -> Optional[PokemonSearchEnt
     pokemon_id = session.data.get("card_pokemon_id")
     name = session.data.get("card_name")
     rarity = session.data.get("card_rarity")
+    form_badge = session.data.get("card_form_badge")
     if not isinstance(pokemon_id, int) or not isinstance(name, str) or not isinstance(rarity, str):
         return None
     return PokemonSearchEntry(
         pokemon_id=pokemon_id,
         name=name,
         rarity=rarity,
+        dex_form_code=session.data.get("card_dex_form_code"),
+        form_badge=form_badge if isinstance(form_badge, str) else None,
         pokemon_type=session.data.get("card_pokemon_type"),
         base_hp=int(session.data.get("card_base_hp", 0)),
         base_attack=int(session.data.get("card_base_attack", 0)),
@@ -1282,7 +1301,7 @@ async def _edit_search_card_message(
     db = _get_db(context)
     image_selection = await _resolve_card_image_selection(db, session.user_id, entry.pokemon_id)
     user_label = session.data.get("card_user_label")
-    next_session_id = _create_session(
+    next_session_id = await _create_session(
         session,
         build_market_entry_payload(
             action=resolve_market_card_action(False),
@@ -1291,8 +1310,10 @@ async def _edit_search_card_message(
         )
         | build_search_card_session_payload(
             pokemon_id=entry.pokemon_id,
+            dex_form_code=entry.dex_form_code,
             name=entry.name,
             rarity=entry.rarity,
+            form_badge=entry.form_badge,
             pokemon_type=entry.pokemon_type,
             base_hp=entry.base_hp,
             base_attack=entry.base_attack,
@@ -1308,12 +1329,14 @@ async def _edit_search_card_message(
             pokemon_id=entry.pokemon_id,
             name=entry.name,
             rarity=entry.rarity,
+            form_badge=entry.form_badge,
             pokemon_type=entry.pokemon_type,
             base_hp=entry.base_hp,
             base_attack=entry.base_attack,
             base_defense=entry.base_defense,
             base_stamina=entry.base_stamina,
             trainer_label=user_label if isinstance(user_label, str) else None,
+            dex_form_code=entry.dex_form_code,
             image_credit_id=image_selection.image_credit_id or entry.image_credit_id,
             image_variant_position=image_selection.position,
             image_variant_total=image_selection.total,

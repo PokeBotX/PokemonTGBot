@@ -149,6 +149,8 @@ def test_render_shop_text_includes_status_and_counters() -> None:
     assert "@ash, выберите желаемую опцию" in text
     assert "🎲 - случайный персонаж: 💵500" in text
     assert "👛 Ваш баланс: 💵500" in text
+    assert "🟣 Epic pity: 4/15" in text
+    assert "🟠 Legendary pity: 5/40" in text
     assert "Статус" in text
 
 

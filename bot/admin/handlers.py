@@ -7,7 +7,7 @@ from io import BytesIO
 from typing import Optional
 
 import structlog
-from telegram import Document, InputFile, Message, PhotoSize, Update
+from telegram import Document, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message, PhotoSize, Update
 from telegram.error import Forbidden, TelegramError
 from telegram.ext import ContextTypes
 
@@ -23,6 +23,7 @@ from bot.admin.ui import (
     SECTION_CANCEL,
     SECTION_CONFIRM,
     SECTION_CREATE_POKEMON,
+    SECTION_CREATE_POKEMON_FORM,
     SECTION_EDIT_POKEMON,
     SECTION_EDIT_POKEMON_ATTACK,
     SECTION_EDIT_POKEMON_DEFENSE,
@@ -58,7 +59,7 @@ from bot.admin.ui import (
     get_admin_audit_text,
     get_create_pokemon_field_prompt,
     get_create_pokemon_intro_text,
-    get_create_pokemon_summary_text,
+    get_create_form_intro_text,
     get_broadcast_empty_targets_text,
     get_broadcast_intro_text,
     get_broadcast_summary_text,
@@ -90,8 +91,18 @@ from bot.admin.ui import (
     get_variant_pokemon_id_prompt,
     get_variant_update_summary_text,
 )
-from bot.db.database import POKECOIN_CODE, POKEDOLLAR_CODE, ShopError
+from bot.db.database import (
+    FORM_KIND_GIGANTAMAX,
+    FORM_KIND_MEGA,
+    FORM_KIND_SHINY,
+    FORM_SUFFIX_MAP,
+    POKECOIN_CODE,
+    POKEDOLLAR_CODE,
+    ShopError,
+    _base_dex_from_form_code,
+)
 from bot.navigation.router import NavigationRouter, parse_callback_data
+from bot.ui.html import escape_html
 
 logger = structlog.get_logger()
 
@@ -108,6 +119,7 @@ ADMIN_PENDING_GRANT_POKEDOLLAR_AMOUNT = "grant_pokedollar_amount"
 ADMIN_PENDING_GRANT_POKECOIN_AMOUNT = "grant_pokecoin_amount"
 ADMIN_PENDING_GRANT_POKEMON_ID = "grant_pokemon_id"
 ADMIN_PENDING_CREATE_POKEMON_FIELD = "create_pokemon_field"
+ADMIN_PENDING_CREATE_POKEMON_FORM_FIELD = "create_pokemon_form_field"
 ADMIN_PENDING_EDIT_POKEMON_ID = "edit_pokemon_id"
 ADMIN_PENDING_EDIT_POKEMON_VALUE = "edit_pokemon_value"
 ADMIN_PENDING_BROADCAST_TEXT = "broadcast_text"
@@ -125,6 +137,7 @@ ADMIN_PENDING_IMAGE_VARIANT_DEFAULT = "image_variant_default"
 ADMIN_ACTION_GRANT_CURRENCY = "grant.currency"
 ADMIN_ACTION_GRANT_POKEMON = "grant.pokemon"
 ADMIN_ACTION_CREATE_POKEMON = "catalog.create_pokemon"
+ADMIN_ACTION_CREATE_POKEMON_FORM = "catalog.create_pokemon_form"
 ADMIN_ACTION_ATTACH_IMAGE_VARIANT = "images.attach_variant"
 ADMIN_ACTION_UPDATE_IMAGE_SOURCE = "images.update_source"
 ADMIN_ACTION_UPDATE_IMAGE_VARIANT = "images.update_variant"
@@ -132,18 +145,79 @@ ADMIN_ACTION_UPDATE_POKEMON_SPECIES = "catalog.update_pokemon_species"
 ADMIN_ACTION_BROADCAST_MESSAGE = "ops.broadcast_message"
 ADMIN_AUDIT_PREVIEW_LIMIT = 10
 ADMIN_AUDIT_EXPORT_LIMIT = 200
+ADMIN_CREATE_TYPE_CONFIRM_SECTION = "apct"
+ADMIN_CREATE_RARITY_CONFIRM_SECTION = "apcr"
+ADMIN_CREATE_FORM_KIND_CONFIRM_SECTION = "apcf"
 
 CREATE_POKEMON_FIELDS: tuple[tuple[str, str, str], ...] = (
     ("pokemon_id", "ID", "Отправьте числовой id нового покемона."),
     ("name", "Имя", "Отправьте имя нового покемона."),
-    ("pokemon_type", "Тип", "Отправьте тип покемона или <code>-</code>, если типа нет."),
-    ("rarity", "Редкость", "Отправьте редкость: Common, Rare, Epic или Legendary."),
     ("base_hp", "HP", "Отправьте базовое значение HP."),
     ("base_attack", "ATK", "Отправьте базовое значение атаки."),
     ("base_defense", "DEF", "Отправьте базовое значение защиты."),
     ("base_stamina", "SPD", "Отправьте базовое значение скорости/стамины."),
 )
 CREATE_POKEMON_ALLOWED_RARITIES = {"Common", "Rare", "Epic", "Legendary"}
+CREATE_POKEMON_FORM_ALLOWED_KINDS = (FORM_KIND_SHINY, FORM_KIND_MEGA, FORM_KIND_GIGANTAMAX)
+CREATE_POKEMON_FORM_FIELDS: tuple[tuple[str, str, str], ...] = (
+    ("base_pokemon_id", "Базовый ID", "Отправьте pokemon_id базового вида."),
+    ("base_hp", "HP", "Отправьте базовое значение HP."),
+    ("base_attack", "ATK", "Отправьте базовое значение атаки."),
+    ("base_defense", "DEF", "Отправьте базовое значение защиты."),
+    ("base_stamina", "SPD", "Отправьте базовое значение скорости/стамины."),
+)
+ADMIN_POKEMON_TYPE_OPTIONS: tuple[str, ...] = (
+    "Normal",
+    "Fire",
+    "Water",
+    "Electric",
+    "Grass",
+    "Ice",
+    "Fighting",
+    "Poison",
+    "Ground",
+    "Flying",
+    "Psychic",
+    "Bug",
+    "Rock",
+    "Ghost",
+    "Dragon",
+    "Dark",
+    "Steel",
+    "Fairy",
+)
+ADMIN_POKEMON_TYPE_CODES = {
+    "Normal": "no",
+    "Fire": "fi",
+    "Water": "wa",
+    "Electric": "el",
+    "Grass": "gr",
+    "Ice": "ic",
+    "Fighting": "fg",
+    "Poison": "po",
+    "Ground": "go",
+    "Flying": "fl",
+    "Psychic": "ps",
+    "Bug": "bu",
+    "Rock": "ro",
+    "Ghost": "gh",
+    "Dragon": "dr",
+    "Dark": "da",
+    "Steel": "st",
+    "Fairy": "fa",
+}
+ADMIN_TYPE_TOGGLE_SECTIONS = {value: f"apt_{code}" for value, code in ADMIN_POKEMON_TYPE_CODES.items()}
+ADMIN_RARITY_SELECT_SECTIONS = {
+    "Legendary": "apr_l",
+    "Epic": "apr_e",
+    "Rare": "apr_r",
+    "Common": "apr_c",
+}
+ADMIN_FORM_KIND_SELECT_SECTIONS = {
+    FORM_KIND_SHINY: "apf_s",
+    FORM_KIND_MEGA: "apf_m",
+    FORM_KIND_GIGANTAMAX: "apf_g",
+}
 EDIT_POKEMON_FIELDS: dict[str, tuple[str, str]] = {
     SECTION_EDIT_POKEMON_NAME: ("name", "Имя"),
     SECTION_EDIT_POKEMON_TYPE: ("pokemon_type", "Тип"),
@@ -588,6 +662,77 @@ def _build_create_pokemon_prompt(field_index: int) -> str:
     )
 
 
+def _build_create_pokemon_form_prompt(field_index: int) -> str:
+    field_key, field_label, field_hint = CREATE_POKEMON_FORM_FIELDS[field_index]
+    return get_create_pokemon_field_prompt(
+        field_label=field_label,
+        step=field_index + 1,
+        total_steps=len(CREATE_POKEMON_FORM_FIELDS),
+        hint=field_hint,
+    )
+
+
+def _build_type_picker_text(*, title: str, selected_types: list[str]) -> str:
+    chosen = ", ".join(selected_types) if selected_types else "—"
+    return (
+        f"🧩 <b>{title}</b>\n\n"
+        "Выберите 1 или 2 типа кнопками ниже.\n"
+        f"Сейчас: <b>{escape_html(chosen)}</b>"
+    )
+
+
+def _build_type_picker_keyboard(session_id: str, selected_types: list[str]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for index in range(0, len(ADMIN_POKEMON_TYPE_OPTIONS), 3):
+        row: list[InlineKeyboardButton] = []
+        for option in ADMIN_POKEMON_TYPE_OPTIONS[index:index + 3]:
+            active = option in selected_types
+            label = f"{'✅ ' if active else ''}{option}"
+            row.append(InlineKeyboardButton(label, callback_data=f"menu:{ADMIN_TYPE_TOGGLE_SECTIONS[option]}:{session_id}"))
+        rows.append(row)
+    rows.append([InlineKeyboardButton("✅ Подтвердить", callback_data=f"menu:{ADMIN_CREATE_TYPE_CONFIRM_SECTION}:{session_id}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _build_rarity_picker_text(*, title: str, selected_rarity: str | None) -> str:
+    chosen = selected_rarity or "—"
+    return (
+        f"🧩 <b>{title}</b>\n\n"
+        "Выберите редкость кнопкой ниже.\n"
+        f"Сейчас: <b>{escape_html(chosen)}</b>"
+    )
+
+
+def _build_rarity_picker_keyboard(session_id: str, selected_rarity: str | None) -> InlineKeyboardMarkup:
+    rows = [[
+        InlineKeyboardButton(f"{'✅ ' if selected_rarity == rarity else ''}{rarity}", callback_data=f"menu:{section}:{session_id}")
+        for rarity, section in ADMIN_RARITY_SELECT_SECTIONS.items()
+    ]]
+    rows.append([InlineKeyboardButton("✅ Подтвердить", callback_data=f"menu:{ADMIN_CREATE_RARITY_CONFIRM_SECTION}:{session_id}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _build_form_kind_picker_text(selected_form_kind: str | None) -> str:
+    chosen = selected_form_kind or "—"
+    return (
+        "✨ <b>Создание формы покемона</b>\n\n"
+        "Выберите тип формы.\n"
+        f"Сейчас: <b>{escape_html(chosen)}</b>"
+    )
+
+
+def _build_form_kind_picker_keyboard(session_id: str, selected_form_kind: str | None) -> InlineKeyboardMarkup:
+    rows = [[
+        InlineKeyboardButton(
+            f"{'✅ ' if selected_form_kind == kind else ''}{kind}",
+            callback_data=f"menu:{section}:{session_id}",
+        )
+        for kind, section in ADMIN_FORM_KIND_SELECT_SECTIONS.items()
+    ]]
+    rows.append([InlineKeyboardButton("✅ Подтвердить", callback_data=f"menu:{ADMIN_CREATE_FORM_KIND_CONFIRM_SECTION}:{session_id}")])
+    return InlineKeyboardMarkup(rows)
+
+
 async def _start_create_pokemon(update: Update, context: ContextTypes.DEFAULT_TYPE, session) -> None:
     admin_session_store.set_pending_input(
         action=ADMIN_PENDING_CREATE_POKEMON_FIELD,
@@ -602,6 +747,158 @@ async def _start_create_pokemon(update: Update, context: ContextTypes.DEFAULT_TY
         parse_mode="HTML",
         reply_markup=build_admin_back_keyboard(_pokemon_back_session(update, session)),
     )
+
+
+async def _start_create_pokemon_form(update: Update, context: ContextTypes.DEFAULT_TYPE, session) -> None:
+    admin_session_store.set_pending_input(
+        action=ADMIN_PENDING_CREATE_POKEMON_FORM_FIELD,
+        chat_id=session.chat_id,
+        user_id=session.user_id,
+        source_message_id=update.callback_query.message.message_id,
+        source_message_thread_id=getattr(update.callback_query.message, "message_thread_id", None),
+        data={"field_index": 0, "draft": {}},
+    )
+    await update.callback_query.message.edit_text(
+        f"{get_create_form_intro_text()}\n\n{_build_create_pokemon_form_prompt(0)}",
+        parse_mode="HTML",
+        reply_markup=build_admin_back_keyboard(_pokemon_back_session(update, session)),
+    )
+
+
+async def _show_create_type_picker(query, session, pending_action: str, pending_data: dict[str, object], *, title: str) -> None:
+    selected_types = list(pending_data.get("selected_types") or [])
+    admin_session_store.set_pending_input(
+        action=pending_action,
+        chat_id=session.chat_id,
+        user_id=session.user_id,
+        source_message_id=query.message.message_id,
+        source_message_thread_id=getattr(query.message, "message_thread_id", None),
+        data={
+            **pending_data,
+            "selection_mode": "type",
+            "selected_types": selected_types,
+            "selection_title": title,
+        },
+    )
+    await query.message.edit_text(
+        _build_type_picker_text(title=title, selected_types=selected_types),
+        parse_mode="HTML",
+        reply_markup=_build_type_picker_keyboard(
+            admin_session_store.create_session(
+                chat_id=session.chat_id,
+                message_id=query.message.message_id,
+                message_thread_id=getattr(query.message, "message_thread_id", None),
+                user_id=session.user_id,
+                data={"screen": SECTION_POKEMON},
+            ),
+            selected_types,
+        ),
+    )
+
+
+async def _show_create_rarity_picker(query, session, pending_action: str, pending_data: dict[str, object], *, title: str) -> None:
+    selected_rarity = pending_data.get("selected_rarity") if isinstance(pending_data.get("selected_rarity"), str) else None
+    admin_session_store.set_pending_input(
+        action=pending_action,
+        chat_id=session.chat_id,
+        user_id=session.user_id,
+        source_message_id=query.message.message_id,
+        source_message_thread_id=getattr(query.message, "message_thread_id", None),
+        data={
+            **pending_data,
+            "selection_mode": "rarity",
+            "selected_rarity": selected_rarity,
+            "selection_title": title,
+        },
+    )
+    await query.message.edit_text(
+        _build_rarity_picker_text(title=title, selected_rarity=selected_rarity),
+        parse_mode="HTML",
+        reply_markup=_build_rarity_picker_keyboard(
+            admin_session_store.create_session(
+                chat_id=session.chat_id,
+                message_id=query.message.message_id,
+                message_thread_id=getattr(query.message, "message_thread_id", None),
+                user_id=session.user_id,
+                data={"screen": SECTION_POKEMON},
+            ),
+            selected_rarity,
+        ),
+    )
+
+
+async def _show_create_form_kind_picker(query, session, pending_data: dict[str, object]) -> None:
+    admin_session_store.set_pending_input(
+        action=ADMIN_PENDING_CREATE_POKEMON_FORM_FIELD,
+        chat_id=session.chat_id,
+        user_id=session.user_id,
+        source_message_id=query.message.message_id,
+        source_message_thread_id=getattr(query.message, "message_thread_id", None),
+        data={
+            **pending_data,
+            "phase": "form_kind",
+            "selected_form_kind": pending_data.get("selected_form_kind"),
+        },
+    )
+    await query.message.edit_text(
+        _build_form_kind_picker_text(pending_data.get("selected_form_kind") if isinstance(pending_data.get("selected_form_kind"), str) else None),
+        parse_mode="HTML",
+        reply_markup=_build_form_kind_picker_keyboard(
+            admin_session_store.create_session(
+                chat_id=session.chat_id,
+                message_id=query.message.message_id,
+                message_thread_id=getattr(query.message, "message_thread_id", None),
+                user_id=session.user_id,
+                data={"screen": SECTION_POKEMON},
+            ),
+            pending_data.get("selected_form_kind") if isinstance(pending_data.get("selected_form_kind"), str) else None,
+        ),
+    )
+
+
+async def _complete_admin_action_without_confirm(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    action_type: str,
+    title: str,
+    input_payload: dict[str, object],
+) -> None:
+    user = update.effective_user
+    if user is None:
+        return
+    pending_action = AdminPendingAction(
+        action_type=action_type,
+        title=title,
+        description="",
+        input_payload=input_payload,
+    )
+    executor = _pending_executors[action_type]
+    try:
+        result_payload = await executor(update, context, pending_action) or {}
+    except Exception as exc:
+        await _audit_admin_event(
+            context,
+            actor_telegram_id=user.id,
+            actor_username=user.username,
+            action_type=action_type,
+            status="failed",
+            input_payload=input_payload,
+            error_message=str(exc),
+        )
+        raise
+
+    await _audit_admin_event(
+        context,
+        actor_telegram_id=user.id,
+        actor_username=user.username,
+        action_type=action_type,
+        status="success",
+        input_payload=input_payload,
+        result_payload=result_payload,
+    )
+    summary_text = str(result_payload.get("summary_text", "Действие выполнено."))
+    await _send_chat_message(update, f"✅ <b>{escape_html(title)}</b>\n\n{summary_text}")
 
 
 async def _start_image_upload_variant(update: Update, context: ContextTypes.DEFAULT_TYPE, session) -> None:
@@ -706,6 +1003,210 @@ async def _start_grant_pokemon(update: Update, context: ContextTypes.DEFAULT_TYP
         data={"flow": "pokemon"},
     )
 
+
+def _current_pending(update: Update):
+    chat = update.effective_chat
+    user = update.effective_user
+    if chat is None or user is None:
+        return None
+    return admin_session_store.get_pending_input(chat_id=chat.id, user_id=user.id)
+
+
+async def _toggle_create_type(update: Update, context: ContextTypes.DEFAULT_TYPE, session, *, pokemon_type: str) -> None:
+    pending = _current_pending(update)
+    query = update.callback_query
+    if pending is None or query is None or pending.action not in {ADMIN_PENDING_CREATE_POKEMON_FIELD, ADMIN_PENDING_CREATE_POKEMON_FORM_FIELD}:
+        await query.answer(ADMIN_ERROR_STALE_MENU, show_alert=True)
+        return
+    selected = list(pending.data.get("selected_types") or [])
+    if pokemon_type in selected:
+        selected.remove(pokemon_type)
+    else:
+        if len(selected) >= 2:
+            await query.answer("Можно выбрать максимум 2 типа.", show_alert=True)
+            return
+        selected.append(pokemon_type)
+    pending.data["selected_types"] = selected
+    admin_session_store.set_pending_input(
+        action=pending.action,
+        chat_id=session.chat_id,
+        user_id=session.user_id,
+        source_message_id=pending.source_message_id,
+        source_message_thread_id=pending.source_message_thread_id,
+        data=pending.data,
+    )
+    title = str(pending.data.get("selection_title", "Выбор типа"))
+    await query.message.edit_text(
+        _build_type_picker_text(title=title, selected_types=selected),
+        parse_mode="HTML",
+        reply_markup=_build_type_picker_keyboard(session.session_id, selected),
+    )
+
+
+async def _select_create_rarity(update: Update, context: ContextTypes.DEFAULT_TYPE, session, *, rarity: str) -> None:
+    pending = _current_pending(update)
+    query = update.callback_query
+    if pending is None or query is None or pending.action not in {ADMIN_PENDING_CREATE_POKEMON_FIELD, ADMIN_PENDING_CREATE_POKEMON_FORM_FIELD}:
+        await query.answer(ADMIN_ERROR_STALE_MENU, show_alert=True)
+        return
+    pending.data["selected_rarity"] = rarity
+    admin_session_store.set_pending_input(
+        action=pending.action,
+        chat_id=session.chat_id,
+        user_id=session.user_id,
+        source_message_id=pending.source_message_id,
+        source_message_thread_id=pending.source_message_thread_id,
+        data=pending.data,
+    )
+    title = str(pending.data.get("selection_title", "Выбор редкости"))
+    await query.message.edit_text(
+        _build_rarity_picker_text(title=title, selected_rarity=rarity),
+        parse_mode="HTML",
+        reply_markup=_build_rarity_picker_keyboard(session.session_id, rarity),
+    )
+
+
+async def _select_create_form_kind(update: Update, context: ContextTypes.DEFAULT_TYPE, session, *, form_kind: str) -> None:
+    pending = _current_pending(update)
+    query = update.callback_query
+    if pending is None or query is None or pending.action != ADMIN_PENDING_CREATE_POKEMON_FORM_FIELD:
+        await query.answer(ADMIN_ERROR_STALE_MENU, show_alert=True)
+        return
+    pending.data["selected_form_kind"] = form_kind
+    admin_session_store.set_pending_input(
+        action=pending.action,
+        chat_id=session.chat_id,
+        user_id=session.user_id,
+        source_message_id=pending.source_message_id,
+        source_message_thread_id=pending.source_message_thread_id,
+        data=pending.data,
+    )
+    await query.message.edit_text(
+        _build_form_kind_picker_text(form_kind),
+        parse_mode="HTML",
+        reply_markup=_build_form_kind_picker_keyboard(session.session_id, form_kind),
+    )
+
+
+async def _confirm_create_type(update: Update, context: ContextTypes.DEFAULT_TYPE, session) -> None:
+    pending = _current_pending(update)
+    query = update.callback_query
+    if pending is None or query is None:
+        return
+    selected = list(pending.data.get("selected_types") or [])
+    if not selected:
+        await query.answer("Выберите хотя бы один тип.", show_alert=True)
+        return
+    draft = dict(pending.data.get("draft") or {})
+    draft["pokemon_type"] = "/".join(selected)
+    if pending.action == ADMIN_PENDING_CREATE_POKEMON_FIELD:
+        await _show_create_rarity_picker(
+            query,
+            session,
+            ADMIN_PENDING_CREATE_POKEMON_FIELD,
+            {"draft": draft, "selected_rarity": None},
+            title="Создание покемона: редкость",
+        )
+        return
+    pending_data = dict(pending.data)
+    pending_data.pop("selected_types", None)
+    pending_data["draft"] = draft
+    pending_data["phase"] = "rarity"
+    await _show_create_rarity_picker(
+        query,
+        session,
+        ADMIN_PENDING_CREATE_POKEMON_FORM_FIELD,
+        pending_data,
+        title="Создание формы: редкость",
+    )
+
+
+async def _confirm_create_rarity(update: Update, context: ContextTypes.DEFAULT_TYPE, session) -> None:
+    pending = _current_pending(update)
+    query = update.callback_query
+    if pending is None or query is None:
+        return
+    selected_rarity = pending.data.get("selected_rarity")
+    if not isinstance(selected_rarity, str):
+        await query.answer("Сначала выберите редкость.", show_alert=True)
+        return
+    if pending.action == ADMIN_PENDING_CREATE_POKEMON_FIELD:
+        draft = dict(pending.data.get("draft") or {})
+        draft["rarity"] = selected_rarity
+        admin_session_store.set_pending_input(
+            action=ADMIN_PENDING_CREATE_POKEMON_FIELD,
+            chat_id=session.chat_id,
+            user_id=session.user_id,
+            source_message_id=query.message.message_id,
+            source_message_thread_id=getattr(query.message, "message_thread_id", None),
+            data={"field_index": 2, "draft": draft},
+        )
+        await query.message.edit_text(
+            _build_create_pokemon_prompt(2),
+            parse_mode="HTML",
+            reply_markup=build_admin_back_keyboard(_pokemon_back_session(update, session)),
+        )
+        return
+
+    draft = dict(pending.data.get("draft") or {})
+    draft["rarity"] = selected_rarity
+    admin_session_store.set_pending_input(
+        action=ADMIN_PENDING_CREATE_POKEMON_FORM_FIELD,
+        chat_id=session.chat_id,
+        user_id=session.user_id,
+        source_message_id=query.message.message_id,
+        source_message_thread_id=getattr(query.message, "message_thread_id", None),
+        data={"phase": "stats", "field_index": 1, "draft": draft},
+    )
+    await query.message.edit_text(
+        _build_create_pokemon_form_prompt(1),
+        parse_mode="HTML",
+        reply_markup=build_admin_back_keyboard(_pokemon_back_session(update, session)),
+    )
+
+
+async def _confirm_create_form_kind(update: Update, context: ContextTypes.DEFAULT_TYPE, session) -> None:
+    pending = _current_pending(update)
+    query = update.callback_query
+    db = _db_from_context(context)
+    if pending is None or query is None or db is None:
+        return
+    form_kind = pending.data.get("selected_form_kind")
+    draft = dict(pending.data.get("draft") or {})
+    if not isinstance(form_kind, str):
+        await query.answer("Сначала выберите форму.", show_alert=True)
+        return
+    draft["form_kind"] = form_kind
+    draft["dex_form_code"] = f"{draft['base_dex_form_code']}-{FORM_SUFFIX_MAP[form_kind]}"
+    if form_kind == FORM_KIND_SHINY:
+        base_entry = pending.data["base_entry"]
+        draft["pokemon_type"] = base_entry["pokemon_type"]
+        draft["rarity"] = base_entry["rarity"]
+        draft["base_hp"] = base_entry["base_hp"]
+        draft["base_attack"] = base_entry["base_attack"]
+        draft["base_defense"] = base_entry["base_defense"]
+        draft["base_stamina"] = base_entry["base_stamina"]
+        admin_session_store.set_pending_input(
+            action=ADMIN_PENDING_CREATE_POKEMON_FORM_FIELD,
+            chat_id=session.chat_id,
+            user_id=session.user_id,
+            source_message_id=query.message.message_id,
+            source_message_thread_id=getattr(query.message, "message_thread_id", None),
+            data={"phase": "image", "draft": draft},
+        )
+        await query.message.edit_text(
+            "🖼 Арт формы\n\nОтправьте изображение как photo/document или <code>-</code>, чтобы оставить заглушку.",
+            parse_mode="HTML",
+            reply_markup=build_admin_back_keyboard(_pokemon_back_session(update, session)),
+        )
+        return
+    await _show_create_type_picker(
+        query,
+        session,
+        ADMIN_PENDING_CREATE_POKEMON_FORM_FIELD,
+        {"draft": draft, "phase": "type", "selected_types": []},
+        title="Создание формы: тип",
+    )
 
 async def _show_placeholder_section(update: Update, context: ContextTypes.DEFAULT_TYPE, session, section: str) -> None:
     admin_session_store.clear_pending_input(chat_id=session.chat_id, user_id=session.user_id)
@@ -924,6 +1425,77 @@ async def _execute_create_pokemon(update: Update, context: ContextTypes.DEFAULT_
     }
 
 
+async def _execute_create_pokemon_form(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    pending_action: AdminPendingAction,
+) -> dict[str, object]:
+    db = _db_from_context(context)
+    if db is None:
+        raise ShopError("База данных недоступна.")
+
+    input_payload = pending_action.input_payload
+    created_id = await db.admin_create_pokemon_form(
+        pokemon_id=int(input_payload["pokemon_id"]),
+        base_pokemon_id=int(input_payload["base_pokemon_id"]),
+        form_kind=str(input_payload["form_kind"]),
+        pokemon_type=input_payload.get("pokemon_type") if isinstance(input_payload.get("pokemon_type"), str) else None,
+        rarity=str(input_payload["rarity"]),
+        base_hp=int(input_payload["base_hp"]),
+        base_attack=int(input_payload["base_attack"]),
+        base_defense=int(input_payload["base_defense"]),
+        base_stamina=int(input_payload["base_stamina"]),
+    )
+    image_credit_id: int | None = None
+    file_id = input_payload.get("telegram_file_id")
+    file_unique_id = input_payload.get("telegram_file_unique_id")
+    if isinstance(file_id, str) and isinstance(file_unique_id, str):
+        telegram_file = await context.bot.get_file(file_id)
+        file_bytes = bytes(await telegram_file.download_as_bytearray())
+        file_name = input_payload.get("file_name") if isinstance(input_payload.get("file_name"), str) else None
+        content_type = input_payload.get("content_type") if isinstance(input_payload.get("content_type"), str) else None
+        object_key = build_admin_object_key(
+            pokemon_id=created_id,
+            pokemon_name=str(input_payload["base_name"]),
+            file_unique_id=file_unique_id,
+            file_name=file_name,
+        )
+        storage_bucket, object_key, etag = await upload_admin_image_bytes(
+            object_key=object_key,
+            file_bytes=file_bytes,
+            content_type=content_type,
+        )
+        image_credit_id = await db.admin_attach_image_variant(
+            pokemon_id=created_id,
+            storage_bucket=storage_bucket,
+            object_key=object_key,
+            content_type=content_type,
+            etag=etag,
+            source=input_payload.get("source") if isinstance(input_payload.get("source"), str) else None,
+            display_order=1,
+            is_default=True,
+        )
+
+    summary_lines = [
+        f"Создана форма: <b>{str(input_payload['base_name'])}</b>",
+        f"Форма: <b>{str(input_payload['form_kind'])}</b>",
+        f"ID: <code>{created_id}</code>",
+        f"dex_form_code: <code>{str(input_payload['dex_form_code'])}</code>",
+    ]
+    if image_credit_id is not None:
+        summary_lines.append(f"image_credit_id: <code>{image_credit_id}</code>")
+
+    return {
+        "pokemon_id": created_id,
+        "base_pokemon_id": int(input_payload["base_pokemon_id"]),
+        "base_name": str(input_payload["base_name"]),
+        "form_kind": str(input_payload["form_kind"]),
+        "dex_form_code": str(input_payload["dex_form_code"]),
+        "image_credit_id": image_credit_id,
+        "summary_text": "\n".join(summary_lines),
+    }
+
+
 async def _execute_attach_image_variant(update: Update, context: ContextTypes.DEFAULT_TYPE, pending_action: AdminPendingAction) -> dict[str, object]:
     db = _db_from_context(context)
     if db is None:
@@ -1074,13 +1646,18 @@ async def _execute_broadcast_message(update: Update, context: ContextTypes.DEFAU
 
 def _normalize_create_pokemon_field(*, field_key: str, raw_value: str) -> object:
     normalized = raw_value.strip()
-    if field_key in {"pokemon_id", "base_hp", "base_attack", "base_defense", "base_stamina"}:
+    if field_key in {"pokemon_id", "base_pokemon_id", "base_hp", "base_attack", "base_defense", "base_stamina"}:
         value = int(normalized)
         if value < 0:
             raise ShopError(f"{field_key} не может быть отрицательным.")
         return value
     if field_key == "pokemon_type":
         return None if normalized == "-" else normalized
+    if field_key == "form_kind":
+        normalized_lower = normalized.lower()
+        if normalized_lower not in CREATE_POKEMON_FORM_ALLOWED_KINDS:
+            raise ShopError("Форма должна быть одной из: shiny, mega, gigantamax.")
+        return normalized_lower
     if field_key == "rarity":
         if normalized not in CREATE_POKEMON_ALLOWED_RARITIES:
             raise ShopError("Редкость должна быть одной из: Common, Rare, Epic, Legendary.")
@@ -1133,7 +1710,43 @@ async def handle_admin_media_input(update: Update, context: ContextTypes.DEFAULT
         return
 
     pending = admin_session_store.get_pending_input(chat_id=chat.id, user_id=user.id)
-    if pending is None or pending.action != ADMIN_PENDING_IMAGE_UPLOAD_FILE:
+    if pending is None:
+        return
+
+    if pending.action == ADMIN_PENDING_CREATE_POKEMON_FORM_FIELD:
+        phase = str(pending.data.get("phase", "base"))
+        if phase != "image":
+            return
+        try:
+            file_id, file_unique_id, file_name, content_type = _resolve_admin_upload_media(message)
+        except ShopError as exc:
+            await _send_chat_message(update, f"⚠️ {exc}")
+            return
+
+        draft = dict(pending.data.get("draft") or {})
+        draft.update(
+            {
+                "telegram_file_id": file_id,
+                "telegram_file_unique_id": file_unique_id,
+                "file_name": file_name,
+                "content_type": content_type,
+            }
+        )
+        admin_session_store.set_pending_input(
+            action=ADMIN_PENDING_CREATE_POKEMON_FORM_FIELD,
+            chat_id=chat.id,
+            user_id=user.id,
+            source_message_id=pending.source_message_id,
+            source_message_thread_id=pending.source_message_thread_id,
+            data={"draft": draft, "phase": "image_source"},
+        )
+        await _send_chat_message(
+            update,
+            "🔗 Источник арта\n\nОтправьте ссылку на источник арта или <code>-</code>, чтобы оставить источник пустым.",
+        )
+        return
+
+    if pending.action != ADMIN_PENDING_IMAGE_UPLOAD_FILE:
         return
 
     try:
@@ -1276,6 +1889,29 @@ async def handle_admin_text_input(update: Update, context: ContextTypes.DEFAULT_
             draft[field_key] = _normalize_create_pokemon_field(field_key=field_key, raw_value=text_value)
 
             next_index = field_index + 1
+            if field_key == "name":
+                admin_session_store.set_pending_input(
+                    action=ADMIN_PENDING_CREATE_POKEMON_FIELD,
+                    chat_id=chat.id,
+                    user_id=user.id,
+                    source_message_id=pending.source_message_id,
+                    source_message_thread_id=pending.source_message_thread_id,
+                    data={
+                        "draft": draft,
+                        "selected_types": [],
+                        "selection_mode": "type",
+                        "selection_title": "Создание покемона: тип",
+                    },
+                )
+                sent_message = await _send_chat_message(
+                    update,
+                    _build_type_picker_text(title="Создание покемона: тип", selected_types=[]),
+                )
+                if sent_message is None:
+                    return
+                stage_session_id = _create_session(sent_message, user_id=user.id, data={"screen": SECTION_POKEMON})
+                await sent_message.edit_reply_markup(reply_markup=_build_type_picker_keyboard(stage_session_id, []))
+                return
             if next_index < len(CREATE_POKEMON_FIELDS):
                 admin_session_store.set_pending_input(
                     action=ADMIN_PENDING_CREATE_POKEMON_FIELD,
@@ -1292,23 +1928,105 @@ async def handle_admin_text_input(update: Update, context: ContextTypes.DEFAULT_
                 return
 
             admin_session_store.clear_pending_input(chat_id=chat.id, user_id=user.id)
-            pending_action = AdminPendingAction(
+            await _complete_admin_action_without_confirm(
+                update,
+                context,
                 action_type=ADMIN_ACTION_CREATE_POKEMON,
                 title="Создать покемона",
-                description=get_create_pokemon_summary_text(
-                    pokemon_id=int(draft["pokemon_id"]),
-                    name=str(draft["name"]),
-                    pokemon_type=draft.get("pokemon_type") if isinstance(draft.get("pokemon_type"), str) else None,
-                    rarity=str(draft["rarity"]),
-                    base_hp=int(draft["base_hp"]),
-                    base_attack=int(draft["base_attack"]),
-                    base_defense=int(draft["base_defense"]),
-                    base_stamina=int(draft["base_stamina"]),
-                ),
                 input_payload=draft,
             )
-            await show_pending_action_preview(update, context, pending_action=pending_action)
             return
+
+        if pending.action == ADMIN_PENDING_CREATE_POKEMON_FORM_FIELD:
+            draft = dict(pending.data.get("draft") or {})
+            phase = str(pending.data.get("phase", "base"))
+            if phase == "base":
+                base_pokemon_id = int(_normalize_create_pokemon_field(field_key="base_pokemon_id", raw_value=text_value))
+                base_entry = await db.get_pokemon_catalog_entry_by_id(base_pokemon_id)
+                base_form_code = _base_dex_from_form_code(base_entry.dex_form_code) or str(base_entry.pokemon_id)
+                if base_entry.dex_form_code and "-" in base_entry.dex_form_code:
+                    raise ShopError("Нужно указать pokemon_id базового вида, а не его формы.")
+                next_id = await db.get_next_catalog_pokemon_id()
+                draft.update(
+                    {
+                        "pokemon_id": next_id,
+                        "base_pokemon_id": base_pokemon_id,
+                        "base_name": base_entry.name,
+                        "base_dex_form_code": base_form_code,
+                    }
+                )
+                admin_session_store.set_pending_input(
+                    action=ADMIN_PENDING_CREATE_POKEMON_FORM_FIELD,
+                    chat_id=chat.id,
+                    user_id=user.id,
+                    source_message_id=pending.source_message_id,
+                    source_message_thread_id=pending.source_message_thread_id,
+                    data={"draft": draft, "base_entry": base_entry.as_session_payload(), "phase": "form_kind"},
+                )
+                sent_message = await _send_chat_message(
+                    update,
+                    _build_form_kind_picker_text(None),
+                )
+                if sent_message is None:
+                    return
+                session_id = _create_session(sent_message, user_id=user.id, data={"screen": SECTION_POKEMON})
+                await sent_message.edit_reply_markup(reply_markup=_build_form_kind_picker_keyboard(session_id, None))
+                return
+            if phase == "image":
+                if text_value.strip() != "-":
+                    raise ShopError("Отправьте изображение как photo/document или <code>-</code>, чтобы оставить заглушку.")
+                admin_session_store.clear_pending_input(chat_id=chat.id, user_id=user.id)
+                await _complete_admin_action_without_confirm(
+                    update,
+                    context,
+                    action_type=ADMIN_ACTION_CREATE_POKEMON_FORM,
+                    title="Создать форму",
+                    input_payload=draft,
+                )
+                return
+            if phase == "image_source":
+                source = text_value.strip()
+                draft["source"] = None if source == "-" else source
+                admin_session_store.clear_pending_input(chat_id=chat.id, user_id=user.id)
+                await _complete_admin_action_without_confirm(
+                    update,
+                    context,
+                    action_type=ADMIN_ACTION_CREATE_POKEMON_FORM,
+                    title="Создать форму",
+                    input_payload=draft,
+                )
+                return
+            if phase == "stats":
+                field_index = int(pending.data.get("field_index", 1))
+                if field_index < 1 or field_index >= len(CREATE_POKEMON_FORM_FIELDS):
+                    raise ShopError("Состояние создания формы повреждено. Начните заново.")
+                field_key = CREATE_POKEMON_FORM_FIELDS[field_index][0]
+                draft[field_key] = _normalize_create_pokemon_field(field_key=field_key, raw_value=text_value)
+                next_index = field_index + 1
+                if next_index < len(CREATE_POKEMON_FORM_FIELDS):
+                    admin_session_store.set_pending_input(
+                        action=ADMIN_PENDING_CREATE_POKEMON_FORM_FIELD,
+                        chat_id=chat.id,
+                        user_id=user.id,
+                        source_message_id=pending.source_message_id,
+                        source_message_thread_id=pending.source_message_thread_id,
+                        data={"phase": "stats", "field_index": next_index, "draft": draft},
+                    )
+                    await _send_chat_message(update, _build_create_pokemon_form_prompt(next_index))
+                    return
+                admin_session_store.set_pending_input(
+                    action=ADMIN_PENDING_CREATE_POKEMON_FORM_FIELD,
+                    chat_id=chat.id,
+                    user_id=user.id,
+                    source_message_id=pending.source_message_id,
+                    source_message_thread_id=pending.source_message_thread_id,
+                    data={"phase": "image", "draft": draft},
+                )
+                await _send_chat_message(
+                    update,
+                    "🖼 Арт формы\n\nОтправьте изображение как photo/document или <code>-</code>, чтобы оставить заглушку.",
+                )
+                return
 
         if pending.action == ADMIN_PENDING_EDIT_POKEMON_ID:
             pokemon_id = int(text_value)
@@ -1581,6 +2299,7 @@ def register_admin_routes() -> None:
     admin_router.register(SECTION_GRANT_POKEMON, _start_grant_pokemon)
     admin_router.register(SECTION_POKEMON, _show_pokemon_section)
     admin_router.register(SECTION_CREATE_POKEMON, _start_create_pokemon)
+    admin_router.register(SECTION_CREATE_POKEMON_FORM, _start_create_pokemon_form)
     admin_router.register(SECTION_EDIT_POKEMON, _start_edit_pokemon)
     admin_router.register(SECTION_EDIT_POKEMON_NAME, lambda update, context, session: _select_edit_pokemon_field(update, context, session, callback_section=SECTION_EDIT_POKEMON_NAME))
     admin_router.register(SECTION_EDIT_POKEMON_TYPE, lambda update, context, session: _select_edit_pokemon_field(update, context, session, callback_section=SECTION_EDIT_POKEMON_TYPE))
@@ -1596,11 +2315,21 @@ def register_admin_routes() -> None:
     admin_router.register(SECTION_AUDIT, _show_audit_section)
     admin_router.register(SECTION_AUDIT_EXPORT, _export_audit_section)
     admin_router.register(SECTION_BROADCAST, _show_broadcast_section)
+    for pokemon_type, section in ADMIN_TYPE_TOGGLE_SECTIONS.items():
+        admin_router.register(section, lambda update, context, session, pokemon_type=pokemon_type: _toggle_create_type(update, context, session, pokemon_type=pokemon_type))
+    for rarity, section in ADMIN_RARITY_SELECT_SECTIONS.items():
+        admin_router.register(section, lambda update, context, session, rarity=rarity: _select_create_rarity(update, context, session, rarity=rarity))
+    for form_kind, section in ADMIN_FORM_KIND_SELECT_SECTIONS.items():
+        admin_router.register(section, lambda update, context, session, form_kind=form_kind: _select_create_form_kind(update, context, session, form_kind=form_kind))
+    admin_router.register(ADMIN_CREATE_TYPE_CONFIRM_SECTION, _confirm_create_type)
+    admin_router.register(ADMIN_CREATE_RARITY_CONFIRM_SECTION, _confirm_create_rarity)
+    admin_router.register(ADMIN_CREATE_FORM_KIND_CONFIRM_SECTION, _confirm_create_form_kind)
     admin_router.register(SECTION_CONFIRM, _confirm_pending_action)
     admin_router.register(SECTION_CANCEL, _cancel_pending_action)
     register_pending_executor(ADMIN_ACTION_GRANT_CURRENCY, _execute_currency_grant)
     register_pending_executor(ADMIN_ACTION_GRANT_POKEMON, _execute_pokemon_grant)
     register_pending_executor(ADMIN_ACTION_CREATE_POKEMON, _execute_create_pokemon)
+    register_pending_executor(ADMIN_ACTION_CREATE_POKEMON_FORM, _execute_create_pokemon_form)
     register_pending_executor(ADMIN_ACTION_ATTACH_IMAGE_VARIANT, _execute_attach_image_variant)
     register_pending_executor(ADMIN_ACTION_UPDATE_IMAGE_SOURCE, _execute_update_image_source)
     register_pending_executor(ADMIN_ACTION_UPDATE_IMAGE_VARIANT, _execute_update_image_variant)

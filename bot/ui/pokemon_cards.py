@@ -42,16 +42,33 @@ class PokemonCardData:
     trainer_label: Optional[str] = None
     quantity: Optional[int] = None
     user_pokemon_id: Optional[int] = None
+    dex_form_code: Optional[str] = None
     image_credit_id: Optional[int] = None
     image_variant_position: Optional[int] = None
     image_variant_total: Optional[int] = None
+    form_badge: Optional[str] = None
     extra_lines: tuple[str, ...] = ()
+
+
+def format_pokemon_display_name(name: str, form_badge: Optional[str]) -> str:
+    """Build the player-facing pokemon name with optional form in parentheses."""
+    normalized_name = name.strip()
+    if not form_badge:
+        return normalized_name
+    return f"{normalized_name} ({form_badge.lower()})"
+
+
+def format_pokemon_display_id(pokemon_id: int, dex_form_code: Optional[str]) -> str:
+    """Build the player-facing id line for one pokemon."""
+    if isinstance(dex_form_code, str) and dex_form_code.strip():
+        return dex_form_code.strip().split("-", 1)[0]
+    return str(pokemon_id)
 
 
 def render_pokemon_card_caption(card: PokemonCardData) -> str:
     """Render a compact pokemon card caption."""
     lines = [
-        f"📘 <b>{escape_html(card.name)}</b>",
+        f"📘 <b>{escape_html(format_pokemon_display_name(card.name, card.form_badge))}</b>",
         (f"Тренер: <b>{escape_html(card.trainer_label)}</b>" if card.trainer_label else ""),
         f"Редкость: <b>{escape_html(card.rarity)}</b>",
         f"Тип: <b>{escape_html(card.pokemon_type or 'unknown')}</b>",
@@ -60,7 +77,7 @@ def render_pokemon_card_caption(card: PokemonCardData) -> str:
         f"ATK: <b>{card.base_attack}</b>",
         f"DEF: <b>{card.base_defense}</b>",
         f"SPD: <b>{card.base_stamina}</b>",
-        f"ID покемона: <b>{card.pokemon_id}</b>",
+        f"ID покемона: <b>{escape_html(format_pokemon_display_id(card.pokemon_id, card.dex_form_code))}</b>",
         (f"ID экземпляра: <b>{card.user_pokemon_id}</b>" if card.user_pokemon_id is not None else ""),
         *card.extra_lines,
     ]
@@ -294,8 +311,10 @@ def build_owned_card_session_payload(
 def build_search_card_session_payload(
     *,
     pokemon_id: int,
+    dex_form_code: Optional[str],
     name: str,
     rarity: str,
+    form_badge: Optional[str],
     pokemon_type: Optional[str],
     base_hp: int,
     base_attack: int,
@@ -307,8 +326,10 @@ def build_search_card_session_payload(
     return {
         "card_kind": CARD_KIND_SEARCH,
         "card_pokemon_id": pokemon_id,
+        "card_dex_form_code": dex_form_code,
         "card_name": name,
         "card_rarity": rarity,
+        "card_form_badge": form_badge,
         "card_pokemon_type": pokemon_type,
         "card_base_hp": base_hp,
         "card_base_attack": base_attack,
