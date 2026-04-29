@@ -43,6 +43,7 @@ def test_schema_adds_form_code_to_pokemon_catalog() -> None:
     assert '"dex_form_code" varchar(16)' in schema
     assert 'SET "dex_form_code" = "id"::text' in schema
     assert 'CREATE UNIQUE INDEX IF NOT EXISTS pokemon_catalog_dex_form_code_idx' in schema
+    assert 'DROP CONSTRAINT "pokemon_catalog_name_key"' in schema
 
 
 def test_schema_migrates_legacy_naive_timestamps_and_removes_legacy_market_columns() -> None:

@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS "image_credits" (
 
 CREATE TABLE IF NOT EXISTS "pokemon_catalog" (
   "id" int PRIMARY KEY,
-  "name" varchar(64) UNIQUE NOT NULL,
+  "name" varchar(64) NOT NULL,
   "dex_form_code" varchar(16),
   "type" varchar(32),
   "rarity" varchar(32),
@@ -93,6 +93,18 @@ ALTER TABLE "pokemon_catalog"
 UPDATE "pokemon_catalog"
 SET "dex_form_code" = "id"::text
 WHERE "dex_form_code" IS NULL;
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'pokemon_catalog_name_key'
+  ) THEN
+    ALTER TABLE "pokemon_catalog"
+      DROP CONSTRAINT "pokemon_catalog_name_key";
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS "pokemon_image_variants" (
   "pokemon_id" int NOT NULL,
