@@ -98,6 +98,11 @@ FORM_SUFFIX_MAP = {
     FORM_KIND_GIGANTAMAX: "2",
 }
 FORM_SUFFIX_TO_KIND = {suffix: kind for kind, suffix in FORM_SUFFIX_MAP.items()}
+FORM_INTERNAL_ID_OFFSET_MAP = {
+    FORM_KIND_SHINY: 10_000,
+    FORM_KIND_MEGA: 20_000,
+    FORM_KIND_GIGANTAMAX: 30_000,
+}
 FORM_ENCOUNTER_OVERLAY_PROBABILITIES = {
     FORM_KIND_SHINY: 10.0,
     FORM_KIND_MEGA: 5.0,
@@ -118,6 +123,16 @@ def _coerce_json_object(value: object) -> dict[str, object] | None:
             return {"raw": value}
         return dict(parsed) if isinstance(parsed, dict) else {"raw": parsed}
     return {"raw": value}
+
+
+def build_form_internal_pokemon_id(base_pokemon_id: int, form_kind: str) -> int:
+    """Build a deterministic internal catalog id for a first-wave form."""
+    offset = FORM_INTERNAL_ID_OFFSET_MAP.get(form_kind)
+    if offset is None:
+        raise ShopError("Форма должна быть одной из: shiny, mega, gigantamax.")
+    if base_pokemon_id <= 0:
+        raise ShopError("base_pokemon_id должен быть больше нуля.")
+    return base_pokemon_id + offset
 
 
 def _base_dex_from_form_code(dex_form_code: str | None) -> str | None:

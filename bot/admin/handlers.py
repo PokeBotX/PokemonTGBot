@@ -100,6 +100,7 @@ from bot.db.database import (
     POKEDOLLAR_CODE,
     ShopError,
     _base_dex_from_form_code,
+    build_form_internal_pokemon_id,
 )
 from bot.navigation.router import NavigationRouter, parse_callback_data
 from bot.ui.html import escape_html
@@ -1177,6 +1178,7 @@ async def _confirm_create_form_kind(update: Update, context: ContextTypes.DEFAUL
         await query.answer("Сначала выберите форму.", show_alert=True)
         return
     draft["form_kind"] = form_kind
+    draft["pokemon_id"] = build_form_internal_pokemon_id(int(draft["base_pokemon_id"]), form_kind)
     draft["dex_form_code"] = f"{draft['base_dex_form_code']}-{FORM_SUFFIX_MAP[form_kind]}"
     if form_kind == FORM_KIND_SHINY:
         base_entry = pending.data["base_entry"]
@@ -1946,10 +1948,8 @@ async def handle_admin_text_input(update: Update, context: ContextTypes.DEFAULT_
                 base_form_code = _base_dex_from_form_code(base_entry.dex_form_code) or str(base_entry.pokemon_id)
                 if base_entry.dex_form_code and "-" in base_entry.dex_form_code:
                     raise ShopError("Нужно указать pokemon_id базового вида, а не его формы.")
-                next_id = await db.get_next_catalog_pokemon_id()
                 draft.update(
                     {
-                        "pokemon_id": next_id,
                         "base_pokemon_id": base_pokemon_id,
                         "base_name": base_entry.name,
                         "base_dex_form_code": base_form_code,

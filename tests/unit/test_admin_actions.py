@@ -227,7 +227,7 @@ async def test_handle_admin_text_input_builds_create_form_confirmation() -> None
             "phase": "stats",
             "field_index": 4,
             "draft": {
-                "pokemon_id": 10020,
+                "pokemon_id": 10120,
                 "base_pokemon_id": 120,
                 "base_name": "Staryu",
                 "base_dex_form_code": "120",
@@ -243,7 +243,7 @@ async def test_handle_admin_text_input_builds_create_form_confirmation() -> None
     )
 
     db = AsyncMock()
-    db.admin_create_pokemon_form = AsyncMock(return_value=10020)
+    db.admin_create_pokemon_form = AsyncMock(return_value=10120)
     application = Mock()
     application.bot_data = {"db": db}
     context = Mock(spec=ContextTypes.DEFAULT_TYPE)
@@ -286,7 +286,7 @@ async def test_handle_admin_media_input_accepts_create_form_image_and_prompts_so
         data={
             "phase": "image",
             "draft": {
-                "pokemon_id": 10020,
+                "pokemon_id": 10120,
                 "base_pokemon_id": 120,
                 "base_name": "Staryu",
                 "base_dex_form_code": "120",
@@ -352,7 +352,7 @@ async def test_execute_create_pokemon_form_surfaces_duplicate_form_error() -> No
         title="Создать форму",
         description="Будет создана shiny-форма.",
         input_payload={
-            "pokemon_id": 10020,
+            "pokemon_id": 10120,
             "base_pokemon_id": 120,
             "base_name": "Staryu",
             "form_kind": "shiny",

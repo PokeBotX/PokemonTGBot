@@ -918,8 +918,7 @@ async def test_admin_create_pokemon_form_flow_from_buttons_to_execute() -> None:
 
     db = AsyncMock()
     db.get_pokemon_catalog_entry_by_id = AsyncMock(return_value=base_entry)
-    db.get_next_catalog_pokemon_id = AsyncMock(return_value=10020)
-    db.admin_create_pokemon_form = AsyncMock(return_value=10020)
+    db.admin_create_pokemon_form = AsyncMock(return_value=10120)
     application = Mock()
     application.bot_data = {"db": db}
     context = Mock(spec=ContextTypes.DEFAULT_TYPE)
@@ -1015,7 +1014,7 @@ async def test_admin_create_pokemon_form_flow_from_buttons_to_execute() -> None:
     await handle_admin_text_input(skip_image_update, context)
 
     db.admin_create_pokemon_form.assert_awaited_once_with(
-        pokemon_id=10020,
+        pokemon_id=10120,
         base_pokemon_id=120,
         form_kind="shiny",
         pokemon_type="Water",
@@ -1062,8 +1061,7 @@ async def test_admin_create_pokemon_form_flow_attaches_uploaded_image() -> None:
 
     db = AsyncMock()
     db.get_pokemon_catalog_entry_by_id = AsyncMock(return_value=base_entry)
-    db.get_next_catalog_pokemon_id = AsyncMock(return_value=10020)
-    db.admin_create_pokemon_form = AsyncMock(return_value=10020)
+    db.admin_create_pokemon_form = AsyncMock(return_value=10120)
     db.admin_attach_image_variant = AsyncMock(return_value=5555)
     application = Mock()
     application.bot_data = {"db": db}
@@ -1175,15 +1173,15 @@ async def test_admin_create_pokemon_form_flow_attaches_uploaded_image() -> None:
     source_update.effective_chat = chat
     source_update.effective_message = source_message
 
-    with patch("bot.admin.handlers.upload_admin_image_bytes", new=AsyncMock(return_value=("pokemon-assets", "pokemon/10020/staryu-uniq-1.jpg", "etag-1"))):
+    with patch("bot.admin.handlers.upload_admin_image_bytes", new=AsyncMock(return_value=("pokemon-assets", "pokemon/10120/staryu-uniq-1.jpg", "etag-1"))):
         await handle_admin_text_input(source_update, context)
 
     db.admin_create_pokemon_form.assert_awaited_once()
     bot.get_file.assert_awaited_once_with("file-1")
     db.admin_attach_image_variant.assert_awaited_once_with(
-        pokemon_id=10020,
+        pokemon_id=10120,
         storage_bucket="pokemon-assets",
-        object_key="pokemon/10020/staryu-uniq-1.jpg",
+        object_key="pokemon/10120/staryu-uniq-1.jpg",
         content_type="image/jpeg",
         etag="etag-1",
         source="https://example.com/art/staryu",
