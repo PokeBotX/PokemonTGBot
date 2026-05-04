@@ -46,7 +46,7 @@ export default function PokemonDetailsPage() {
               Улучшить
             </Button>
             <Button className="rounded-xl bg-slate-700 text-slate-100 hover:bg-slate-600">
-              В избранное
+              В Избранное
             </Button>
           </div>
         </CardContent>

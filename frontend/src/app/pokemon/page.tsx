@@ -126,8 +126,8 @@ function PokemonDetailScreen() {
                 {lockMutation.isPending
                   ? "Сохраняем..."
                   : data.isLocked
-                    ? "🔓 Разлочить"
-                    : "🔒 Залочить"}
+                    ? "🔓 Убрать из Избранного"
+                    : "🔒 В Избранное"}
               </Button>
               {data.imageVariant.canSwitch ? (
                 <Button
@@ -165,7 +165,10 @@ function PokemonDetailScreen() {
               <InfoRow label="ATK" value={data.baseAttack} />
               <InfoRow label="DEF" value={data.baseDefense} />
               <InfoRow label="SPD" value={data.baseStamina} />
-              <InfoRow label="Статус" value={data.isLocked ? "Залочен" : "Не залочен"} />
+              <InfoRow
+                label="Статус"
+                value={data.isLocked ? "В Избранном" : "Не в Избранном"}
+              />
             </div>
           </SectionCard>
 

@@ -1,4 +1,5 @@
 import { BottomNav } from "@/components/bottom-nav";
+import { ScrollToTopButton } from "@/components/scroll-to-top-button";
 import { cn } from "@/lib/utils";
 
 type AppShellProps = {
@@ -6,6 +7,7 @@ type AppShellProps = {
   className?: string;
   contentClassName?: string;
   navVariant?: "default" | "minimal";
+  showScrollToTop?: boolean;
 };
 
 export function AppShell({
@@ -13,6 +15,7 @@ export function AppShell({
   className,
   contentClassName,
   navVariant = "default",
+  showScrollToTop = false,
 }: AppShellProps) {
   return (
     <main
@@ -25,6 +28,7 @@ export function AppShell({
         {children}
       </section>
 
+      {showScrollToTop ? <ScrollToTopButton /> : null}
       <BottomNav variant={navVariant} />
     </main>
   );

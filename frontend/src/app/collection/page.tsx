@@ -6,6 +6,7 @@ export default function CollectionPage() {
     <AppShell
       className="bg-slate-950 px-3 py-4 pb-28 text-slate-100"
       navVariant="minimal"
+      showScrollToTop
     >
       <CollectionScreen />
     </AppShell>

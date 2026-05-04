@@ -110,10 +110,10 @@ export function PokemonList({
     return (
       <EmptyState
         icon={lockedOnly ? "🔒" : "📦"}
-        title={lockedOnly ? "Залоченных покемонов пока нет" : "Покемонов пока нет"}
+        title={lockedOnly ? "В Избранном пока пусто" : "Покемонов пока нет"}
         description={
           lockedOnly
-            ? "Когда ты залочишь покемона в боте, он появится здесь."
+            ? "Когда ты добавишь покемона в избранное, он появится здесь."
             : "Когда ты поймаешь первого покемона, он появится здесь."
         }
       />
@@ -129,10 +129,10 @@ export function PokemonList({
           scroll={false}
           className="block"
         >
-            <PokemonCard
-              pokemonId={pokemon.id}
-              dexFormCode={pokemon.dexFormCode}
-              name={pokemon.name}
+          <PokemonCard
+            pokemonId={pokemon.id}
+            dexFormCode={pokemon.dexFormCode}
+            name={pokemon.name}
             type={pokemon.type}
             rarity={normalizePokemonRarity(pokemon.rarity)}
             formBadge={pokemon.formBadge}
