@@ -115,11 +115,11 @@ function PokemonDetailScreen() {
               </div>
             ) : null}
 
-            <div className="mt-4 grid grid-cols-2 gap-3">
+            <div className="mt-4 flex items-start gap-3">
               <Button
                 type="button"
                 variant="secondary"
-                className="rounded-xl bg-slate-700 text-slate-100 hover:bg-slate-600"
+                className="min-w-0 flex-1 whitespace-normal rounded-xl bg-slate-700 px-4 py-2 text-center leading-tight text-slate-100 hover:bg-slate-600"
                 onClick={() => void lockMutation.mutateAsync()}
                 disabled={lockMutation.isPending}
               >
@@ -133,7 +133,7 @@ function PokemonDetailScreen() {
                 <Button
                   type="button"
                   variant="secondary"
-                  className="rounded-xl bg-slate-700 text-slate-100 hover:bg-slate-600"
+                  className="shrink-0 rounded-xl bg-slate-700 text-slate-100 hover:bg-slate-600"
                   onClick={() => void imageMutation.mutateAsync()}
                   disabled={imageMutation.isPending}
                 >
