@@ -37,39 +37,45 @@ export function PokemonCard({
     <Card
       className={`relative overflow-hidden rounded-2xl border bg-slate-900 py-3 text-slate-100 shadow-[0_2px_12px_rgba(0,0,0,0.35)] ${getRarityBorderClass(rarity)}`}
     >
-      <CardContent className="relative px-3 pb-7">
+      <CardContent className="relative flex min-h-[220px] flex-col px-2.5 pb-7 pt-2">
         <PokemonTypeIcons
           types={type}
           iconClassName="h-4 w-4"
-          wrapperClassName="absolute left-2 top-1 flex items-center gap-1"
+          wrapperClassName="absolute left-2 top-2 z-10 flex items-center gap-1 rounded-full border border-slate-200/10 bg-slate-950/55 px-2 py-1 shadow-[0_6px_16px_rgba(15,23,42,0.28)] backdrop-blur-md"
         />
 
-        {imageUrl ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={imageUrl}
-            alt={displayName}
-            className="mx-auto mb-3 mt-2 h-28 w-28 rounded-2xl object-cover"
-            loading="lazy"
-          />
-        ) : (
-          <div className="mx-auto mb-3 mt-2 h-28 w-28 rounded-2xl bg-slate-700" />
-        )}
-
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0">
-            <CardTitle className="text-sm font-medium leading-snug">{displayName}</CardTitle>
-            <div className="mt-2">
-              <PokemonFormBadge formBadge={formBadge} className="text-[10px]" />
-            </div>
-          </div>
+        <div className="mt-4 flex flex-1 items-center justify-center overflow-hidden rounded-[1.35rem]">
+          {imageUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={imageUrl}
+              alt={displayName}
+              className="h-full w-full object-cover"
+              loading="lazy"
+            />
+          ) : (
+            <div className="h-full w-full bg-slate-700" />
+          )}
         </div>
-        <p className="mt-2 text-xs font-medium uppercase tracking-[0.14em] text-slate-400">
-          #{displayId}
-        </p>
-        {priceLabel ? (
-          <p className="mt-3 text-right text-xs font-semibold text-amber-300">{priceLabel}</p>
-        ) : null}
+
+        <div className="mt-3 space-y-1.5">
+          <CardTitle className="line-clamp-2 text-sm font-medium leading-tight">
+            {displayName}
+          </CardTitle>
+
+          <div className="flex min-h-[1.5rem] items-center gap-2">
+            <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">
+              #{displayId}
+            </p>
+            {formBadge ? (
+              <PokemonFormBadge formBadge={formBadge} className="text-[10px]" />
+            ) : null}
+          </div>
+
+          {priceLabel ? (
+            <p className="text-right text-xs font-semibold text-amber-300">{priceLabel}</p>
+          ) : null}
+        </div>
       </CardContent>
 
       <div
