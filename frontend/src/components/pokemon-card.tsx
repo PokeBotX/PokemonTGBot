@@ -58,12 +58,12 @@ export function PokemonCard({
           wrapperClassName="absolute left-2 top-2 z-10 flex items-center gap-1 rounded-full border border-slate-200/10 bg-slate-950/55 px-2 py-1 shadow-[0_6px_16px_rgba(15,23,42,0.28)] backdrop-blur-md"
         />
 
-        <div className="absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-slate-950 via-slate-950/92 to-transparent px-3 pb-7 pt-10">
+        <div className="absolute inset-x-0 bottom-0 z-10 flex min-h-[96px] flex-col justify-end bg-gradient-to-t from-slate-950 via-slate-950/84 via-40% to-transparent px-3 pb-8 pt-16">
           <CardTitle className="line-clamp-1 text-sm font-medium leading-tight">
             {displayName}
           </CardTitle>
 
-          <div className="mt-1.5 flex items-center justify-between gap-2">
+          <div className="mt-2 flex items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-2">
               <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-400">
                 #{displayId}
