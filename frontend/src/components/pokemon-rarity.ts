@@ -25,7 +25,7 @@ export function getRarityBorderClass(rarity: PokemonRarity) {
     case "legendary":
       return "border-amber-700/70";
     case "epic":
-      return "border-violet-500/90";
+      return "border-violet-700/65";
     case "rare":
       return "border-emerald-700/65";
     case "common":
@@ -39,7 +39,7 @@ export function getRarityTagClass(rarity: PokemonRarity) {
     case "legendary":
       return "border-amber-700/70 bg-slate-950 text-amber-300";
     case "epic":
-      return "border-violet-400/80 bg-violet-500/15 text-violet-200";
+      return "border-violet-700/65 bg-slate-950 text-violet-300";
     case "rare":
       return "border-emerald-700/65 bg-slate-950 text-emerald-300";
     case "common":
