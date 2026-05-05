@@ -35,9 +35,9 @@ export function PokemonCard({
 
   return (
     <Card
-      className={`relative h-[220px] overflow-hidden rounded-2xl border bg-slate-900 text-slate-100 shadow-[0_2px_12px_rgba(0,0,0,0.35)] ${getRarityBorderClass(rarity)}`}
+      className={`relative h-[220px] gap-0 overflow-hidden rounded-2xl border bg-slate-900 py-0 text-slate-100 shadow-[0_2px_12px_rgba(0,0,0,0.35)] ${getRarityBorderClass(rarity)}`}
     >
-      <CardContent className="relative h-full p-0">
+      <CardContent className="relative h-full overflow-hidden p-0">
         <div className="absolute inset-0">
           {imageUrl ? (
             // eslint-disable-next-line @next/next/no-img-element
@@ -58,7 +58,7 @@ export function PokemonCard({
           wrapperClassName="absolute left-2 top-2 z-10 flex items-center gap-1 rounded-full border border-slate-200/10 bg-slate-950/55 px-2 py-1 shadow-[0_6px_16px_rgba(15,23,42,0.28)] backdrop-blur-md"
         />
 
-        <div className="absolute inset-x-0 bottom-0 z-10 flex min-h-[96px] flex-col justify-end bg-gradient-to-t from-slate-950 via-slate-950/84 via-40% to-transparent px-3 pb-8 pt-16">
+        <div className="absolute inset-x-0 bottom-0 z-10 flex min-h-[96px] flex-col justify-end bg-gradient-to-t from-slate-950 via-slate-950/72 via-35% to-transparent px-3 pb-8 pt-20">
           <CardTitle className="line-clamp-1 text-sm font-medium leading-tight">
             {displayName}
           </CardTitle>
