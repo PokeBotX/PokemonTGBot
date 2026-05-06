@@ -832,7 +832,11 @@ def _compose_battle_image_bytes(
             "1",
             str(output_path),
         ]
-        result = subprocess.run(command, check=False, capture_output=True)
+        try:
+            result = subprocess.run(command, check=False, capture_output=True)
+        except FileNotFoundError:
+            logger.warning("pvp_battle_ffmpeg_missing")
+            return None
         if result.returncode != 0 or not output_path.exists():
             return None
         return output_path.read_bytes()
