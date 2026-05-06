@@ -55,7 +55,7 @@ export function PokemonCard({
         <PokemonTypeIcons
           types={type}
           iconClassName="h-4 w-4"
-          wrapperClassName="absolute left-2 top-2 z-10 flex items-center gap-1 rounded-full border border-slate-200/10 bg-slate-950/55 px-2 py-1 shadow-[0_6px_16px_rgba(15,23,42,0.28)] backdrop-blur-md"
+          wrapperClassName="absolute left-2 top-2 z-10 flex items-center gap-1 rounded-full border border-slate-200/5 bg-slate-950/30 px-2 py-1 shadow-[0_8px_24px_rgba(15,23,42,0.18)] backdrop-blur-xl"
         />
 
         <div className="absolute inset-x-0 bottom-0 z-10 flex min-h-[96px] flex-col justify-end bg-gradient-to-t from-slate-950 via-slate-950/72 via-35% to-transparent px-3 pb-8 pt-20">
@@ -81,7 +81,7 @@ export function PokemonCard({
       </CardContent>
 
       <div
-        className={`absolute bottom-0 left-0 z-0 rounded-tr-md rounded-br-md border border-l-0 border-b-0 px-2 py-0.5 text-[10px] font-semibold tracking-[0.12em] ${getRarityTagClass(rarity)}`}
+        className={`absolute bottom-0 left-0 z-20 rounded-tr-md rounded-br-md border border-l-0 border-b-0 px-2 py-0.5 text-[10px] font-semibold tracking-[0.12em] ${getRarityTagClass(rarity)}`}
       >
         {getRarityLabel(rarity)}
       </div>
