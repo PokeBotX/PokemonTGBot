@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
 import structlog
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Message, Update
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import ContextTypes
 
-from bot.db.database import Database, PokemonSearchEntry, ProfileCoverCandidate, ProfileReferral, ProfileSummary, ShopError
+from bot.db.database import Database, PokemonSearchEntry, ProfileCoverCandidate, ProfileReferral, ProfileSummary, PvpTeam, ShopError
 from bot.handlers.sections.market import build_market_entry_payload, resolve_market_card_action
 from bot.navigation.context import extract_context
 from bot.navigation.router import NavigationRouter, parse_callback_data
@@ -19,6 +20,7 @@ from bot.navigation.session import MenuSession, PendingInput, session_store
 from bot.ui.html import display_name, escape_html
 from bot.ui.menu import build_back_button
 from bot.ui.pokemon_cards import (
+    _fetch_image_bytes_from_storage,
     build_image_switch_label,
     build_pokemon_card_keyboard,
     build_search_card_session_payload,
@@ -37,6 +39,9 @@ PROFILE_VIEW_LANGUAGE = "language"
 PROFILE_VIEW_REFERRAL = "referral"
 PROFILE_VIEW_TEAM = "team"
 PROFILE_VIEW_VIP = "vip"
+PROFILE_TEAM_SLOT_SECTIONS = [f"prt{index}" for index in range(1, 6)]
+PROFILE_TEAM_REPLACE_CONFIRM_SECTION = "prtc"
+PROFILE_TEAM_REPLACE_CANCEL_SECTION = "prtx"
 
 PROFILE_ROUTE_SECTIONS = [
     "profile",
@@ -58,14 +63,18 @@ PROFILE_ROUTE_SECTIONS = [
     "psc5",
     "prr",
     "prt",
+    *PROFILE_TEAM_SLOT_SECTIONS,
+    PROFILE_TEAM_REPLACE_CONFIRM_SECTION,
+    PROFILE_TEAM_REPLACE_CANCEL_SECTION,
     "prv",
 ]
 
 PROFILE_PENDING_ACTION_COVER = "profile_cover"
+PROFILE_PENDING_ACTION_TEAM_SLOT = "profile_team_slot"
 PROFILE_SEARCH_RESULT_LIMIT = 5
 FALLBACK_IMAGE_PATH = Path("image.png")
 DEFAULT_PROFILE_IMAGE_PATH = Path("image_profile.png")
-SUPPORTED_IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
+PVP_TEAM_IMAGE_PATH = Path("pokeinfo.png")
 
 
 def register_profile_routes(router: NavigationRouter) -> None:
@@ -154,6 +163,9 @@ async def handle_profile_text_input(update: Update, context: ContextTypes.DEFAUL
     if pending.action == PROFILE_PENDING_ACTION_COVER:
         await _handle_profile_cover_search_input(update, context, db, pending)
         return
+    if pending.action == PROFILE_PENDING_ACTION_TEAM_SLOT:
+        await _handle_profile_team_slot_input(update, context, db, pending)
+        return
 
 
 async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, session: MenuSession) -> None:
@@ -182,11 +194,14 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, se
             user_label = _display_self_profile_owner(update, summary)
             logger.info("profile_render_start", section=section, user_id=session.user_id, chat_id=session.chat_id, source="callback")
             if _message_supports_caption(getattr(query, "message", None)):
-                await _edit_profile_message(
+                await _edit_profile_message_with_image(
                     query,
+                    context,
                     session,
                     _render_profile_text(summary, user_label),
                     _build_profile_keyboard(await _create_session(session)),
+                    image_credit_id=summary.profile_pic_credit_id,
+                    fallback_path=_resolve_default_profile_image_path(),
                 )
             else:
                 await show_profile_screen(update, context, summary=summary, user_label=user_label, allow_manage=True)
@@ -249,11 +264,54 @@ async def profile_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, se
 
         if section == "prt":
             await session_store.clear_pending_input_async(chat_id=session.chat_id, user_id=session.user_id)
-            await _edit_profile_message(
+            team = await db.get_pvp_team(session.user_id, username)
+            await _edit_profile_message_with_image(
                 query,
+                context,
                 session,
-                "🛡 <b>Боевая команда</b>\n\nЭтот раздел пока в разработке.",
-                _build_nested_profile_keyboard(await _create_session(session), back_section="profile"),
+                _render_team_text(team),
+                _build_team_keyboard(await _create_session(session), team),
+                fallback_path=_resolve_pvp_team_image_path(),
+            )
+            return
+
+        if section in PROFILE_TEAM_SLOT_SECTIONS:
+            await session_store.clear_pending_input_async(chat_id=session.chat_id, user_id=session.user_id)
+            team = await db.get_pvp_team(session.user_id, username)
+            await _edit_profile_message_with_image(
+                query,
+                context,
+                session,
+                _render_team_text(
+                    team,
+                    status_text="ℹ️ Для изменения команды используйте команду <code>/addteam слот user_pokemon_id</code>.",
+                ),
+                _build_team_keyboard(await _create_session(session), team),
+                fallback_path=_resolve_pvp_team_image_path(),
+            )
+            return
+
+        if section == PROFILE_TEAM_REPLACE_CONFIRM_SECTION:
+            team, status_text = await _confirm_team_replace_with_summary(query, session, db, username)
+            await _edit_profile_message_with_image(
+                query,
+                context,
+                session,
+                _render_team_text(team, status_text=status_text),
+                _build_team_keyboard(await _create_session(session), team),
+                fallback_path=_resolve_pvp_team_image_path(),
+            )
+            return
+
+        if section == PROFILE_TEAM_REPLACE_CANCEL_SECTION:
+            team = await db.get_pvp_team(session.user_id, username)
+            await _edit_profile_message_with_image(
+                query,
+                context,
+                session,
+                _render_team_text(team, status_text="❎ Замена слота отменена."),
+                _build_team_keyboard(await _create_session(session), team),
+                fallback_path=_resolve_pvp_team_image_path(),
             )
             return
 
@@ -468,6 +526,54 @@ def _render_cover_candidates_text(user_label: str, candidates: list[ProfileCover
     return "\n".join(lines)
 
 
+def _render_team_text(team: PvpTeam, status_text: Optional[str] = None) -> str:
+    lines = [
+        "🛡 <b>Боевая команда</b>",
+        "",
+        "Соберите команду из 5 разных экземпляров покемонов.",
+        "Пока покемон в команде, его нельзя продать, обменять или отпустить.",
+        "Управление через команду: <code>/addteam слот user_pokemon_id</code>",
+        "Очистка слота: <code>/addteam слот -</code>",
+        "",
+        f"Заполнено слотов: <b>{team.filled_slots}/5</b>",
+    ]
+    if not team.is_complete:
+        lines.append("⚠️ Для PvP нужно заполнить все 5 слотов.")
+    lines.append("")
+    for slot in team.slots:
+        if slot.entry is None:
+            lines.append(f"{slot.slot_index}. <i>пусто</i>")
+            continue
+        display_name = format_pokemon_display_name(slot.entry.name, slot.entry.form_badge)
+        display_id = format_pokemon_display_id(slot.entry.pokemon_id, slot.entry.dex_form_code)
+        lines.append(
+            f"{slot.slot_index}. <b>{escape_html(display_name)}</b> | dex <code>{display_id}</code> | user_pokemon <code>{slot.entry.sample_user_pokemon_id}</code>"
+        )
+    if status_text:
+        lines.extend(["", status_text])
+    return "\n".join(lines)
+
+
+def _render_team_slot_prompt_text(team: PvpTeam, slot_index: int) -> str:
+    current_slot = next((slot for slot in team.slots if slot.slot_index == slot_index), None)
+    lines = [
+        f"🛡 <b>Слот {slot_index}</b>",
+        "",
+        "Отправьте <code>user_pokemon_id</code> вашего покемона обычным сообщением.",
+        "Отправьте <code>-</code>, если хотите очистить слот.",
+    ]
+    if current_slot and current_slot.entry is not None:
+        display_name = format_pokemon_display_name(current_slot.entry.name, current_slot.entry.form_badge)
+        lines.extend(
+            [
+                "",
+                "Сейчас в слоте:",
+                f"<b>{escape_html(display_name)}</b> | user_pokemon <code>{current_slot.entry.sample_user_pokemon_id}</code>",
+            ]
+        )
+    return "\n".join(lines)
+
+
 def _render_search_results_text(user_label: str, results: list[PokemonSearchEntry]) -> str:
     lines = [
         f"🔎 <b>{escape_html(user_label)}</b>, найдено несколько вариантов:",
@@ -492,6 +598,9 @@ def _build_profile_keyboard(session_id: str) -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton("⚙️ Настройки", callback_data=f"menu:prs:{session_id}"),
                 InlineKeyboardButton("🔗 Рефка", callback_data=f"menu:prr:{session_id}"),
+            ],
+            [
+                InlineKeyboardButton("🛡 Боевая команда", callback_data=f"menu:prt:{session_id}"),
             ],
             build_back_button(session_id).inline_keyboard[0],
         ]
@@ -585,6 +694,31 @@ def _build_nested_profile_keyboard(session_id: str, *, back_section: str) -> Inl
     )
 
 
+def _build_team_keyboard(session_id: str, team: PvpTeam) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🔙 Назад в профиль", callback_data=f"menu:profile:{session_id}")],
+        ]
+    )
+
+
+def _build_team_replace_keyboard(session_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("✅ Да, заменить", callback_data=f"menu:{PROFILE_TEAM_REPLACE_CONFIRM_SECTION}:{session_id}")],
+            [InlineKeyboardButton("❎ Нет", callback_data=f"menu:{PROFILE_TEAM_REPLACE_CANCEL_SECTION}:{session_id}")],
+        ]
+    )
+
+
+def _build_team_slot_prompt_keyboard(session_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🔙 Назад к команде", callback_data=f"menu:prt:{session_id}")],
+        ]
+    )
+
+
 async def _send_pokemon_search_card(
     context: ContextTypes.DEFAULT_TYPE,
     session: MenuSession,
@@ -667,13 +801,22 @@ async def _send_profile_message(
     text: str,
     summary: ProfileSummary,
 ) -> Message:
-    image_path = _resolve_profile_image_path(summary)
+    image_file = await _load_storage_image_file(context, summary.profile_pic_credit_id)
+    if image_file is not None:
+        return await context.bot.send_photo(
+            chat_id=chat_id,
+            message_thread_id=message_thread_id,
+            photo=image_file,
+            caption=text,
+            parse_mode="HTML",
+        )
+    image_path = _resolve_default_profile_image_path()
     if image_path.exists():
-        with image_path.open("rb") as image_file:
+        with image_path.open("rb") as fallback_image:
             return await context.bot.send_photo(
                 chat_id=chat_id,
                 message_thread_id=message_thread_id,
-                photo=image_file,
+                photo=fallback_image,
                 caption=text,
                 parse_mode="HTML",
             )
@@ -703,6 +846,36 @@ async def _edit_profile_message(
             reply_markup=reply_markup,
         )
     logger.info("profile_screen_edited", session_id=session.session_id, chat_id=session.chat_id, message_id=session.message_id)
+
+
+async def _edit_profile_message_with_image(
+    query,
+    context: ContextTypes.DEFAULT_TYPE,
+    session: MenuSession,
+    text: str,
+    reply_markup: InlineKeyboardMarkup,
+    *,
+    image_credit_id: Optional[int] = None,
+    fallback_path: Optional[Path] = None,
+) -> None:
+    if _message_supports_caption(getattr(query, "message", None)):
+        image_file = await _load_storage_image_file(context, image_credit_id)
+        if image_file is not None:
+            await query.edit_message_media(
+                media=InputMediaPhoto(media=image_file, caption=text, parse_mode="HTML"),
+                reply_markup=reply_markup,
+            )
+            logger.info("profile_screen_media_edited", session_id=session.session_id, chat_id=session.chat_id, message_id=session.message_id)
+            return
+        if fallback_path is not None and fallback_path.exists():
+            with fallback_path.open("rb") as image_file:
+                await query.edit_message_media(
+                    media=InputMediaPhoto(media=image_file, caption=text, parse_mode="HTML"),
+                    reply_markup=reply_markup,
+                )
+            logger.info("profile_screen_media_edited", session_id=session.session_id, chat_id=session.chat_id, message_id=session.message_id)
+            return
+    await _edit_profile_message(query, session, text, reply_markup)
 
 
 async def _edit_profile_message_by_ids(
@@ -821,6 +994,157 @@ async def _handle_profile_cover_search_input(
         _render_cover_candidates_text(_display_user(update), candidates),
         _build_cover_candidates_keyboard(result_session_id, candidates),
     )
+
+
+async def _handle_profile_team_slot_input(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    db: Database,
+    pending: PendingInput,
+) -> None:
+    raw_text = (update.effective_message.text or "").strip()
+    slot_index = int(pending.data.get("slot_index", 0) or 0)
+    if slot_index < 1 or slot_index > 5:
+        await session_store.clear_pending_input_async(chat_id=update.effective_chat.id, user_id=update.effective_user.id)
+        await update.effective_chat.send_message(
+            "⚠️ Слот команды устарел. Откройте боевую команду ещё раз.",
+            message_thread_id=getattr(update.effective_message, "message_thread_id", None),
+        )
+        return
+
+    if not raw_text:
+        await update.effective_chat.send_message(
+            "🛡 Отправьте <code>user_pokemon_id</code> или <code>-</code> для очистки слота.",
+            parse_mode="HTML",
+            message_thread_id=getattr(update.effective_message, "message_thread_id", None),
+        )
+        return
+
+    try:
+        team, team_status_text = await update_pvp_team_slot_from_text(
+            db,
+            telegram_id=update.effective_user.id,
+            username=update.effective_user.username,
+            slot_index=slot_index,
+            raw_value=raw_text,
+        )
+    except ValueError:
+        await update.effective_chat.send_message(
+            "⚠️ Нужен числовой <code>user_pokemon_id</code> или <code>-</code>.",
+            parse_mode="HTML",
+            message_thread_id=getattr(update.effective_message, "message_thread_id", None),
+        )
+        return
+    except ShopError as exc:
+        await update.effective_chat.send_message(
+            f"⚠️ {escape_html(str(exc))}",
+            parse_mode="HTML",
+            message_thread_id=getattr(update.effective_message, "message_thread_id", None),
+        )
+        return
+
+    await session_store.clear_pending_input_async(chat_id=update.effective_chat.id, user_id=update.effective_user.id)
+    if pending.source_message_id is None:
+        return
+    next_session_id = await session_store.create_session_async(
+        chat_id=pending.chat_id,
+        message_id=pending.source_message_id,
+        user_id=pending.user_id,
+        message_thread_id=pending.source_message_thread_id,
+    )
+    await _edit_profile_message_by_ids(
+        context,
+        pending,
+        _render_team_text(team, status_text=team_status_text),
+        _build_team_keyboard(next_session_id, team),
+    )
+
+
+async def _confirm_team_replace(query, session: MenuSession, db: Database, username: Optional[str]) -> PvpTeam:
+    slot_index = int(session.data.get("team_replace_slot_index", 0) or 0)
+    user_pokemon_id = int(session.data.get("team_replace_user_pokemon_id", 0) or 0)
+    if slot_index < 1 or slot_index > 5 or user_pokemon_id <= 0:
+        raise ShopError("Подтверждение замены команды устарело.")
+    return await confirm_pvp_team_slot_replace(
+        db,
+        telegram_id=session.user_id,
+        username=username,
+        slot_index=slot_index,
+        user_pokemon_id=user_pokemon_id,
+    )
+
+
+async def _confirm_team_replace_with_summary(
+    query,
+    session: MenuSession,
+    db: Database,
+    username: Optional[str],
+) -> tuple[PvpTeam, str]:
+    slot_index = int(session.data.get("team_replace_slot_index", 0) or 0)
+    previous_name = str(session.data.get("team_replace_previous_name", "") or "")
+    previous_form_badge = session.data.get("team_replace_previous_form_badge")
+    new_name = str(session.data.get("team_replace_new_name", "") or "")
+    new_form_badge = session.data.get("team_replace_new_form_badge")
+    team = await _confirm_team_replace(query, session, db, username)
+    previous_display = format_pokemon_display_name(previous_name, previous_form_badge if isinstance(previous_form_badge, str) else None)
+    new_display = format_pokemon_display_name(new_name, new_form_badge if isinstance(new_form_badge, str) else None)
+    return team, f"✅ Слот <b>{slot_index}</b>: <b>{escape_html(previous_display)}</b> заменён на <b>{escape_html(new_display)}</b>."
+
+
+async def update_pvp_team_slot_from_text(
+    db: Database,
+    *,
+    telegram_id: int,
+    username: Optional[str],
+    slot_index: int,
+    raw_value: str,
+) -> tuple[PvpTeam, str]:
+    """Apply one team-slot change from text or command arguments."""
+    normalized_value = raw_value.strip()
+    if normalized_value == "-":
+        team = await db.set_pvp_team_slot(
+            telegram_id,
+            username,
+            slot_index=slot_index,
+            user_pokemon_id=None,
+        )
+        return team, f"🧹 Слот <b>{slot_index}</b> очищен."
+
+    user_pokemon_id = int(normalized_value)
+    team = await db.set_pvp_team_slot(
+        telegram_id,
+        username,
+        slot_index=slot_index,
+        user_pokemon_id=user_pokemon_id,
+    )
+    return team, f"✅ Слот <b>{slot_index}</b> обновлён."
+
+
+async def confirm_pvp_team_slot_replace(
+    db: Database,
+    *,
+    telegram_id: int,
+    username: Optional[str],
+    slot_index: int,
+    user_pokemon_id: int,
+) -> PvpTeam:
+    return await db.set_pvp_team_slot(
+        telegram_id,
+        username,
+        slot_index=slot_index,
+        user_pokemon_id=user_pokemon_id,
+    )
+
+
+def build_pvp_team_replace_confirmation_text(*, slot_index: int, current_display_name: str, new_display_name: str) -> str:
+    return (
+        f"⚠️ Слот <b>{slot_index}</b> уже занят.\n\n"
+        f"Заменить <b>{escape_html(current_display_name)}</b> на <b>{escape_html(new_display_name)}</b>?"
+    )
+
+
+def resolve_pvp_team_slot(team: PvpTeam, slot_index: int):
+    return next((slot for slot in team.slots if slot.slot_index == slot_index), None)
 
 
 async def handle_pokemon_search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1024,19 +1348,25 @@ def _message_supports_caption(message: Optional[Message]) -> bool:
     return bool(message and getattr(message, "photo", None))
 
 
-def _resolve_profile_image_path(summary: ProfileSummary) -> Path:
-    if summary.cover_pokemon_name:
-        candidate = _find_local_pokemon_image(summary.cover_pokemon_name)
-        if candidate is not None:
-            return candidate
+async def _load_storage_image_file(
+    context: ContextTypes.DEFAULT_TYPE,
+    image_credit_id: Optional[int],
+) -> Optional[BytesIO]:
+    if image_credit_id is None:
+        return None
+    image = await _fetch_image_bytes_from_storage(context, image_credit_id)
+    if image is None:
+        return None
+    file_obj = BytesIO(image[0])
+    file_obj.name = Path(image[1]).name or "profile.jpg"
+    return file_obj
+
+
+def _resolve_default_profile_image_path() -> Path:
     return DEFAULT_PROFILE_IMAGE_PATH if DEFAULT_PROFILE_IMAGE_PATH.exists() else FALLBACK_IMAGE_PATH
 
 
-def _find_local_pokemon_image(pokemon_name: str) -> Optional[Path]:
-    pokemon_dir = Path("assets/pokemon") / pokemon_name
-    if not pokemon_dir.exists() or not pokemon_dir.is_dir():
-        return None
-    for child in sorted(pokemon_dir.iterdir()):
-        if child.is_file() and child.suffix.lower() in SUPPORTED_IMAGE_SUFFIXES:
-            return child
-    return None
+def _resolve_pvp_team_image_path() -> Path:
+    if PVP_TEAM_IMAGE_PATH.exists():
+        return PVP_TEAM_IMAGE_PATH
+    return _resolve_default_profile_image_path()

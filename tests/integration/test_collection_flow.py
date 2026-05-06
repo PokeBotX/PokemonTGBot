@@ -560,6 +560,7 @@ async def test_collection_extra_actions_prompt_renders_lock_and_cover_buttons() 
     labels = [button.text for row in reply_markup.inline_keyboard for button in row]
     assert "🔒 Залочить" in labels
     assert "🖼 На обложку" in labels
+    assert "🛡 Добавить в команду" in labels
 
 
 @pytest.mark.asyncio
@@ -720,3 +721,48 @@ async def test_collection_extra_actions_shows_source_button_when_available() -> 
     assert "🔗 Источник" in button_texts
     source_button = next(button for row in keyboard.inline_keyboard for button in row if button.text == "🔗 Источник")
     assert source_button.url == "https://example.com/selected-source"
+
+
+@pytest.mark.asyncio
+async def test_collection_extra_actions_add_to_team_shows_quick_command() -> None:
+    session = MenuSession(
+        session_id="collection-team-hint",
+        chat_id=12345,
+        message_id=241,
+        user_id=12345,
+        message_thread_id=None,
+        data={
+            "release_user_pokemon_id": 250,
+            "release_pokemon_name": "Pikachu",
+            "release_rarity": "Rare",
+        },
+    )
+
+    user = Mock(spec=User)
+    user.id = 12345
+    user.username = "ash"
+
+    query = AsyncMock(spec=CallbackQuery)
+    query.data = f"menu:pkt:{session.session_id}"
+    query.message = Mock(spec=Message)
+    query.message.photo = []
+    query.edit_message_text = AsyncMock()
+    query.answer = AsyncMock()
+
+    update = Mock(spec=Update)
+    update.callback_query = query
+    update.effective_user = user
+
+    db = AsyncMock()
+    entry = _entry(25, "Pikachu", "Rare", "electric", 1)
+    db.get_user_pokemon_entry = AsyncMock(return_value=entry)
+
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = Mock()
+    context.application.bot_data = {"db": db}
+
+    await collection_handler(update, context, session)
+
+    text = query.edit_message_text.call_args.kwargs["text"]
+    assert "/addteam слот 250" in text
+    assert "число от <b>1</b> до <b>5</b>" in text

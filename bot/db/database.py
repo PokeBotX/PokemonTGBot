@@ -66,6 +66,20 @@ TRADE_PENDING_TTL_SECONDS = 2 * 60
 TRADE_ACTIVE_TTL_SECONDS = 10 * 60
 TRADE_MAX_OFFERS_PER_SIDE = 6
 TRADE_MAINTENANCE_INTERVAL_SECONDS = 30
+PVP_CHALLENGE_STATUS_PENDING = "pending"
+PVP_CHALLENGE_STATUS_SELECTING_INITIATOR = "selecting_initiator"
+PVP_CHALLENGE_STATUS_SELECTING_TARGET = "selecting_target"
+PVP_CHALLENGE_STATUS_BATTLING = "battling"
+PVP_CHALLENGE_STATUS_REJECTED = "rejected"
+PVP_CHALLENGE_STATUS_CANCELED = "canceled"
+PVP_CHALLENGE_STATUS_EXPIRED = "expired"
+PVP_CHALLENGE_STATUS_COMPLETED = "completed"
+PVP_CHALLENGE_PENDING_TTL_SECONDS = 2 * 60
+PVP_CHALLENGE_SELECTION_TTL_SECONDS = 8 * 60
+PVP_MAINTENANCE_INTERVAL_SECONDS = 30
+PVP_TEAM_SLOT_COUNT = 5
+PVP_DAILY_REWARD_LIMIT = 3
+PVP_WIN_REWARD_POKEDOLLAR = 500
 MARKET_SORT_NEWEST = "newest"
 MARKET_SORT_CHEAPEST = "cheapest"
 POKEMON_RELEASE_REWARDS = {
@@ -469,6 +483,29 @@ class ProfileSummary:
 
 
 @dataclass(slots=True)
+class PvpTeamSlot:
+    """One configured PvP team slot."""
+
+    slot_index: int
+    entry: Optional[CollectionEntry]
+
+
+@dataclass(slots=True)
+class PvpTeam:
+    """Persistent five-slot PvP team for one user."""
+
+    slots: tuple[PvpTeamSlot, ...]
+
+    @property
+    def filled_slots(self) -> int:
+        return sum(1 for slot in self.slots if slot.entry is not None)
+
+    @property
+    def is_complete(self) -> bool:
+        return self.filled_slots == PVP_TEAM_SLOT_COUNT
+
+
+@dataclass(slots=True)
 class ProfileReferral:
     """Referral data rendered on the profile screen."""
 
@@ -863,6 +900,66 @@ class TradeMaintenanceResult:
     expired_active_trades: list[TradeSessionSummary]
 
 
+@dataclass(slots=True)
+class PvpChallengeParticipant:
+    """Per-user state for one PvP challenge."""
+
+    user_id: int
+    telegram_id: int
+    username: Optional[str]
+    nickname: Optional[str]
+    label: str
+    selected_user_pokemon_id: Optional[int] = None
+    selected_name: Optional[str] = None
+    selected_rarity: Optional[str] = None
+    selected_dex_form_code: Optional[str] = None
+    selected_form_badge: Optional[str] = None
+    selected_pokemon_type: Optional[str] = None
+    selected_base_hp: Optional[int] = None
+    selected_base_attack: Optional[int] = None
+    selected_base_defense: Optional[int] = None
+    selected_base_stamina: Optional[int] = None
+
+
+@dataclass(slots=True)
+class PvpChallengeSummary:
+    """Shared read model for one pending or selecting PvP challenge."""
+
+    challenge_id: int
+    chat_id: int
+    message_thread_id: Optional[int]
+    message_id: Optional[int]
+    status: str
+    pending_expires_at: Optional[datetime]
+    selection_expires_at: Optional[datetime]
+    created_at: datetime
+    accepted_at: Optional[datetime]
+    canceled_at: Optional[datetime]
+    completed_at: Optional[datetime]
+    cancel_reason: Optional[str]
+    initiator: PvpChallengeParticipant
+    target: PvpChallengeParticipant
+
+
+@dataclass(slots=True)
+class PvpChallengeMaintenanceResult:
+    """Expired PvP challenge projections that should be reflected in Telegram."""
+
+    expired_pending_challenges: list[PvpChallengeSummary]
+    expired_selecting_challenges: list[PvpChallengeSummary]
+    expired_battling_challenges: list[PvpChallengeSummary]
+
+
+@dataclass(slots=True)
+class PvpRewardResolution:
+    """Outcome of daily PvP reward accounting for one completed battle."""
+
+    winner_reward_granted: bool
+    winner_reward_amount: int
+    winner_daily_completed_count: int
+    loser_daily_completed_count: int
+
+
 class Database:
     """Minimal asyncpg pool manager for bot data."""
 
@@ -1060,6 +1157,622 @@ class Database:
                 if user_id is None:
                     raise ShopError("Я пока не знаю этого пользователя. Он должен хотя бы раз воспользоваться ботом.")
                 return await self._fetch_profile_summary_by_user_id(conn, int(user_id))
+
+    async def get_pvp_team(self, telegram_id: int, username: Optional[str]) -> PvpTeam:
+        """Load the current user's persistent PvP team."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await self._ensure_user(conn, telegram_id, username)
+                user_id = await self._get_user_id_by_telegram_id(conn, telegram_id)
+                await self._cleanup_invalid_pvp_team_slots(conn, user_id)
+                return await self._fetch_pvp_team(conn, user_id)
+
+    async def set_pvp_team_slot(
+        self,
+        telegram_id: int,
+        username: Optional[str],
+        *,
+        slot_index: int,
+        user_pokemon_id: Optional[int],
+    ) -> PvpTeam:
+        """Assign or clear one PvP team slot for the current user."""
+        if slot_index < 1 or slot_index > PVP_TEAM_SLOT_COUNT:
+            raise ShopError(f"Слот команды должен быть от 1 до {PVP_TEAM_SLOT_COUNT}.")
+
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await self._ensure_user(conn, telegram_id, username)
+                user_id = await self._get_user_id_by_telegram_id(conn, telegram_id)
+                await self._cleanup_invalid_pvp_team_slots(conn, user_id)
+
+                if user_pokemon_id is None:
+                    await conn.execute(
+                        """
+                        DELETE FROM user_pvp_team_slots
+                        WHERE user_id = $1
+                          AND slot_index = $2
+                        """,
+                        user_id,
+                        slot_index,
+                    )
+                    return await self._fetch_pvp_team(conn, user_id)
+
+                pokemon_row = await conn.fetchrow(
+                    """
+                    SELECT id, owner_user_id, released_at
+                    FROM user_pokemon
+                    WHERE id = $1
+                    FOR UPDATE
+                    """,
+                    user_pokemon_id,
+                )
+                if not pokemon_row or int(pokemon_row["owner_user_id"]) != user_id:
+                    raise ShopError("Этот экземпляр покемона вам не принадлежит.")
+                if pokemon_row["released_at"] is not None:
+                    raise ShopError("Нельзя добавить в команду отпущенного покемона.")
+
+                duplicate_slot = await conn.fetchval(
+                    """
+                    SELECT slot_index
+                    FROM user_pvp_team_slots
+                    WHERE user_id = $1
+                      AND user_pokemon_id = $2
+                      AND slot_index <> $3
+                    LIMIT 1
+                    """,
+                    user_id,
+                    user_pokemon_id,
+                    slot_index,
+                )
+                if duplicate_slot is not None:
+                    raise ShopError("Этот покемон уже стоит в другом слоте боевой команды.")
+
+                active_listing = await conn.fetchval(
+                    """
+                    SELECT 1
+                    FROM market_listings
+                    WHERE pokemon_instance_id = $1
+                      AND status = $2
+                    LIMIT 1
+                    """,
+                    user_pokemon_id,
+                    MARKET_LISTING_STATUS_ACTIVE,
+                )
+                if active_listing:
+                    raise ShopError("Сначала снимите этого покемона с рынка.")
+
+                active_trade_offer = await conn.fetchval(
+                    """
+                    SELECT 1
+                    FROM trade_offer_items toi
+                    JOIN trade_sessions ts ON ts.id = toi.trade_id
+                    WHERE toi.user_pokemon_id = $1
+                      AND ts.status = $2
+                    LIMIT 1
+                    """,
+                    user_pokemon_id,
+                    TRADE_STATUS_ACTIVE,
+                )
+                if active_trade_offer:
+                    raise ShopError("Сначала уберите этого покемона из активного обмена.")
+
+                await conn.execute(
+                    """
+                    INSERT INTO user_pvp_team_slots (
+                        user_id,
+                        slot_index,
+                        user_pokemon_id
+                    )
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (user_id, slot_index)
+                    DO UPDATE
+                    SET user_pokemon_id = EXCLUDED.user_pokemon_id,
+                        updated_at = NOW()
+                    """,
+                    user_id,
+                    slot_index,
+                    user_pokemon_id,
+                )
+                return await self._fetch_pvp_team(conn, user_id)
+
+    async def create_pvp_challenge(
+        self,
+        *,
+        initiator_telegram_id: int,
+        initiator_username: Optional[str],
+        target_telegram_id: int,
+        target_username: Optional[str],
+        chat_id: int,
+        message_thread_id: Optional[int],
+    ) -> PvpChallengeSummary:
+        """Create a pending PvP challenge between two users."""
+        if initiator_telegram_id == target_telegram_id:
+            raise ShopError("Нельзя вызвать самого себя на бой.")
+
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                initiator_user_id = await self._ensure_user(conn, initiator_telegram_id, initiator_username)
+                target_user_id = await self._ensure_user(conn, target_telegram_id, target_username)
+                await self._cleanup_invalid_pvp_team_slots(conn, initiator_user_id)
+                await self._cleanup_invalid_pvp_team_slots(conn, target_user_id)
+                await self._ensure_user_has_complete_pvp_team(
+                    conn,
+                    user_id=initiator_user_id,
+                    own_message="Сначала заполните свою боевую команду в профиле.",
+                )
+                await self._ensure_user_has_complete_pvp_team(
+                    conn,
+                    user_id=target_user_id,
+                    own_message="У второго игрока пока не заполнена боевая команда.",
+                )
+                await self._ensure_pvp_initiator_available(conn, initiator_user_id)
+                await self._ensure_pvp_user_not_selecting(conn, initiator_user_id, own_message="У вас уже идёт другой бой или выбор бойца.")
+                await self._ensure_pvp_user_not_selecting(conn, target_user_id, own_message="Этот пользователь уже участвует в другом бою.")
+                inserted = await conn.fetchrow(
+                    """
+                    INSERT INTO pvp_challenges (
+                      chat_id,
+                      message_thread_id,
+                      initiator_user_id,
+                      target_user_id,
+                      status,
+                      pending_expires_at
+                    )
+                    VALUES (
+                      $1,
+                      $2,
+                      $3,
+                      $4,
+                      $5,
+                      NOW() + make_interval(secs => $6)
+                    )
+                    RETURNING id
+                    """,
+                    chat_id,
+                    message_thread_id,
+                    initiator_user_id,
+                    target_user_id,
+                    PVP_CHALLENGE_STATUS_PENDING,
+                    PVP_CHALLENGE_PENDING_TTL_SECONDS,
+                )
+                challenge = await self._fetch_pvp_challenge_summary(conn, int(inserted["id"]))
+        logger.info(
+            "pvp_challenge_created",
+            challenge_id=challenge.challenge_id,
+            initiator_telegram_id=initiator_telegram_id,
+            target_telegram_id=target_telegram_id,
+            chat_id=chat_id,
+        )
+        return challenge
+
+    async def attach_pvp_challenge_message(self, challenge_id: int, message_id: int) -> None:
+        """Persist Telegram message id for one PvP challenge."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE pvp_challenges
+                SET message_id = $2
+                WHERE id = $1
+                """,
+                challenge_id,
+                message_id,
+            )
+
+    async def accept_pvp_challenge(self, challenge_id: int, actor_telegram_id: int) -> PvpChallengeSummary:
+        """Accept a pending PvP challenge as the challenged user."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                actor_user_id = await self._get_user_id_by_telegram_id(conn, actor_telegram_id)
+                row = await conn.fetchrow(
+                    """
+                    SELECT *
+                    FROM pvp_challenges
+                    WHERE id = $1
+                    FOR UPDATE
+                    """,
+                    challenge_id,
+                )
+                if not row:
+                    raise ShopError("Вызов на бой не найден.")
+                if str(row["status"]) != PVP_CHALLENGE_STATUS_PENDING:
+                    raise ShopError("Этот вызов уже не активен.")
+                if int(row["target_user_id"]) != actor_user_id:
+                    raise ShopError("Только второй игрок может принять этот вызов.")
+                if row["pending_expires_at"] is not None and _normalize_timestamp(row["pending_expires_at"]) <= datetime.now(UTC):
+                    await self._close_pvp_challenge(conn, challenge_id, status=PVP_CHALLENGE_STATUS_EXPIRED, cancel_reason="request_expired")
+                    raise ShopError("Вызов на бой уже истёк.")
+                initiator_user_id = int(row["initiator_user_id"])
+                target_user_id = int(row["target_user_id"])
+                await self._cleanup_invalid_pvp_team_slots(conn, initiator_user_id)
+                await self._cleanup_invalid_pvp_team_slots(conn, target_user_id)
+                await self._ensure_user_has_complete_pvp_team(
+                    conn,
+                    user_id=initiator_user_id,
+                    own_message="У первого игрока больше нет полной боевой команды.",
+                )
+                await self._ensure_user_has_complete_pvp_team(
+                    conn,
+                    user_id=target_user_id,
+                    own_message="Сначала заполните свою боевую команду в профиле.",
+                )
+                await self._ensure_pvp_user_not_selecting(conn, initiator_user_id, own_message="У первого игрока уже идёт другой бой.")
+                await self._ensure_pvp_user_not_selecting(conn, target_user_id, own_message="У вас уже идёт другой бой.")
+                await conn.execute(
+                    """
+                    UPDATE pvp_challenges
+                    SET status = $2,
+                        accepted_at = NOW(),
+                        selection_expires_at = NOW() + make_interval(secs => $3)
+                    WHERE id = $1
+                    """,
+                    challenge_id,
+                    PVP_CHALLENGE_STATUS_SELECTING_INITIATOR,
+                    PVP_CHALLENGE_SELECTION_TTL_SECONDS,
+                )
+                challenge = await self._fetch_pvp_challenge_summary(conn, challenge_id)
+        logger.info("pvp_challenge_accepted", challenge_id=challenge_id, actor_telegram_id=actor_telegram_id)
+        return challenge
+
+    async def cancel_pvp_challenge(
+        self,
+        challenge_id: int,
+        actor_telegram_id: int,
+        *,
+        cancel_reason: str = "canceled",
+    ) -> PvpChallengeSummary:
+        """Cancel a pending or selecting PvP challenge as one of its participants."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                actor_user_id = await self._get_user_id_by_telegram_id(conn, actor_telegram_id)
+                challenge = await self._fetch_pvp_challenge_summary(conn, challenge_id)
+                if actor_user_id not in {challenge.initiator.user_id, challenge.target.user_id}:
+                    raise ShopError("Нельзя отменить чужой бой.")
+                if challenge.status not in {
+                    PVP_CHALLENGE_STATUS_PENDING,
+                    PVP_CHALLENGE_STATUS_SELECTING_INITIATOR,
+                    PVP_CHALLENGE_STATUS_SELECTING_TARGET,
+                }:
+                    raise ShopError("Этот вызов уже не активен.")
+                await self._close_pvp_challenge(conn, challenge_id, status=PVP_CHALLENGE_STATUS_CANCELED, cancel_reason=cancel_reason)
+                closed = await self._fetch_pvp_challenge_summary(conn, challenge_id)
+        logger.info("pvp_challenge_canceled", challenge_id=challenge_id, actor_telegram_id=actor_telegram_id, cancel_reason=cancel_reason)
+        return closed
+
+    async def select_pvp_challenge_fighter(
+        self,
+        *,
+        challenge_id: int,
+        telegram_id: int,
+        username: Optional[str],
+        user_pokemon_id: int,
+    ) -> tuple[PvpChallengeSummary, bool]:
+        """Select one fighter from the participant's PvP team.
+
+        Returns (challenge, battle_ready).
+        """
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await self._ensure_user(conn, telegram_id, username)
+                actor_user_id = await self._get_user_id_by_telegram_id(conn, telegram_id)
+                row = await conn.fetchrow(
+                    """
+                    SELECT *
+                    FROM pvp_challenges
+                    WHERE id = $1
+                    FOR UPDATE
+                    """,
+                    challenge_id,
+                )
+                if not row:
+                    raise ShopError("Вызов на бой не найден.")
+                status = str(row["status"])
+                if status not in {PVP_CHALLENGE_STATUS_SELECTING_INITIATOR, PVP_CHALLENGE_STATUS_SELECTING_TARGET}:
+                    raise ShopError("Сейчас нельзя выбрать бойца для этого боя.")
+                if row["selection_expires_at"] is not None and _normalize_timestamp(row["selection_expires_at"]) <= datetime.now(UTC):
+                    await self._close_pvp_challenge(conn, challenge_id, status=PVP_CHALLENGE_STATUS_EXPIRED, cancel_reason="selection_expired")
+                    raise ShopError("Время на выбор бойца истекло.")
+
+                chooser_user_id = int(row["initiator_user_id"]) if status == PVP_CHALLENGE_STATUS_SELECTING_INITIATOR else int(row["target_user_id"])
+                if actor_user_id != chooser_user_id:
+                    raise ShopError("Сейчас выбирает бойца другой игрок.")
+                await self._cleanup_invalid_pvp_team_slots(conn, actor_user_id)
+                await self._ensure_user_has_complete_pvp_team(conn, user_id=actor_user_id, own_message="Команда больше не заполнена полностью.")
+                if not await self._is_user_pokemon_in_pvp_team(conn, user_id=actor_user_id, user_pokemon_id=user_pokemon_id):
+                    raise ShopError("Можно выбрать только покемона из своей боевой команды.")
+
+                pokemon_row = await conn.fetchrow(
+                    """
+                    SELECT owner_user_id, released_at
+                    FROM user_pokemon
+                    WHERE id = $1
+                    FOR UPDATE
+                    """,
+                    user_pokemon_id,
+                )
+                if not pokemon_row or int(pokemon_row["owner_user_id"]) != actor_user_id or pokemon_row["released_at"] is not None:
+                    raise ShopError("Этот покемон больше недоступен для боя.")
+
+                battle_ready = status == PVP_CHALLENGE_STATUS_SELECTING_TARGET
+                if status == PVP_CHALLENGE_STATUS_SELECTING_INITIATOR:
+                    await conn.execute(
+                        """
+                        UPDATE pvp_challenges
+                        SET initiator_selected_user_pokemon_id = $2,
+                            status = $3
+                        WHERE id = $1
+                        """,
+                        challenge_id,
+                        user_pokemon_id,
+                        PVP_CHALLENGE_STATUS_SELECTING_TARGET,
+                    )
+                else:
+                    await conn.execute(
+                        """
+                        UPDATE pvp_challenges
+                        SET target_selected_user_pokemon_id = $2,
+                            status = $3
+                        WHERE id = $1
+                        """,
+                        challenge_id,
+                        user_pokemon_id,
+                        PVP_CHALLENGE_STATUS_BATTLING,
+                    )
+                challenge = await self._fetch_pvp_challenge_summary(conn, challenge_id)
+        logger.info(
+            "pvp_challenge_fighter_selected",
+            challenge_id=challenge_id,
+            telegram_id=telegram_id,
+            user_pokemon_id=user_pokemon_id,
+            battle_ready=battle_ready,
+        )
+        return challenge, battle_ready
+
+    async def get_pvp_team_selection_options(self, telegram_id: int, username: Optional[str]) -> tuple[CollectionEntry, ...]:
+        """Return the ordered five team members usable for one PvP selection step."""
+        team = await self.get_pvp_team(telegram_id, username)
+        if not team.is_complete:
+            raise ShopError("Боевая команда должна быть заполнена полностью.")
+        return tuple(slot.entry for slot in team.slots if slot.entry is not None)
+
+    async def get_remaining_pvp_reward_battles(self, telegram_id: int, username: Optional[str]) -> int:
+        """Return how many rewarded PvP battles remain for the user today."""
+        self._ensure_pool()
+        today = datetime.now(UTC).date()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await self._ensure_user(conn, telegram_id, username)
+                user_id = await self._get_user_id_by_telegram_id(conn, telegram_id)
+                rewarded_count = await conn.fetchval(
+                    """
+                    SELECT rewarded_battle_count
+                    FROM user_pvp_daily_rewards
+                    WHERE user_id = $1
+                      AND reward_date = $2
+                    """,
+                    user_id,
+                    today,
+                )
+        return max(0, PVP_DAILY_REWARD_LIMIT - int(rewarded_count or 0))
+
+    async def complete_pvp_challenge(self, challenge_id: int) -> PvpChallengeSummary:
+        """Mark one active PvP challenge as completed and return the final summary."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    SELECT status
+                    FROM pvp_challenges
+                    WHERE id = $1
+                    FOR UPDATE
+                    """,
+                    challenge_id,
+                )
+                if not row:
+                    raise ShopError("Бой не найден.")
+                if str(row["status"]) != PVP_CHALLENGE_STATUS_BATTLING:
+                    raise ShopError("Этот бой уже не активен.")
+                await self._close_pvp_challenge(
+                    conn,
+                    challenge_id,
+                    status=PVP_CHALLENGE_STATUS_COMPLETED,
+                    cancel_reason=None,
+                )
+                return await self._fetch_pvp_challenge_summary(conn, challenge_id)
+
+    async def abort_pvp_challenge(self, challenge_id: int, *, cancel_reason: str) -> PvpChallengeSummary:
+        """Force-close one active PvP challenge after runtime failure."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    SELECT status
+                    FROM pvp_challenges
+                    WHERE id = $1
+                    FOR UPDATE
+                    """,
+                    challenge_id,
+                )
+                if not row:
+                    raise ShopError("Бой не найден.")
+                if str(row["status"]) not in {
+                    PVP_CHALLENGE_STATUS_PENDING,
+                    PVP_CHALLENGE_STATUS_SELECTING_INITIATOR,
+                    PVP_CHALLENGE_STATUS_SELECTING_TARGET,
+                    PVP_CHALLENGE_STATUS_BATTLING,
+                }:
+                    raise ShopError("Этот бой уже не активен.")
+                await self._close_pvp_challenge(
+                    conn,
+                    challenge_id,
+                    status=PVP_CHALLENGE_STATUS_CANCELED,
+                    cancel_reason=cancel_reason,
+                )
+                return await self._fetch_pvp_challenge_summary(conn, challenge_id)
+
+    async def settle_pvp_battle_rewards(
+        self,
+        *,
+        winner_telegram_id: int,
+        winner_username: Optional[str],
+        loser_telegram_id: int,
+        loser_username: Optional[str],
+    ) -> PvpRewardResolution:
+        """Apply daily PvP reward accounting and winner payout."""
+        self._ensure_pool()
+        today = datetime.now(UTC).date()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                winner_user_id = await self._ensure_user(conn, winner_telegram_id, winner_username)
+                loser_user_id = await self._ensure_user(conn, loser_telegram_id, loser_username)
+
+                winner_before = await conn.fetchval(
+                    """
+                    SELECT rewarded_battle_count
+                    FROM user_pvp_daily_rewards
+                    WHERE user_id = $1
+                      AND reward_date = $2
+                    """,
+                    winner_user_id,
+                    today,
+                )
+                loser_before = await conn.fetchval(
+                    """
+                    SELECT rewarded_battle_count
+                    FROM user_pvp_daily_rewards
+                    WHERE user_id = $1
+                      AND reward_date = $2
+                    """,
+                    loser_user_id,
+                    today,
+                )
+                winner_before_int = int(winner_before or 0)
+                loser_before_int = int(loser_before or 0)
+                winner_after = min(PVP_DAILY_REWARD_LIMIT, winner_before_int + 1)
+                loser_after = min(PVP_DAILY_REWARD_LIMIT, loser_before_int + 1)
+
+                await conn.execute(
+                    """
+                    INSERT INTO user_pvp_daily_rewards (user_id, reward_date, rewarded_battle_count)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (user_id, reward_date)
+                    DO UPDATE
+                    SET rewarded_battle_count = $3,
+                        updated_at = NOW()
+                    """,
+                    winner_user_id,
+                    today,
+                    winner_after,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO user_pvp_daily_rewards (user_id, reward_date, rewarded_battle_count)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (user_id, reward_date)
+                    DO UPDATE
+                    SET rewarded_battle_count = $3,
+                        updated_at = NOW()
+                    """,
+                    loser_user_id,
+                    today,
+                    loser_after,
+                )
+
+                reward_granted = winner_before_int < PVP_DAILY_REWARD_LIMIT
+                if reward_granted:
+                    await self._ensure_user_balance(conn, winner_user_id, POKEDOLLAR_CODE)
+                    await self._adjust_balance(conn, winner_user_id, POKEDOLLAR_CODE, PVP_WIN_REWARD_POKEDOLLAR)
+
+        return PvpRewardResolution(
+            winner_reward_granted=reward_granted,
+            winner_reward_amount=PVP_WIN_REWARD_POKEDOLLAR if reward_granted else 0,
+            winner_daily_completed_count=winner_after,
+            loser_daily_completed_count=loser_after,
+        )
+
+    async def process_pvp_challenge_maintenance(self) -> PvpChallengeMaintenanceResult:
+        """Expire stale pending/selecting/battling PvP challenges and return affected projections."""
+        self._ensure_pool()
+        expired_pending: list[PvpChallengeSummary] = []
+        expired_selecting: list[PvpChallengeSummary] = []
+        expired_battling: list[PvpChallengeSummary] = []
+
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                pending_rows = await conn.fetch(
+                    """
+                    SELECT id
+                    FROM pvp_challenges
+                    WHERE status = $1
+                      AND pending_expires_at <= NOW()
+                    FOR UPDATE
+                    """,
+                    PVP_CHALLENGE_STATUS_PENDING,
+                )
+                for row in pending_rows:
+                    challenge_id = int(row["id"])
+                    expired_pending.append(await self._fetch_pvp_challenge_summary(conn, challenge_id))
+                    await self._close_pvp_challenge(
+                        conn,
+                        challenge_id,
+                        status=PVP_CHALLENGE_STATUS_EXPIRED,
+                        cancel_reason="request_expired",
+                    )
+
+                selecting_rows = await conn.fetch(
+                    """
+                    SELECT id
+                    FROM pvp_challenges
+                    WHERE status IN ($1, $2)
+                      AND selection_expires_at <= NOW()
+                    FOR UPDATE
+                    """,
+                    PVP_CHALLENGE_STATUS_SELECTING_INITIATOR,
+                    PVP_CHALLENGE_STATUS_SELECTING_TARGET,
+                )
+                for row in selecting_rows:
+                    challenge_id = int(row["id"])
+                    expired_selecting.append(await self._fetch_pvp_challenge_summary(conn, challenge_id))
+                    await self._close_pvp_challenge(
+                        conn,
+                        challenge_id,
+                        status=PVP_CHALLENGE_STATUS_EXPIRED,
+                        cancel_reason="selection_expired",
+                    )
+
+                battling_rows = await conn.fetch(
+                    """
+                    SELECT id
+                    FROM pvp_challenges
+                    WHERE status = $1
+                      AND selection_expires_at <= NOW()
+                    FOR UPDATE
+                    """,
+                    PVP_CHALLENGE_STATUS_BATTLING,
+                )
+                for row in battling_rows:
+                    challenge_id = int(row["id"])
+                    expired_battling.append(await self._fetch_pvp_challenge_summary(conn, challenge_id))
+                    await self._close_pvp_challenge(
+                        conn,
+                        challenge_id,
+                        status=PVP_CHALLENGE_STATUS_EXPIRED,
+                        cancel_reason="battle_expired",
+                    )
+
+        return PvpChallengeMaintenanceResult(
+            expired_pending_challenges=expired_pending,
+            expired_selecting_challenges=expired_selecting,
+            expired_battling_challenges=expired_battling,
+        )
 
     async def get_user_lookup_by_username(self, username: str) -> UserLookupResult:
         """Resolve an existing user by stored Telegram username."""
@@ -1994,6 +2707,309 @@ class Database:
             total_form_percent=_calculate_percent(total_form_owned, total_form_catalog),
         )
 
+    async def _cleanup_invalid_pvp_team_slots(self, conn: asyncpg.Connection, user_id: int) -> None:
+        """Drop stale team slots that reference missing, transferred, or released pokemon."""
+        await conn.execute(
+            """
+            DELETE FROM user_pvp_team_slots slots
+            WHERE slots.user_id = $1
+              AND NOT EXISTS (
+                SELECT 1
+                FROM user_pokemon up
+                WHERE up.id = slots.user_pokemon_id
+                  AND up.owner_user_id = $1
+                  AND up.released_at IS NULL
+              )
+            """,
+            user_id,
+        )
+
+    async def _fetch_pvp_team(self, conn: asyncpg.Connection, user_id: int) -> PvpTeam:
+        """Load all five PvP team slots for one user."""
+        rows = await conn.fetch(
+            """
+            SELECT
+              slots.slot_index,
+              pc.id AS pokemon_id,
+              up.id AS sample_user_pokemon_id,
+              pc.name,
+              pc.rarity,
+              pc.type,
+              pc.dex_form_code,
+              (
+                SELECT COUNT(*)
+                FROM user_pokemon up_count
+                WHERE up_count.owner_user_id = up.owner_user_id
+                  AND up_count.pokemon_id = up.pokemon_id
+                  AND up_count.released_at IS NULL
+              )::int AS quantity,
+              pc.base_hp,
+              pc.base_attack,
+              pc.base_defense,
+              pc.base_stamina,
+              pc.image_credit_id,
+              up.is_locked
+            FROM user_pvp_team_slots slots
+            JOIN user_pokemon up ON up.id = slots.user_pokemon_id
+            JOIN pokemon_catalog pc ON pc.id = up.pokemon_id
+            WHERE slots.user_id = $1
+              AND up.owner_user_id = $1
+              AND up.released_at IS NULL
+            ORDER BY slots.slot_index ASC
+            """,
+            user_id,
+        )
+        entries_by_slot: dict[int, CollectionEntry] = {
+            int(row["slot_index"]): CollectionEntry(
+                pokemon_id=int(row["pokemon_id"]),
+                sample_user_pokemon_id=int(row["sample_user_pokemon_id"]),
+                name=str(row["name"]),
+                rarity=str(row["rarity"]),
+                pokemon_type=row["type"],
+                quantity=int(row["quantity"]),
+                base_hp=int(row["base_hp"]),
+                base_attack=int(row["base_attack"]),
+                base_defense=int(row["base_defense"]),
+                base_stamina=int(row["base_stamina"]),
+                image_credit_id=row["image_credit_id"],
+                is_locked=bool(row["is_locked"]),
+                dex_form_code=row["dex_form_code"],
+                form_badge=_form_badge_from_dex_form_code(row["dex_form_code"]),
+            )
+            for row in rows
+        }
+        return PvpTeam(
+            slots=tuple(
+                PvpTeamSlot(slot_index=slot_index, entry=entries_by_slot.get(slot_index))
+                for slot_index in range(1, PVP_TEAM_SLOT_COUNT + 1)
+            )
+        )
+
+    async def _is_user_pokemon_in_pvp_team(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        user_id: int,
+        user_pokemon_id: int,
+    ) -> bool:
+        """Return whether one owned pokemon instance is currently in the user's PvP team."""
+        found = await conn.fetchval(
+            """
+            SELECT 1
+            FROM user_pvp_team_slots
+            WHERE user_id = $1
+              AND user_pokemon_id = $2
+            LIMIT 1
+            """,
+            user_id,
+            user_pokemon_id,
+        )
+        return bool(found)
+
+    async def _ensure_user_has_complete_pvp_team(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        user_id: int,
+        own_message: str,
+    ) -> None:
+        team_count = int(
+            await conn.fetchval(
+                """
+                SELECT COUNT(*)::int
+                FROM user_pvp_team_slots
+                WHERE user_id = $1
+                """,
+                user_id,
+            )
+            or 0
+        )
+        if team_count != PVP_TEAM_SLOT_COUNT:
+            raise ShopError(own_message)
+
+    async def _ensure_pvp_initiator_available(self, conn: asyncpg.Connection, user_id: int) -> None:
+        """Ensure the user has no other outgoing pending/selecting PvP challenge."""
+        conflict = await conn.fetchval(
+            """
+            SELECT 1
+            FROM pvp_challenges
+            WHERE initiator_user_id = $1
+              AND (
+                (status = $2 AND (pending_expires_at IS NULL OR pending_expires_at > NOW()))
+                OR (status = $3 AND (selection_expires_at IS NULL OR selection_expires_at > NOW()))
+                OR (status = $4 AND (selection_expires_at IS NULL OR selection_expires_at > NOW()))
+              )
+            LIMIT 1
+            """,
+            user_id,
+            PVP_CHALLENGE_STATUS_PENDING,
+            PVP_CHALLENGE_STATUS_SELECTING_INITIATOR,
+            PVP_CHALLENGE_STATUS_SELECTING_TARGET,
+        )
+        if conflict:
+            raise ShopError("У вас уже есть исходящий вызов или незавершённый выбор бойца.")
+
+    async def _ensure_pvp_user_not_selecting(
+        self,
+        conn: asyncpg.Connection,
+        user_id: int,
+        *,
+        own_message: str,
+    ) -> None:
+        conflict = await conn.fetchval(
+            """
+            SELECT 1
+            FROM pvp_challenges
+            WHERE (initiator_user_id = $1 OR target_user_id = $1)
+              AND (
+                (status = $2 AND (selection_expires_at IS NULL OR selection_expires_at > NOW()))
+                OR (status = $3 AND (selection_expires_at IS NULL OR selection_expires_at > NOW()))
+                OR (status = $4 AND (selection_expires_at IS NULL OR selection_expires_at > NOW()))
+              )
+            LIMIT 1
+            """,
+            user_id,
+            PVP_CHALLENGE_STATUS_SELECTING_INITIATOR,
+            PVP_CHALLENGE_STATUS_SELECTING_TARGET,
+            PVP_CHALLENGE_STATUS_BATTLING,
+        )
+        if conflict:
+            raise ShopError(own_message)
+
+    async def _fetch_pvp_challenge_summary(self, conn: asyncpg.Connection, challenge_id: int) -> PvpChallengeSummary:
+        row = await conn.fetchrow(
+            """
+            SELECT
+              pc.id,
+              pc.chat_id,
+              pc.message_thread_id,
+              pc.message_id,
+              pc.status,
+              pc.pending_expires_at,
+              pc.selection_expires_at,
+              pc.created_at,
+              pc.accepted_at,
+              pc.canceled_at,
+              pc.completed_at,
+              pc.cancel_reason,
+              initiator.id AS initiator_user_id,
+              initiator.tg_user_id AS initiator_tg_user_id,
+              initiator.tg_username AS initiator_tg_username,
+              initiator.nickname AS initiator_nickname,
+              target.id AS target_user_id,
+              target.tg_user_id AS target_tg_user_id,
+              target.tg_username AS target_tg_username,
+              target.nickname AS target_nickname,
+              pc.initiator_selected_user_pokemon_id,
+              pc.target_selected_user_pokemon_id,
+              ipc.name AS initiator_selected_name,
+              ipc.rarity AS initiator_selected_rarity,
+              ipc.dex_form_code AS initiator_selected_dex_form_code,
+              ipc.type AS initiator_selected_pokemon_type,
+              ipc.base_hp AS initiator_selected_base_hp,
+              ipc.base_attack AS initiator_selected_base_attack,
+              ipc.base_defense AS initiator_selected_base_defense,
+              ipc.base_stamina AS initiator_selected_base_stamina,
+              tpc.name AS target_selected_name,
+              tpc.rarity AS target_selected_rarity,
+              tpc.dex_form_code AS target_selected_dex_form_code,
+              tpc.type AS target_selected_pokemon_type,
+              tpc.base_hp AS target_selected_base_hp,
+              tpc.base_attack AS target_selected_base_attack,
+              tpc.base_defense AS target_selected_base_defense,
+              tpc.base_stamina AS target_selected_base_stamina
+            FROM pvp_challenges pc
+            JOIN users initiator ON initiator.id = pc.initiator_user_id
+            JOIN users target ON target.id = pc.target_user_id
+            LEFT JOIN user_pokemon iup ON iup.id = pc.initiator_selected_user_pokemon_id
+            LEFT JOIN pokemon_catalog ipc ON ipc.id = iup.pokemon_id
+            LEFT JOIN user_pokemon tup ON tup.id = pc.target_selected_user_pokemon_id
+            LEFT JOIN pokemon_catalog tpc ON tpc.id = tup.pokemon_id
+            WHERE pc.id = $1
+            """,
+            challenge_id,
+        )
+        if not row:
+            raise ShopError("Вызов на бой не найден.")
+        return PvpChallengeSummary(
+            challenge_id=int(row["id"]),
+            chat_id=int(row["chat_id"]),
+            message_thread_id=row["message_thread_id"],
+            message_id=int(row["message_id"]) if row["message_id"] is not None else None,
+            status=str(row["status"]),
+            pending_expires_at=_normalize_optional_timestamp(row["pending_expires_at"]),
+            selection_expires_at=_normalize_optional_timestamp(row["selection_expires_at"]),
+            created_at=_normalize_timestamp(row["created_at"]),
+            accepted_at=_normalize_optional_timestamp(row["accepted_at"]),
+            canceled_at=_normalize_optional_timestamp(row["canceled_at"]),
+            completed_at=_normalize_optional_timestamp(row["completed_at"]),
+            cancel_reason=row["cancel_reason"],
+            initiator=PvpChallengeParticipant(
+                user_id=int(row["initiator_user_id"]),
+                telegram_id=int(row["initiator_tg_user_id"]),
+                username=row["initiator_tg_username"],
+                nickname=row["initiator_nickname"],
+                label=_resolve_trade_user_label(row["initiator_nickname"], row["initiator_tg_username"], int(row["initiator_tg_user_id"])),
+                selected_user_pokemon_id=int(row["initiator_selected_user_pokemon_id"]) if row["initiator_selected_user_pokemon_id"] is not None else None,
+                selected_name=row["initiator_selected_name"],
+                selected_rarity=row["initiator_selected_rarity"],
+                selected_dex_form_code=row["initiator_selected_dex_form_code"],
+                selected_form_badge=_form_badge_from_dex_form_code(row["initiator_selected_dex_form_code"]),
+                selected_pokemon_type=row["initiator_selected_pokemon_type"],
+                selected_base_hp=int(row["initiator_selected_base_hp"]) if row["initiator_selected_base_hp"] is not None else None,
+                selected_base_attack=int(row["initiator_selected_base_attack"]) if row["initiator_selected_base_attack"] is not None else None,
+                selected_base_defense=int(row["initiator_selected_base_defense"]) if row["initiator_selected_base_defense"] is not None else None,
+                selected_base_stamina=int(row["initiator_selected_base_stamina"]) if row["initiator_selected_base_stamina"] is not None else None,
+            ),
+            target=PvpChallengeParticipant(
+                user_id=int(row["target_user_id"]),
+                telegram_id=int(row["target_tg_user_id"]),
+                username=row["target_tg_username"],
+                nickname=row["target_nickname"],
+                label=_resolve_trade_user_label(row["target_nickname"], row["target_tg_username"], int(row["target_tg_user_id"])),
+                selected_user_pokemon_id=int(row["target_selected_user_pokemon_id"]) if row["target_selected_user_pokemon_id"] is not None else None,
+                selected_name=row["target_selected_name"],
+                selected_rarity=row["target_selected_rarity"],
+                selected_dex_form_code=row["target_selected_dex_form_code"],
+                selected_form_badge=_form_badge_from_dex_form_code(row["target_selected_dex_form_code"]),
+                selected_pokemon_type=row["target_selected_pokemon_type"],
+                selected_base_hp=int(row["target_selected_base_hp"]) if row["target_selected_base_hp"] is not None else None,
+                selected_base_attack=int(row["target_selected_base_attack"]) if row["target_selected_base_attack"] is not None else None,
+                selected_base_defense=int(row["target_selected_base_defense"]) if row["target_selected_base_defense"] is not None else None,
+                selected_base_stamina=int(row["target_selected_base_stamina"]) if row["target_selected_base_stamina"] is not None else None,
+            ),
+        )
+
+    async def _close_pvp_challenge(
+        self,
+        conn: asyncpg.Connection,
+        challenge_id: int,
+        *,
+        status: str,
+        cancel_reason: Optional[str],
+    ) -> None:
+        should_mark_canceled = status in {
+            PVP_CHALLENGE_STATUS_REJECTED,
+            PVP_CHALLENGE_STATUS_CANCELED,
+            PVP_CHALLENGE_STATUS_EXPIRED,
+        }
+        should_mark_completed = status == PVP_CHALLENGE_STATUS_COMPLETED
+        await conn.execute(
+            """
+            UPDATE pvp_challenges
+            SET status = $2,
+                cancel_reason = $3,
+                canceled_at = CASE WHEN $4 THEN NOW() ELSE canceled_at END,
+                completed_at = CASE WHEN $5 THEN NOW() ELSE completed_at END
+            WHERE id = $1
+            """,
+            challenge_id,
+            status,
+            cancel_reason,
+            should_mark_canceled,
+            should_mark_completed,
+        )
+
     async def search_profile_cover_candidates(
         self,
         telegram_id: int,
@@ -2742,6 +3758,12 @@ class Database:
                     return "Нельзя создать лот: этот покемон уже отпущен."
                 if bool(pokemon_row["is_locked"]):
                     return "Нельзя создать лот: этот покемон заблокирован."
+                if await self._is_user_pokemon_in_pvp_team(
+                    conn,
+                    user_id=seller_user_id,
+                    user_pokemon_id=user_pokemon_id,
+                ):
+                    return "Нельзя создать лот: этот покемон состоит в боевой команде."
                 existing_listing = await conn.fetchval(
                     """
                     SELECT 1
@@ -2900,6 +3922,12 @@ class Database:
                     return "Этот покемон уже отпущен."
                 if bool(pokemon_row["is_locked"]):
                     return "Этот покемон заблокирован."
+                if await self._is_user_pokemon_in_pvp_team(
+                    conn,
+                    user_id=seller_user_id,
+                    user_pokemon_id=user_pokemon_id,
+                ):
+                    return "Сначала уберите этого покемона из боевой команды."
                 if int(pokemon_row["pokemon_id"]) != int(request_row["pokemon_id"]):
                     return "Этот покемон не подходит под заявку."
 
@@ -2966,6 +3994,12 @@ class Database:
                     raise ShopError("Нельзя выставить отпущенного покемона.")
                 if bool(pokemon_row["is_locked"]):
                     raise ShopError("Нельзя выставить заблокированного покемона.")
+                if await self._is_user_pokemon_in_pvp_team(
+                    conn,
+                    user_id=seller_user_id,
+                    user_pokemon_id=user_pokemon_id,
+                ):
+                    raise ShopError("Нельзя выставить покемона из боевой команды.")
 
                 existing_listing = await conn.fetchval(
                     """
@@ -3364,6 +4398,12 @@ class Database:
                     raise ShopError("Нельзя продать отпущенного покемона.")
                 if bool(pokemon_row["is_locked"]):
                     raise ShopError("Нельзя продать заблокированного покемона.")
+                if await self._is_user_pokemon_in_pvp_team(
+                    conn,
+                    user_id=seller_user_id,
+                    user_pokemon_id=user_pokemon_id,
+                ):
+                    raise ShopError("Сначала уберите этого покемона из боевой команды.")
                 if int(pokemon_row["pokemon_id"]) != int(request_row["pokemon_id"]):
                     raise ShopError("Этот покемон не подходит под заявку.")
 
@@ -3789,6 +4829,12 @@ class Database:
                     raise ShopError("Нельзя добавить в трейд отпущенного покемона.")
                 if bool(pokemon_row["is_locked"]):
                     raise ShopError("Нельзя добавить в трейд заблокированного покемона.")
+                if await self._is_user_pokemon_in_pvp_team(
+                    conn,
+                    user_id=user_id,
+                    user_pokemon_id=user_pokemon_id,
+                ):
+                    raise ShopError("Сначала уберите этого покемона из боевой команды.")
 
                 active_listing = await conn.fetchval(
                     """
@@ -4692,6 +5738,12 @@ class Database:
                     raise ShopError("Этот покемон уже отпущен.")
                 if bool(row["is_locked"]):
                     raise ShopError("Нельзя отпустить заблокированного покемона.")
+                if await self._is_user_pokemon_in_pvp_team(
+                    conn,
+                    user_id=user_id,
+                    user_pokemon_id=user_pokemon_id,
+                ):
+                    raise ShopError("Сначала уберите этого покемона из боевой команды.")
 
                 active_listing = await conn.fetchval(
                     """

@@ -16,6 +16,7 @@ from bot.db.database import (
     Database,
     POKEMON_RELEASE_REWARDS,
     PokemonSearchEntry,
+    ShopError,
 )
 from bot.navigation.context import extract_context
 from bot.navigation.router import NavigationRouter, parse_callback_data
@@ -102,6 +103,7 @@ COLLECTION_ROUTE_SECTIONS = [
     RELEASE_CARD_SECTION,
     "pkb",
     "pkl",
+    "pkt",
     "pkv",
     "pkrc",
     "cfs",
@@ -267,6 +269,10 @@ async def collection_handler(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
         if section == "pkl":
             await _handle_lock_toggle(update, context, session)
+            return
+
+        if section == "pkt":
+            await _handle_add_to_team_hint(update, context, session)
             return
 
         if section == "pkv":
@@ -1049,6 +1055,37 @@ async def _handle_set_cover(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     await query.answer("Обложка обновлена.", show_alert=False)
 
 
+async def _handle_add_to_team_hint(update: Update, context: ContextTypes.DEFAULT_TYPE, session: MenuSession) -> None:
+    query = update.callback_query
+    db = _get_db(context)
+    if not db:
+        await query.answer("Коллекция временно недоступна.", show_alert=False)
+        return
+
+    entry = await _load_owned_card_entry(update, context, session)
+    if not entry:
+        await query.answer("Карточка больше недоступна.", show_alert=False)
+        return
+
+    next_session_id = await _create_session(session, dict(session.data))
+    source_url = await _resolve_entry_source_url(
+        db,
+        viewer_telegram_id=session.user_id,
+        pokemon_id=entry.pokemon_id,
+    )
+    status_text = (
+        f"🛡 Быстрая команда: <code>/addteam слот {entry.sample_user_pokemon_id}</code>\n"
+        "Замени <code>слот</code> на число от <b>1</b> до <b>5</b>."
+    )
+    await _edit_collection_message(
+        query,
+        session,
+        _render_extra_actions_text(entry, status_text=status_text),
+        _build_extra_actions_keyboard(next_session_id, entry.is_locked, source_url=source_url),
+    )
+    await query.answer("Команда для добавления показана.", show_alert=False)
+
+
 async def _handle_release_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE, session: MenuSession) -> None:
     query = update.callback_query
     db = _get_db(context)
@@ -1060,11 +1097,15 @@ async def _handle_release_confirm(update: Update, context: ContextTypes.DEFAULT_
     if user_pokemon_id is None:
         raise ValueError("Release confirmation payload is missing")
 
-    result = await db.release_user_pokemon(
-        session.user_id,
-        update.effective_user.username if update.effective_user else None,
-        user_pokemon_id=int(user_pokemon_id),
-    )
+    try:
+        result = await db.release_user_pokemon(
+            session.user_id,
+            update.effective_user.username if update.effective_user else None,
+            user_pokemon_id=int(user_pokemon_id),
+        )
+    except ShopError as exc:
+        await query.answer(str(exc), show_alert=True)
+        return
     next_session_id = await _create_session(session)
     await _edit_collection_message(
         query,
@@ -1242,6 +1283,7 @@ def _build_extra_actions_keyboard(session_id: str, is_locked: bool, *, source_ur
     rows = [
         [InlineKeyboardButton(lock_label, callback_data=f"menu:pkl:{session_id}")],
         [InlineKeyboardButton("🖼 На обложку", callback_data=f"menu:pkv:{session_id}")],
+        [InlineKeyboardButton("🛡 Добавить в команду", callback_data=f"menu:pkt:{session_id}")],
     ]
     if source_url:
         rows.append([InlineKeyboardButton("🔗 Источник", url=source_url)])

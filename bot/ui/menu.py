@@ -9,7 +9,8 @@ def build_main_menu_keyboard(session_id: str, *, chat_type: str | None = None) -
     
     Layout:
     Row 0: Магазин | Рынок | Профиль
-    Row 1: Моя коллекция | Чат | Информация
+    Row 1: Моя коллекция | Миниигры | Чат
+    Row 2: Информация
     
     Args:
         session_id: Unique session identifier for this menu
@@ -25,7 +26,10 @@ def build_main_menu_keyboard(session_id: str, *, chat_type: str | None = None) -
         ],
         [
             InlineKeyboardButton("📦 Моя коллекция", callback_data=f"menu:collection:{session_id}"),
+            InlineKeyboardButton("🎮 Миниигры", callback_data=f"menu:games:{session_id}"),
             InlineKeyboardButton("💬 Чат", url="https://t.me/+TQ8-KkXpZa02MDY6"),
+        ],
+        [
             InlineKeyboardButton("ℹ️ Информация", callback_data=f"menu:info:{session_id}"),
         ],
     ]

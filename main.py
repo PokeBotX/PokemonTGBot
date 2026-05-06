@@ -23,6 +23,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 from bot.db import Database
 from bot.db.database import (
     MARKET_MAINTENANCE_INTERVAL_SECONDS,
+    PVP_MAINTENANCE_INTERVAL_SECONDS,
     TRADE_MAINTENANCE_INTERVAL_SECONDS,
     CollectionFilterState,
     MarketBrowseState,
@@ -31,10 +32,12 @@ from bot.db.database import (
 from bot.utils.logging import setup_logging
 from bot.handlers.chat_activity import group_message_activity_handler
 from bot.handlers.commands import (
+    addteam_command,
     buyprice_command,
     changename_command,
     collection_command,
     find_command,
+    fight_command,
     items_command,
     menu_command,
     pokemon_command,
@@ -55,8 +58,9 @@ from bot.navigation.router import navigation_router
 from bot.handlers.sections.shop import register_shop_routes
 from bot.handlers.sections.market import register_market_routes
 from bot.handlers.sections.profile import handle_profile_text_input, register_profile_routes
+from bot.handlers.sections.pvp import register_pvp_routes, run_pvp_maintenance_job
 from bot.handlers.sections.trade import register_trade_routes, run_trade_maintenance_job
-from bot.handlers.sections.games import games_handler
+from bot.handlers.sections.games import register_games_routes
 from bot.handlers.sections.collection import register_collection_routes
 from bot.handlers.sections.updates import updates_handler
 from bot.handlers.sections.chat import chat_handler
@@ -674,14 +678,15 @@ def register_routes() -> None:
     register_profile_routes(navigation_router)
     register_market_routes(navigation_router)
     register_trade_routes(navigation_router)
-    navigation_router.register("games", games_handler)
+    register_pvp_routes(navigation_router)
+    register_games_routes(navigation_router)
     navigation_router.register("updates", updates_handler)
     navigation_router.register("chat", chat_handler)
     navigation_router.register("support", support_handler)
     navigation_router.register("info", info_handler)
     navigation_router.register("back", back_to_menu_handler)
     
-    logger.info("routes_registered", routes=navigation_router.list_routes())
+    logger.debug("routes_registered", routes=navigation_router.list_routes())
 
 
 async def setup_bot_commands(application: Application) -> None:
@@ -695,6 +700,7 @@ async def setup_bot_commands(application: Application) -> None:
         BotCommand("profile", "Открыть профиль"),
         BotCommand("collection", "Открыть коллекцию"),
         BotCommand("find", "Поиск покемона в чате"),
+        BotCommand("fight", "Вызвать игрока на бой"),
         BotCommand("search", "Поиск покемона по имени"),
         BotCommand("trade", "Создать обмен в чате"),
         BotCommand("info", "Открыть информацию"),
@@ -791,6 +797,8 @@ async def lifespan(app: FastAPI):
     bot_app.add_handler(CommandHandler("pokemon", pokemon_command))
     bot_app.add_handler(CommandHandler("items", items_command))
     bot_app.add_handler(CommandHandler("find", find_command))
+    bot_app.add_handler(CommandHandler("fight", fight_command))
+    bot_app.add_handler(CommandHandler("addteam", addteam_command))
     bot_app.add_handler(CommandHandler("search", search_command))
     bot_app.add_handler(CommandHandler("trade", trade_command))
     bot_app.add_handler(CommandHandler("tradeadd", tradeadd_command))
@@ -850,6 +858,12 @@ async def lifespan(app: FastAPI):
                 interval=TRADE_MAINTENANCE_INTERVAL_SECONDS,
                 first=TRADE_MAINTENANCE_INTERVAL_SECONDS,
                 name="trade-maintenance",
+            )
+            bot_app.job_queue.run_repeating(
+                run_pvp_maintenance_job,
+                interval=PVP_MAINTENANCE_INTERVAL_SECONDS,
+                first=PVP_MAINTENANCE_INTERVAL_SECONDS,
+                name="pvp-maintenance",
             )
     logger.info("runtime_dependency_state", **_build_health_payload())
     

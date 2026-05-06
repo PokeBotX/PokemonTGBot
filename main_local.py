@@ -7,13 +7,15 @@ from telegram import BotCommand
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
 from bot.db import Database
-from bot.db.database import MARKET_MAINTENANCE_INTERVAL_SECONDS, TRADE_MAINTENANCE_INTERVAL_SECONDS
+from bot.db.database import MARKET_MAINTENANCE_INTERVAL_SECONDS, PVP_MAINTENANCE_INTERVAL_SECONDS, TRADE_MAINTENANCE_INTERVAL_SECONDS
 from bot.handlers.chat_activity import group_message_activity_handler
 from bot.handlers.commands import (
+    addteam_command,
     buyprice_command,
     changename_command,
     collection_command,
     find_command,
+    fight_command,
     items_command,
     menu_command,
     pokemon_command,
@@ -32,10 +34,11 @@ from bot.handlers.navigation import handle_callback_query
 from bot.handlers.sections.back import back_to_menu_handler
 from bot.handlers.sections.chat import chat_handler
 from bot.handlers.sections.collection import register_collection_routes
-from bot.handlers.sections.games import games_handler
+from bot.handlers.sections.games import register_games_routes
 from bot.handlers.sections.info import info_handler
 from bot.handlers.sections.market import register_market_routes
 from bot.handlers.sections.profile import handle_profile_text_input, register_profile_routes
+from bot.handlers.sections.pvp import register_pvp_routes, run_pvp_maintenance_job
 from bot.handlers.sections.shop import register_shop_routes
 from bot.handlers.sections.trade import register_trade_routes, run_trade_maintenance_job
 from bot.handlers.sections.support import support_handler
@@ -76,13 +79,14 @@ def register_routes() -> None:
     register_profile_routes(navigation_router)
     register_market_routes(navigation_router)
     register_trade_routes(navigation_router)
-    navigation_router.register("games", games_handler)
+    register_pvp_routes(navigation_router)
+    register_games_routes(navigation_router)
     navigation_router.register("updates", updates_handler)
     navigation_router.register("chat", chat_handler)
     navigation_router.register("support", support_handler)
     navigation_router.register("info", info_handler)
     navigation_router.register("back", back_to_menu_handler)
-    logger.info("routes_registered", routes=navigation_router.list_routes())
+    logger.debug("routes_registered", routes=navigation_router.list_routes())
 
 
 async def run_market_maintenance_job(context) -> None:
@@ -140,6 +144,12 @@ async def post_init(application: Application) -> None:
                 first=TRADE_MAINTENANCE_INTERVAL_SECONDS,
                 name="trade-maintenance",
             )
+            application.job_queue.run_repeating(
+                run_pvp_maintenance_job,
+                interval=PVP_MAINTENANCE_INTERVAL_SECONDS,
+                first=PVP_MAINTENANCE_INTERVAL_SECONDS,
+                name="pvp-maintenance",
+            )
 
     await application.bot.delete_webhook(drop_pending_updates=DROP_PENDING_UPDATES)
     await application.bot.set_my_commands([
@@ -149,6 +159,7 @@ async def post_init(application: Application) -> None:
         BotCommand("profile", "Открыть профиль"),
         BotCommand("collection", "Открыть коллекцию"),
         BotCommand("find", "Поиск покемона в чате"),
+        BotCommand("fight", "Вызвать игрока на бой"),
         BotCommand("search", "Поиск покемона по имени"),
         BotCommand("trade", "Создать обмен в чате"),
         BotCommand("info", "Открыть информацию"),
@@ -186,6 +197,8 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("pokemon", pokemon_command))
     application.add_handler(CommandHandler("items", items_command))
     application.add_handler(CommandHandler("find", find_command))
+    application.add_handler(CommandHandler("fight", fight_command))
+    application.add_handler(CommandHandler("addteam", addteam_command))
     application.add_handler(CommandHandler("search", search_command))
     application.add_handler(CommandHandler("trade", trade_command))
     application.add_handler(CommandHandler("tradeadd", tradeadd_command))

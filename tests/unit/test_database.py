@@ -12,7 +12,9 @@ from bot.db.database import (
     FORM_KIND_GIGANTAMAX,
     FORM_KIND_MEGA,
     FORM_KIND_SHINY,
+    PVP_TEAM_SLOT_COUNT,
     POKEDOLLAR_CODE,
+    ShopError,
     WELCOME_POKEDOLLAR_AMOUNT,
     _build_base_dex_form_code,
     _dex_form_sort_sql,
@@ -516,3 +518,106 @@ async def test_admin_create_pokemon_species_assigns_base_dex_form_code() -> None
     assert "INSERT INTO pokemon_catalog" in insert_query
     assert pokemon_id == 25
     assert dex_form_code == "25"
+
+
+@pytest.mark.asyncio
+async def test_fetch_pvp_team_returns_five_slots_with_gaps() -> None:
+    db = Database()
+    conn = AsyncMock()
+    conn.fetch = AsyncMock(
+        return_value=[
+            {
+                "slot_index": 1,
+                "pokemon_id": 197,
+                "sample_user_pokemon_id": 7001,
+                "name": "Umbreon",
+                "rarity": "Epic",
+                "type": "Dark",
+                "dex_form_code": "197",
+                "quantity": 1,
+                "base_hp": 95,
+                "base_attack": 65,
+                "base_defense": 110,
+                "base_stamina": 130,
+                "image_credit_id": None,
+                "is_locked": False,
+            },
+            {
+                "slot_index": 3,
+                "pokemon_id": 10197,
+                "sample_user_pokemon_id": 7002,
+                "name": "Umbreon",
+                "rarity": "Legendary",
+                "type": "Dark",
+                "dex_form_code": "197-0",
+                "quantity": 1,
+                "base_hp": 95,
+                "base_attack": 65,
+                "base_defense": 110,
+                "base_stamina": 130,
+                "image_credit_id": None,
+                "is_locked": True,
+            },
+        ]
+    )
+
+    team = await db._fetch_pvp_team(conn, 77)
+
+    assert len(team.slots) == PVP_TEAM_SLOT_COUNT
+    assert team.filled_slots == 2
+    assert team.is_complete is False
+    assert team.slots[0].entry is not None
+    assert team.slots[1].entry is None
+    assert team.slots[2].entry is not None
+    assert team.slots[2].entry.form_badge == "Shiny"
+
+
+@pytest.mark.asyncio
+async def test_get_market_sell_precheck_error_rejects_team_member() -> None:
+    db = Database()
+    conn = Mock()
+    conn.transaction = Mock(return_value=_AcquireContext(None))
+    conn.fetchrow = AsyncMock(
+        return_value={
+            "id": 55,
+            "owner_user_id": 77,
+            "is_locked": False,
+            "released_at": None,
+        }
+    )
+    conn.fetchval = AsyncMock(return_value=0)
+    db.pool = _FakePool(conn)
+    db._ensure_user = AsyncMock(return_value=77)
+    db._is_user_pokemon_in_pvp_team = AsyncMock(return_value=True)
+
+    error = await db.get_market_sell_precheck_error(12345, "ash", user_pokemon_id=55)
+
+    assert error == "Нельзя создать лот: этот покемон состоит в боевой команде."
+
+
+@pytest.mark.asyncio
+async def test_add_trade_offer_pokemon_rejects_team_member() -> None:
+    db = Database()
+    conn = Mock()
+    conn.transaction = Mock(return_value=_AcquireContext(None))
+    conn.fetchval = AsyncMock(return_value=0)
+    conn.fetchrow = AsyncMock(
+        return_value={
+            "owner_user_id": 77,
+            "is_locked": False,
+            "released_at": None,
+        }
+    )
+    db.pool = _FakePool(conn)
+    db._ensure_user = AsyncMock(return_value=77)
+    db._get_user_id_by_telegram_id = AsyncMock(return_value=77)
+    db._fetch_active_trade_row_for_user = AsyncMock(return_value={"id": 91})
+    db._ensure_trade_mutable = AsyncMock()
+    db._is_user_pokemon_in_pvp_team = AsyncMock(return_value=True)
+
+    with pytest.raises(ShopError, match="боевой команды"):
+        await db.add_trade_offer_pokemon(
+            telegram_id=12345,
+            username="ash",
+            user_pokemon_id=55,
+        )

@@ -8,7 +8,7 @@ from telegram import CallbackQuery, Chat, Message, Update, User
 from telegram.ext import ContextTypes
 
 from bot.db.database import PokemonSearchEntry, ProfileCoverCandidate, ProfileRarityProgress, ProfileSummary
-from bot.handlers.commands import changename_command, profile_command, search_command
+from bot.handlers.commands import addteam_command, changename_command, profile_command, search_command
 from bot.handlers.sections.profile import handle_profile_text_input, profile_handler
 from bot.navigation.session import MenuSession, session_store
 
@@ -42,6 +42,32 @@ def _profile_summary(*, profile_pic_credit_id=None) -> ProfileSummary:
         profile_pic_credit_id=profile_pic_credit_id,
         cover_pokemon_name=None,
     )
+
+
+class _TeamSlot:
+    def __init__(self, slot_index: int, user_pokemon_id: int | None, name: str | None = None, form_badge: str | None = None):
+        self.slot_index = slot_index
+        self.user_pokemon_id = user_pokemon_id
+        self.name = name
+        self.form_badge = form_badge
+        self.entry = None
+        if user_pokemon_id is not None and name is not None:
+            self.entry = type(
+                "TeamEntry",
+                (),
+                {
+                    "name": name,
+                    "form_badge": form_badge,
+                    "pokemon_id": 197,
+                    "dex_form_code": "197-0" if form_badge == "Shiny" else "197",
+                    "sample_user_pokemon_id": user_pokemon_id,
+                },
+            )()
+
+
+class _Team:
+    def __init__(self, slots):
+        self.slots = slots
 
 
 @pytest.mark.asyncio
@@ -87,7 +113,7 @@ async def test_profile_command_sends_profile_screen() -> None:
 
 
 @pytest.mark.asyncio
-async def test_profile_root_hides_placeholder_buttons() -> None:
+async def test_profile_root_shows_battle_team_button_but_hides_vip_placeholder() -> None:
     session = MenuSession(
         session_id="profile-root",
         chat_id=12345,
@@ -98,6 +124,7 @@ async def test_profile_root_hides_placeholder_buttons() -> None:
     query = AsyncMock(spec=CallbackQuery)
     query.data = "menu:profile:profile-root"
     query.edit_message_caption = AsyncMock()
+    query.edit_message_media = AsyncMock()
     query.message = Mock(spec=Message)
     query.message.photo = [object()]
 
@@ -119,10 +146,64 @@ async def test_profile_root_hides_placeholder_buttons() -> None:
 
     await profile_handler(update, context, session)
 
-    reply_markup = query.edit_message_caption.call_args.kwargs["reply_markup"]
+    reply_markup = query.edit_message_media.call_args.kwargs["reply_markup"]
     labels = [button.text for row in reply_markup.inline_keyboard for button in row]
-    assert "🛡 Боевая команда" not in labels
+    assert "🛡 Боевая команда" in labels
     assert "⭐ VIP" not in labels
+
+
+@pytest.mark.asyncio
+async def test_profile_team_screen_uses_addteam_command_instead_of_slot_buttons() -> None:
+    session = MenuSession(
+        session_id="profile-team",
+        chat_id=12345,
+        message_id=701,
+        user_id=12345,
+        message_thread_id=None,
+    )
+    query = AsyncMock(spec=CallbackQuery)
+    query.data = "menu:prt:profile-team"
+    query.edit_message_text = AsyncMock()
+    query.edit_message_caption = AsyncMock()
+    query.edit_message_media = AsyncMock()
+    query.message = Mock(spec=Message)
+    query.message.photo = [object()]
+
+    user = Mock(spec=User)
+    user.id = 12345
+    user.username = "ash"
+    user.first_name = "Ash"
+
+    update = Mock(spec=Update)
+    update.callback_query = query
+    update.effective_user = user
+
+    team = _Team(
+        [
+            _TeamSlot(1, 7001, "Eevee"),
+            _TeamSlot(2, None),
+            _TeamSlot(3, None),
+            _TeamSlot(4, None),
+            _TeamSlot(5, None),
+        ]
+    )
+    team.filled_slots = 1
+    team.is_complete = False
+    db = AsyncMock()
+    db.get_profile_summary = AsyncMock(return_value=_profile_summary())
+    db.get_pvp_team = AsyncMock(return_value=team)
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+
+    await profile_handler(update, context, session)
+
+    edited_text = query.edit_message_media.call_args.kwargs["media"].caption
+    assert "/addteam слот user_pokemon_id" in edited_text
+    reply_markup = query.edit_message_media.call_args.kwargs["reply_markup"]
+    labels = [button.text for row in reply_markup.inline_keyboard for button in row]
+    assert labels == ["🔙 Назад в профиль"]
 
 
 @pytest.mark.asyncio
@@ -197,6 +278,151 @@ async def test_changename_command_updates_nickname() -> None:
 
     assert db.update_profile_nickname.called
     assert chat.send_message.called
+
+
+@pytest.mark.asyncio
+async def test_addteam_command_updates_requested_slot() -> None:
+    user = Mock(spec=User)
+    user.id = 12345
+    user.username = "ash"
+    user.first_name = "Ash"
+
+    chat = Mock(spec=Chat)
+    chat.id = 12345
+    chat.type = "private"
+    chat.send_message = AsyncMock()
+
+    message = Mock(spec=Message)
+    message.message_id = 780
+    message.chat = chat
+    message.message_thread_id = None
+    message.text = "/addteam 3 812"
+
+    update = Mock(spec=Update)
+    update.effective_chat = chat
+    update.effective_user = user
+    update.effective_message = message
+
+    team = _Team(
+        [
+            _TeamSlot(1, 7001, "Eevee"),
+            _TeamSlot(2, 7002, "Vaporeon"),
+            _TeamSlot(3, 812, "Umbreon", "Shiny"),
+            _TeamSlot(4, None),
+            _TeamSlot(5, None),
+        ]
+    )
+    db = AsyncMock()
+    db.set_pvp_team_slot = AsyncMock(return_value=team)
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+
+    await addteam_command(update, context)
+
+    db.set_pvp_team_slot.assert_awaited_once_with(
+        12345,
+        "ash",
+        slot_index=3,
+        user_pokemon_id=812,
+    )
+    sent_text = (
+        chat.send_message.call_args.kwargs.get("text")
+        or chat.send_message.call_args.args[0]
+    )
+    assert "Слот <b>3</b> обновлён" in sent_text
+    assert "Umbreon (shiny)" in sent_text
+
+
+@pytest.mark.asyncio
+async def test_addteam_command_requires_confirmation_for_occupied_slot() -> None:
+    user = Mock(spec=User)
+    user.id = 12345
+    user.username = "ash"
+    user.first_name = "Ash"
+
+    chat = Mock(spec=Chat)
+    chat.id = 12345
+    chat.type = "private"
+
+    sent_message = Mock(spec=Message)
+    sent_message.message_id = 782
+    sent_message.edit_reply_markup = AsyncMock()
+    chat.send_message = AsyncMock(return_value=sent_message)
+
+    message = Mock(spec=Message)
+    message.message_id = 781
+    message.chat = chat
+    message.message_thread_id = None
+    message.text = "/addteam 1 812"
+
+    update = Mock(spec=Update)
+    update.effective_chat = chat
+    update.effective_user = user
+    update.effective_message = message
+
+    occupied_team = _Team(
+        [
+            _TeamSlot(1, 7001, "Eevee"),
+            _TeamSlot(2, None),
+            _TeamSlot(3, None),
+            _TeamSlot(4, None),
+            _TeamSlot(5, None),
+        ]
+    )
+    replacement_entry = type("ReplacementEntry", (), {"name": "Umbreon", "form_badge": "Shiny"})()
+    db = AsyncMock()
+    db.get_pvp_team = AsyncMock(return_value=occupied_team)
+    db.get_user_pokemon_entry = AsyncMock(return_value=replacement_entry)
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+
+    await addteam_command(update, context)
+
+    sent_text = chat.send_message.call_args.kwargs.get("text") or chat.send_message.call_args.args[0]
+    assert "Заменить <b>Eevee</b> на <b>Umbreon (shiny)</b>" in sent_text
+    assert sent_message.edit_reply_markup.called
+
+
+@pytest.mark.asyncio
+async def test_addteam_command_rejects_invalid_arguments() -> None:
+    user = Mock(spec=User)
+    user.id = 12345
+    user.username = "ash"
+    user.first_name = "Ash"
+
+    chat = Mock(spec=Chat)
+    chat.id = 12345
+    chat.type = "private"
+    chat.send_message = AsyncMock()
+
+    message = Mock(spec=Message)
+    message.message_id = 781
+    message.chat = chat
+    message.message_thread_id = None
+    message.text = "/addteam 6"
+
+    update = Mock(spec=Update)
+    update.effective_chat = chat
+    update.effective_user = user
+    update.effective_message = message
+
+    db = AsyncMock()
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+
+    await addteam_command(update, context)
+
+    sent_text = (
+        chat.send_message.call_args.kwargs.get("text")
+        or chat.send_message.call_args.args[0]
+    )
+    assert "/addteam слот user_pokemon_id" in sent_text
 
 
 @pytest.mark.asyncio

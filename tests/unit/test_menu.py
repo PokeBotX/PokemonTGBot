@@ -1,5 +1,4 @@
 """Unit tests for menu keyboard builder."""
-import pytest
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot.ui.menu import build_main_menu_keyboard, build_back_button
@@ -13,19 +12,20 @@ def test_build_main_menu_keyboard_structure():
     # Check it's an InlineKeyboardMarkup
     assert isinstance(keyboard, InlineKeyboardMarkup)
     
-    assert len(keyboard.inline_keyboard) == 2
+    assert len(keyboard.inline_keyboard) == 3
     assert len(keyboard.inline_keyboard[0]) == 3
     assert len(keyboard.inline_keyboard[1]) == 3
+    assert len(keyboard.inline_keyboard[2]) == 1
 
 
 def test_build_main_menu_keyboard_button_count():
-    """Test that main menu has 9 buttons total."""
+    """Test that main menu has 7 buttons total."""
     session_id = "test-session-123"
     keyboard = build_main_menu_keyboard(session_id)
     
     # Count all buttons
     button_count = sum(len(row) for row in keyboard.inline_keyboard)
-    assert button_count == 6
+    assert button_count == 7
 
 
 def test_build_main_menu_keyboard_callback_data():
@@ -35,7 +35,7 @@ def test_build_main_menu_keyboard_callback_data():
     
     expected_sections = [
         "shop", "market", "profile",
-        "collection", "chat", "info"
+        "collection", "games", "chat", "info"
     ]
     
     # Collect all buttons
@@ -59,7 +59,7 @@ def test_build_main_menu_keyboard_button_text():
     
     expected_texts = [
         "🛒 Магазин", "📈 Рынок", "👤 Профиль",
-        "📦 Моя коллекция", "💬 Чат", "ℹ️ Информация"
+        "📦 Моя коллекция", "🎮 Миниигры", "💬 Чат", "ℹ️ Информация"
     ]
     
     # Collect all buttons

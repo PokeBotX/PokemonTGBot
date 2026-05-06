@@ -20,11 +20,17 @@ from bot.handlers.sections.trade import (
     handle_trade_remove_command,
     start_trade_request,
 )
+from bot.handlers.sections.games import show_games_screen
+from bot.handlers.sections.pvp import start_pvp_challenge
 from bot.handlers.sections.profile import (
+    _build_team_replace_keyboard,
     _display_profile_owner,
     _display_self_profile_owner,
+    build_pvp_team_replace_confirmation_text,
     handle_pokemon_search_command,
+    resolve_pvp_team_slot,
     show_profile_screen,
+    update_pvp_team_slot_from_text,
 )
 from bot.handlers.sections.shop import show_shop_screen, SHOP_VIEW_ITEMS, SHOP_VIEW_POKEMON
 from bot.handlers.sections.info import show_info_screen
@@ -32,6 +38,7 @@ from bot.ui.html import display_name, escape_html
 from bot.ui.menu import build_main_menu_keyboard
 from bot.ui.menu import build_back_button
 from bot.ui.messages import get_main_menu_text, get_section_placeholder
+from bot.ui.pokemon_cards import format_pokemon_display_name
 
 logger = structlog.get_logger()
 
@@ -393,6 +400,209 @@ async def trade_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
 
 
+async def fight_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /fight command for starting a PvP challenge in group chats."""
+    await _sync_user_with_db(update, context)
+    if await _maybe_show_first_entry_guide(update, context):
+        return
+    application = getattr(context, "application", None)
+    db = application.bot_data.get("db") if application else None
+    if not db or not update.effective_user or not update.effective_chat or not update.effective_message:
+        return
+    if update.effective_chat.type not in {"group", "supergroup"}:
+        await update.effective_chat.send_message(
+            "⚠️ Команда /fight доступна только в чатах.",
+            message_thread_id=getattr(update.effective_message, "message_thread_id", None),
+        )
+        return
+
+    target_user = None
+    argument = _extract_command_argument(update.effective_message.text or "")
+    if argument:
+        try:
+            target_tg_id, target_username, _target_nickname = await db.resolve_trade_target_by_username(argument)
+        except ShopError as exc:
+            await update.effective_chat.send_message(
+                f"⚠️ {exc}",
+                message_thread_id=getattr(update.effective_message, "message_thread_id", None),
+            )
+            return
+        target_user = type("FightTarget", (), {"id": target_tg_id, "username": target_username})()
+    else:
+        reply_to = getattr(update.effective_message, "reply_to_message", None)
+        if reply_to and getattr(reply_to, "from_user", None) and not getattr(reply_to.from_user, "is_bot", False):
+            target_user = reply_to.from_user
+
+    if target_user is None:
+        await update.effective_chat.send_message(
+            "⚠️ Используйте /fight в ответ на сообщение пользователя или как <code>/fight @username</code>.",
+            parse_mode="HTML",
+            message_thread_id=getattr(update.effective_message, "message_thread_id", None),
+        )
+        return
+
+    try:
+        await start_pvp_challenge(
+            update,
+            context,
+            target_telegram_id=int(target_user.id),
+            target_username=getattr(target_user, "username", None),
+        )
+    except ShopError as exc:
+        await update.effective_chat.send_message(
+            f"⚠️ {exc}",
+            message_thread_id=getattr(update.effective_message, "message_thread_id", None),
+        )
+
+
+async def addteam_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /addteam command for quick PvP team slot updates."""
+    await _sync_user_with_db(update, context)
+    if await _maybe_show_first_entry_guide(update, context):
+        return
+    application = getattr(context, "application", None)
+    db = application.bot_data.get("db") if application else None
+    if not db or not update.effective_user or not update.effective_chat or not update.effective_message:
+        return
+
+    argument = _extract_command_argument(update.effective_message.text or "")
+    parts = argument.split()
+    if len(parts) != 2:
+        await update.effective_chat.send_message(
+            "⚠️ Используйте: <code>/addteam слот user_pokemon_id</code>\n"
+            "Например: <code>/addteam 3 812</code>\n"
+            "Или: <code>/addteam 3 -</code> для очистки слота.",
+            parse_mode="HTML",
+            message_thread_id=getattr(update.effective_message, "message_thread_id", None),
+        )
+        return
+
+    try:
+        slot_index = int(parts[0])
+    except ValueError:
+        await update.effective_chat.send_message(
+            "⚠️ Номер слота должен быть числом от <b>1</b> до <b>5</b>.",
+            parse_mode="HTML",
+            message_thread_id=getattr(update.effective_message, "message_thread_id", None),
+        )
+        return
+
+    if slot_index < 1 or slot_index > 5:
+        await update.effective_chat.send_message(
+            "⚠️ Номер слота должен быть от <b>1</b> до <b>5</b>.",
+            parse_mode="HTML",
+            message_thread_id=getattr(update.effective_message, "message_thread_id", None),
+        )
+        return
+
+    try:
+        normalized_value = parts[1].strip()
+        desired_user_pokemon_id = None if normalized_value == "-" else int(normalized_value)
+    except ValueError:
+        await update.effective_chat.send_message(
+            "⚠️ Нужен числовой <code>user_pokemon_id</code> или <code>-</code>.",
+            parse_mode="HTML",
+            message_thread_id=getattr(update.effective_message, "message_thread_id", None),
+        )
+        return
+
+    if desired_user_pokemon_id is not None:
+        team_before = await db.get_pvp_team(update.effective_user.id, update.effective_user.username)
+        current_slot = resolve_pvp_team_slot(team_before, slot_index)
+        if (
+            current_slot is not None
+            and current_slot.entry is not None
+            and current_slot.entry.sample_user_pokemon_id != desired_user_pokemon_id
+        ):
+            new_entry = await db.get_user_pokemon_entry(desired_user_pokemon_id)
+            if new_entry is None:
+                await update.effective_chat.send_message(
+                    "⚠️ Этот экземпляр покемона не найден.",
+                    message_thread_id=getattr(update.effective_message, "message_thread_id", None),
+                )
+                return
+            session_id = await session_store.create_session_async(
+                chat_id=update.effective_chat.id,
+                message_id=0,
+                user_id=update.effective_user.id,
+                message_thread_id=getattr(update.effective_message, "message_thread_id", None),
+                data={
+                    "team_replace_slot_index": slot_index,
+                    "team_replace_user_pokemon_id": desired_user_pokemon_id,
+                    "team_replace_previous_name": current_slot.entry.name,
+                    "team_replace_previous_form_badge": current_slot.entry.form_badge,
+                    "team_replace_new_name": new_entry.name,
+                    "team_replace_new_form_badge": new_entry.form_badge,
+                },
+            )
+            sent_message = await update.effective_chat.send_message(
+                build_pvp_team_replace_confirmation_text(
+                    slot_index=slot_index,
+                    current_display_name=format_pokemon_display_name(current_slot.entry.name, current_slot.entry.form_badge),
+                    new_display_name=format_pokemon_display_name(new_entry.name, new_entry.form_badge),
+                ),
+                parse_mode="HTML",
+                reply_markup=_build_team_replace_keyboard(session_id),
+                message_thread_id=getattr(update.effective_message, "message_thread_id", None),
+            )
+            await session_store.delete_session_async(session_id)
+            final_session_id = await session_store.create_session_async(
+                chat_id=update.effective_chat.id,
+                message_id=sent_message.message_id,
+                user_id=update.effective_user.id,
+                message_thread_id=getattr(update.effective_message, "message_thread_id", None),
+                data={
+                    "team_replace_slot_index": slot_index,
+                    "team_replace_user_pokemon_id": desired_user_pokemon_id,
+                    "team_replace_previous_name": current_slot.entry.name,
+                    "team_replace_previous_form_badge": current_slot.entry.form_badge,
+                    "team_replace_new_name": new_entry.name,
+                    "team_replace_new_form_badge": new_entry.form_badge,
+                },
+            )
+            await sent_message.edit_reply_markup(reply_markup=_build_team_replace_keyboard(final_session_id))
+            return
+
+    try:
+        team, team_status_text = await update_pvp_team_slot_from_text(
+            db,
+            telegram_id=update.effective_user.id,
+            username=update.effective_user.username,
+            slot_index=slot_index,
+            raw_value=parts[1],
+        )
+    except ShopError as exc:
+        await update.effective_chat.send_message(
+            f"⚠️ {escape_html(str(exc))}",
+            parse_mode="HTML",
+            message_thread_id=getattr(update.effective_message, "message_thread_id", None),
+        )
+        return
+
+    slot_lines = []
+    for slot in team.slots:
+        if slot.entry is None:
+            slot_lines.append(f"{slot.slot_index}. <i>пусто</i>")
+            continue
+        slot_lines.append(
+            f"{slot.slot_index}. <b>{escape_html(format_pokemon_display_name(slot.entry.name, slot.entry.form_badge))}</b> "
+            f"(экз. <code>{slot.entry.sample_user_pokemon_id}</code>)"
+        )
+
+    await update.effective_chat.send_message(
+        "\n".join(
+            [
+                team_status_text,
+                "",
+                "🛡 <b>Текущая команда</b>",
+                *slot_lines,
+            ]
+        ),
+        parse_mode="HTML",
+        message_thread_id=getattr(update.effective_message, "message_thread_id", None),
+    )
+
+
 async def tradeadd_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /tradeadd command."""
     await _sync_user_with_db(update, context)
@@ -420,6 +630,9 @@ async def section_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     section = update.message.text.split()[0].lstrip("/").split("@", maxsplit=1)[0]
     if section == "market":
         await show_market_screen(update, context)
+        return
+    if section == "games":
+        await show_games_screen(update, context)
         return
     if section == "info":
         await show_info_screen(update, context)

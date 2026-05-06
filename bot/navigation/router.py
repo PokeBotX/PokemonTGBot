@@ -61,7 +61,7 @@ class NavigationRouter:
     def register(self, section: str, handler: Callable) -> None:
         """Register a handler for a section."""
         self._routes[section] = handler
-        logger.info("route_registered", section=section)
+        logger.debug("route_registered", section=section)
     
     def get_handler(self, section: str) -> Optional[Callable]:
         """Get handler for a section."""

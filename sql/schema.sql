@@ -151,6 +151,44 @@ CREATE TABLE IF NOT EXISTS "user_pokemon" (
 ALTER TABLE "user_pokemon"
   ADD COLUMN IF NOT EXISTS "released_at" timestamptz;
 
+CREATE TABLE IF NOT EXISTS "user_pvp_team_slots" (
+  "user_id" bigint NOT NULL,
+  "slot_index" smallint NOT NULL,
+  "user_pokemon_id" bigint NOT NULL,
+  "created_at" timestamptz NOT NULL DEFAULT NOW(),
+  "updated_at" timestamptz NOT NULL DEFAULT NOW(),
+  PRIMARY KEY ("user_id", "slot_index"),
+  UNIQUE ("user_id", "user_pokemon_id"),
+  CHECK ("slot_index" BETWEEN 1 AND 5)
+);
+
+CREATE TABLE IF NOT EXISTS "user_pvp_daily_rewards" (
+  "user_id" bigint NOT NULL,
+  "reward_date" date NOT NULL,
+  "rewarded_battle_count" int NOT NULL DEFAULT 0,
+  "updated_at" timestamptz NOT NULL DEFAULT NOW(),
+  PRIMARY KEY ("user_id", "reward_date")
+);
+
+CREATE TABLE IF NOT EXISTS "pvp_challenges" (
+  "id" bigserial PRIMARY KEY,
+  "chat_id" bigint NOT NULL,
+  "message_thread_id" bigint,
+  "message_id" bigint,
+  "initiator_user_id" bigint NOT NULL,
+  "target_user_id" bigint NOT NULL,
+  "status" varchar(24) NOT NULL DEFAULT 'pending',
+  "pending_expires_at" timestamptz NOT NULL,
+  "selection_expires_at" timestamptz,
+  "initiator_selected_user_pokemon_id" bigint,
+  "target_selected_user_pokemon_id" bigint,
+  "created_at" timestamptz NOT NULL DEFAULT NOW(),
+  "accepted_at" timestamptz,
+  "canceled_at" timestamptz,
+  "completed_at" timestamptz,
+  "cancel_reason" varchar(32)
+);
+
 CREATE TABLE IF NOT EXISTS "market_listings" (
   "id" bigserial PRIMARY KEY,
   "seller_user_id" bigint NOT NULL,

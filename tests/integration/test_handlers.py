@@ -254,6 +254,33 @@ async def test_market_command_sends_market_root(mock_update):
 
 
 @pytest.mark.asyncio
+async def test_games_command_sends_minigames_root(mock_update):
+    """Test /games command sends the mini-games root screen."""
+    sent_message = Mock(spec=Message)
+    sent_message.message_id = 105
+    sent_message.edit_reply_markup = AsyncMock()
+    mock_update.effective_chat.send_message = AsyncMock(return_value=sent_message)
+    mock_update.message = Mock()
+    mock_update.message.text = "/games"
+
+    db = AsyncMock()
+    db.get_remaining_pvp_reward_battles = AsyncMock(return_value=2)
+    application = Mock()
+    application.bot_data = {"db": db}
+    context = Mock(spec=ContextTypes.DEFAULT_TYPE)
+    context.application = application
+
+    await section_command(mock_update, context)
+
+    assert mock_update.effective_chat.send_message.called
+    call_args = mock_update.effective_chat.send_message.call_args
+    assert "Выберите миниигру." in call_args.kwargs["text"]
+    assert "2" in call_args.kwargs["text"]
+    assert sent_message.edit_reply_markup.called
+    assert len(session_store._sessions) == 1
+
+
+@pytest.mark.asyncio
 async def test_market_command_can_open_buy_browse_screen() -> None:
     from bot.handlers.sections.market import show_market_screen, MARKET_VIEW_BUY
 
