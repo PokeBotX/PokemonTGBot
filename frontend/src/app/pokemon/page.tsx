@@ -8,6 +8,7 @@ import { EmptyState } from "@/components/empty-state";
 import { ErrorState } from "@/components/error-state";
 import { InfoRow } from "@/components/info-row";
 import { PageHeader } from "@/components/page-header";
+import { ProgressInfoRow } from "@/components/progress-info-row";
 import { SectionCard } from "@/components/section-card";
 import { TopHeader } from "@/components/top-header";
 import { Button } from "@/components/ui/button";
@@ -20,6 +21,7 @@ import {
   usePokemonImageCycle,
   usePokemonLockToggle,
 } from "@/hooks/use-pokemon-detail";
+import { ChevronLeft } from "lucide-react";
 
 const STAT_MAX = {
   hp: 255,
@@ -27,33 +29,6 @@ const STAT_MAX = {
   def: 230,
   spd: 200,
 } as const;
-
-type StatBarProps = {
-  label: string;
-  value: number;
-  max: number;
-  barClassName: string;
-};
-
-function StatBar({ label, value, max, barClassName }: StatBarProps) {
-  const percentage = Math.max(0, Math.min((value / max) * 100, 100));
-
-  return (
-    <div className="rounded-2xl bg-slate-800/70 px-4 py-3">
-      <div className="flex items-center justify-between gap-3">
-        <span className="text-sm text-slate-400">{label}</span>
-        <span className="font-medium text-white">{value}</span>
-      </div>
-
-      <div className="mt-3 h-2.5 overflow-hidden rounded-full bg-slate-700/80">
-        <div
-          className={`h-full rounded-full transition-[width] duration-300 ${barClassName}`}
-          style={{ width: `${percentage}%` }}
-        />
-      </div>
-    </div>
-  );
-}
 
 function PokemonDetailScreen() {
   const router = useRouter();
@@ -110,15 +85,28 @@ function PokemonDetailScreen() {
       ) : (
         <>
           <SectionCard>
-            <PageHeader
-              eyebrow={`#${formatPokemonDisplayId(data.id, data.dexFormCode)}`}
-              title={formatPokemonDisplayName(data.name, data.formBadge)}
-              description={
-                data.formBadge
-                  ? `Редкость: ${normalizePokemonRarity(data.rarity).toUpperCase()} • Форма: ${data.formBadge}`
-                  : `Редкость: ${normalizePokemonRarity(data.rarity).toUpperCase()}`
-              }
-            />
+            <div className="relative">
+              <Button
+                type="button"
+                variant="secondary"
+                size="icon-sm"
+                className="absolute right-0 top-0 z-10 rounded-full border border-slate-700 bg-slate-800/95 text-slate-100 shadow-[0_8px_20px_rgba(15,23,42,0.35)] hover:bg-slate-700"
+                onClick={handleBack}
+                aria-label="Назад к списку"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
+
+              <PageHeader
+                eyebrow={`#${formatPokemonDisplayId(data.id, data.dexFormCode)}`}
+                title={formatPokemonDisplayName(data.name, data.formBadge)}
+                description={
+                  data.formBadge
+                    ? `Редкость: ${normalizePokemonRarity(data.rarity).toUpperCase()} • Форма: ${data.formBadge}`
+                    : `Редкость: ${normalizePokemonRarity(data.rarity).toUpperCase()}`
+                }
+              />
+            </div>
 
             <div className="mt-5">
               {data.imageUrl ? (
@@ -126,10 +114,10 @@ function PokemonDetailScreen() {
                 <img
                   src={data.imageUrl}
                   alt={formatPokemonDisplayName(data.name, data.formBadge)}
-                  className="mx-auto h-40 w-40 rounded-3xl object-cover"
+                  className="mx-auto h-52 w-52 rounded-3xl object-cover"
                 />
               ) : (
-                <div className="mx-auto h-40 w-40 rounded-3xl bg-slate-700" />
+                <div className="mx-auto h-52 w-52 rounded-3xl bg-slate-700" />
               )}
             </div>
 
@@ -138,7 +126,7 @@ function PokemonDetailScreen() {
                 <PokemonTypeIcons types={data.type} iconClassName="h-5 w-5" />
                 <span className="text-sm text-slate-300">{data.type}</span>
               </div>
-              <span className="text-sm text-slate-400">
+              <span className="text-sm font-medium text-slate-200">
                 Экземпляр #{data.userPokemonId}
               </span>
             </div>
@@ -199,28 +187,28 @@ function PokemonDetailScreen() {
                 label="Статус"
                 value={data.isLocked ? "В Избранном" : "Не в Избранном"}
               />
-              <StatBar
+              <ProgressInfoRow
                 label="HP"
                 value={data.baseHp}
-                max={STAT_MAX.hp}
+                percentage={(data.baseHp / STAT_MAX.hp) * 100}
                 barClassName="bg-gradient-to-r from-rose-500 to-rose-300"
               />
-              <StatBar
+              <ProgressInfoRow
                 label="ATK"
                 value={data.baseAttack}
-                max={STAT_MAX.atk}
+                percentage={(data.baseAttack / STAT_MAX.atk) * 100}
                 barClassName="bg-gradient-to-r from-amber-500 to-orange-300"
               />
-              <StatBar
+              <ProgressInfoRow
                 label="DEF"
                 value={data.baseDefense}
-                max={STAT_MAX.def}
+                percentage={(data.baseDefense / STAT_MAX.def) * 100}
                 barClassName="bg-gradient-to-r from-cyan-500 to-sky-300"
               />
-              <StatBar
+              <ProgressInfoRow
                 label="SPD"
                 value={data.baseStamina}
-                max={STAT_MAX.spd}
+                percentage={(data.baseStamina / STAT_MAX.spd) * 100}
                 barClassName="bg-gradient-to-r from-violet-500 to-fuchsia-300"
               />
             </div>
@@ -229,10 +217,11 @@ function PokemonDetailScreen() {
           <Button
             type="button"
             variant="ghost"
-            className="justify-start rounded-xl px-0 text-slate-300 hover:bg-transparent hover:text-white"
+            className="mx-auto inline-flex items-center justify-center gap-2 rounded-xl px-0 text-slate-300 hover:bg-transparent hover:text-white"
             onClick={handleBack}
           >
-            ← Назад к списку
+            <ChevronLeft className="h-4 w-4" />
+            <span>Назад к списку</span>
           </Button>
         </>
       )}

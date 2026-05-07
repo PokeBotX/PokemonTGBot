@@ -3,12 +3,27 @@
 import { useEffect, useState } from "react";
 
 import { ErrorState } from "@/components/error-state";
+import { ProgressInfoRow } from "@/components/progress-info-row";
 import { ProfileCardSkeleton } from "@/components/profile-card-skeleton";
 import { getTelegramWebApp } from "@/lib/telegram";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { useProfile } from "@/hooks/use-profile";
+
+function getRarityProgressClass(rarity: string) {
+  switch (rarity.trim().toLowerCase()) {
+    case "legendary":
+      return "bg-gradient-to-r from-amber-500 to-amber-300";
+    case "epic":
+      return "bg-gradient-to-r from-violet-500 to-fuchsia-300";
+    case "rare":
+      return "bg-gradient-to-r from-emerald-500 to-emerald-300";
+    case "common":
+    default:
+      return "bg-gradient-to-r from-stone-400 to-stone-200";
+  }
+}
 
 export function ProfileCard() {
   const { data, isLoading, isError } = useProfile();
@@ -125,12 +140,13 @@ export function ProfileCard() {
 
         <div className="space-y-2 rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-3">
           {data.rarityProgress.map((progress) => (
-            <div key={progress.rarity} className="flex items-center justify-between gap-3 text-sm">
-              <span className="text-slate-300">{progress.rarity}</span>
-              <span className="text-right text-slate-100">
-                {progress.ownedUnique} из {progress.totalCatalog} ({progress.percent}%)
-              </span>
-            </div>
+            <ProgressInfoRow
+              key={progress.rarity}
+              label={progress.rarity}
+              value={`${progress.ownedUnique} из ${progress.totalCatalog} (${progress.percent}%)`}
+              percentage={progress.percent}
+              barClassName={getRarityProgressClass(progress.rarity)}
+            />
           ))}
         </div>
 
