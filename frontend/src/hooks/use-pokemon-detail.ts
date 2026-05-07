@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   cyclePokemonImage,
   getPokemonDetail,
+  getPokemonInstances,
   getPokemonSellPrecheck,
   releasePokemon,
   sellPokemon,
@@ -16,6 +17,21 @@ export function usePokemonDetail(userPokemonId: number | null) {
   const query = useQuery({
     queryKey: ["pokemon-detail", isReady ? "live" : "waiting", userPokemonId],
     queryFn: () => getPokemonDetail(userPokemonId as number),
+    enabled: isReady && userPokemonId !== null,
+  });
+
+  return {
+    ...query,
+    isLoading: query.isLoading || !isReady,
+  };
+}
+
+export function usePokemonInstances(userPokemonId: number | null) {
+  const isReady = useMiniAppDataReady();
+
+  const query = useQuery({
+    queryKey: ["pokemon-instances", isReady ? "live" : "waiting", userPokemonId],
+    queryFn: () => getPokemonInstances(userPokemonId as number),
     enabled: isReady && userPokemonId !== null,
   });
 

@@ -19,5 +19,6 @@ export function useMarket() {
     isLoading: query.isLoading || !isReady,
     entries: query.data?.pages.flatMap((page) => page.entries) ?? [],
     pageInfo: query.data?.pages.at(-1)?.pageInfo ?? null,
+    pokecoinBalance: query.data?.pages.at(0)?.pokecoinBalance ?? 0,
   };
 }

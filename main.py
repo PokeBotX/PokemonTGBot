@@ -478,6 +478,7 @@ async def _build_mini_app_market_payload(
         ]
     )
     return {
+        "pokecoinBalance": market_page.current_balance,
         "entries": [
             {
                 "listingId": entry.listing_id,
@@ -505,6 +506,83 @@ async def _build_mini_app_market_payload(
             "hasPrevious": market_page.has_previous(),
             "nextPage": market_page.current_page + 1 if market_page.has_next() else None,
         },
+    }
+
+
+async def _build_mini_app_my_market_listings_payload(
+    telegram_id: int,
+    username: str | None,
+) -> dict[str, Any]:
+    """Build the current user's active market listings for Mini App."""
+    if not DB_ENABLED or db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database is not available for Mini App market requests",
+        )
+
+    listings = await db.get_my_market_listings(telegram_id, username)
+    shop_view = await db.get_shop_view(telegram_id, username)
+    image_urls: list[str | None] = await asyncio.gather(
+        *[_resolve_image_url(image_credit_id=entry.image_credit_id) for entry in listings]
+    )
+    return {
+        "pokecoinBalance": shop_view.pokecoin_balance,
+        "entries": [
+            {
+                "listingId": entry.listing_id,
+                "pokemonId": entry.pokemon_id,
+                "dexFormCode": entry.dex_form_code,
+                "userPokemonId": entry.user_pokemon_id,
+                "name": entry.name,
+                "type": entry.pokemon_type or "Unknown",
+                "rarity": entry.rarity,
+                "formBadge": entry.form_badge,
+                "price": entry.price,
+                "sellerLabel": entry.seller_label or "Тренер",
+                "daysRemaining": entry.days_remaining,
+                "imageCreditId": entry.image_credit_id,
+                "imageUrl": image_urls[index],
+            }
+            for index, entry in enumerate(listings)
+        ],
+    }
+
+
+async def _build_mini_app_my_market_requests_payload(
+    telegram_id: int,
+    username: str | None,
+) -> dict[str, Any]:
+    """Build the current user's active market buy requests for Mini App."""
+    if not DB_ENABLED or db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database is not available for Mini App market requests",
+        )
+
+    requests = await db.get_my_market_buy_requests(telegram_id, username)
+    shop_view = await db.get_shop_view(telegram_id, username)
+    image_urls: list[str | None] = await asyncio.gather(
+        *[_resolve_image_url(image_credit_id=entry.image_credit_id) for entry in requests]
+    )
+    return {
+        "pokecoinBalance": shop_view.pokecoin_balance,
+        "entries": [
+            {
+                "requestId": entry.request_id,
+                "pokemonId": entry.pokemon_id,
+                "dexFormCode": entry.dex_form_code,
+                "name": entry.name,
+                "type": entry.pokemon_type or "Unknown",
+                "rarity": entry.rarity,
+                "formBadge": entry.form_badge,
+                "price": entry.price,
+                "reservedAmount": entry.reserved_amount,
+                "requesterLabel": entry.requester_label or "Тренер",
+                "imageCreditId": entry.image_credit_id,
+                "imageUrl": image_urls[index],
+            }
+            for index, entry in enumerate(requests)
+        ],
     }
 
 
@@ -628,6 +706,64 @@ async def _build_mini_app_pokemon_detail_payload(
             "total": image_selection.total,
             "canSwitch": bool(image_selection.total > 1),
         },
+    }
+
+
+async def _build_mini_app_pokemon_instances_payload(
+    telegram_id: int,
+    username: str | None,
+    *,
+    user_pokemon_id: int,
+) -> dict[str, Any]:
+    """Build same-species owned instances payload for one current user pokemon."""
+    if not DB_ENABLED or db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database is not available for Mini App pokemon requests",
+        )
+
+    entry = await db.get_owned_user_pokemon_entry(
+        telegram_id,
+        username,
+        user_pokemon_id=user_pokemon_id,
+    )
+    if entry is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Pokemon not found",
+        )
+
+    instances = await db.get_user_pokemon_instances_for_species(
+        telegram_id,
+        username,
+        pokemon_id=entry.pokemon_id,
+        limit=24,
+    )
+    team_flags = await asyncio.gather(
+        *[
+            db.is_user_pokemon_in_pvp_team(
+                telegram_id,
+                username,
+                user_pokemon_id=instance.sample_user_pokemon_id,
+            )
+            for instance in instances
+        ]
+    )
+    return {
+        "entries": [
+            {
+                "userPokemonId": instance.sample_user_pokemon_id,
+                "pokemonId": instance.pokemon_id,
+                "dexFormCode": instance.dex_form_code,
+                "name": instance.name,
+                "rarity": instance.rarity,
+                "type": instance.pokemon_type or "Unknown",
+                "formBadge": instance.form_badge,
+                "isLocked": instance.is_locked,
+                "isInPvpTeam": team_flags[index],
+            }
+            for index, instance in enumerate(instances)
+        ],
     }
 
 
@@ -1037,6 +1173,42 @@ async def mini_app_market_detail(
     )
 
 
+@app.get("/api/market/my/listings")
+async def mini_app_my_market_listings(
+    request: Request,
+    x_telegram_init_data: str | None = Header(default=None, alias="X-Telegram-Init-Data"),
+    x_dev_telegram_id: str | None = Header(default=None, alias="X-Dev-Telegram-Id"),
+):
+    """Return active market listings created by the current Mini App user."""
+    telegram_id, username = _resolve_mini_app_identity(
+        x_telegram_init_data=x_telegram_init_data,
+        x_dev_telegram_id=x_dev_telegram_id,
+        request_host=request.headers.get("host"),
+    )
+    return await _build_mini_app_my_market_listings_payload(
+        telegram_id,
+        username,
+    )
+
+
+@app.get("/api/market/my/requests")
+async def mini_app_my_market_requests(
+    request: Request,
+    x_telegram_init_data: str | None = Header(default=None, alias="X-Telegram-Init-Data"),
+    x_dev_telegram_id: str | None = Header(default=None, alias="X-Dev-Telegram-Id"),
+):
+    """Return active market buy requests created by the current Mini App user."""
+    telegram_id, username = _resolve_mini_app_identity(
+        x_telegram_init_data=x_telegram_init_data,
+        x_dev_telegram_id=x_dev_telegram_id,
+        request_host=request.headers.get("host"),
+    )
+    return await _build_mini_app_my_market_requests_payload(
+        telegram_id,
+        username,
+    )
+
+
 @app.get("/api/pokemon")
 async def mini_app_pokemon_detail(
     request: Request,
@@ -1051,6 +1223,26 @@ async def mini_app_pokemon_detail(
         request_host=request.headers.get("host"),
     )
     return await _build_mini_app_pokemon_detail_payload(
+        telegram_id,
+        username,
+        user_pokemon_id=user_pokemon_id,
+    )
+
+
+@app.get("/api/pokemon/{user_pokemon_id}/instances")
+async def mini_app_pokemon_instances(
+    user_pokemon_id: int,
+    request: Request,
+    x_telegram_init_data: str | None = Header(default=None, alias="X-Telegram-Init-Data"),
+    x_dev_telegram_id: str | None = Header(default=None, alias="X-Dev-Telegram-Id"),
+):
+    """Return owned instances for the same pokemon species in Mini App."""
+    telegram_id, username = _resolve_mini_app_identity(
+        x_telegram_init_data=x_telegram_init_data,
+        x_dev_telegram_id=x_dev_telegram_id,
+        request_host=request.headers.get("host"),
+    )
+    return await _build_mini_app_pokemon_instances_payload(
         telegram_id,
         username,
         user_pokemon_id=user_pokemon_id,

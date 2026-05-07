@@ -66,6 +66,21 @@ export type MiniAppMarketEntry = {
   imageUrl: string | null;
 };
 
+export type MiniAppMarketRequestEntry = {
+  requestId: number;
+  pokemonId: number;
+  dexFormCode?: string | null;
+  name: string;
+  type: string;
+  rarity: string;
+  formBadge?: string | null;
+  price: number;
+  reservedAmount: number;
+  requesterLabel: string;
+  imageCreditId: number | null;
+  imageUrl: string | null;
+};
+
 export type MiniAppMarketDetail = {
   listingId: number;
   userPokemonId: number;
@@ -117,6 +132,18 @@ export type MiniAppPokemonDetail = {
   };
 };
 
+export type MiniAppPokemonInstanceEntry = {
+  userPokemonId: number;
+  pokemonId: number;
+  dexFormCode?: string | null;
+  name: string;
+  rarity: string;
+  type: string;
+  formBadge?: string | null;
+  isLocked: boolean;
+  isInPvpTeam: boolean;
+};
+
 type MiniAppCollectionResponse = {
   entries: MiniAppCollectionEntry[];
   pageInfo: {
@@ -137,6 +164,7 @@ type MiniAppCollectionResponse = {
 };
 
 type MiniAppMarketResponse = {
+  pokecoinBalance: number;
   entries: MiniAppMarketEntry[];
   pageInfo: {
     totalEntries: number;
@@ -147,6 +175,20 @@ type MiniAppMarketResponse = {
     hasPrevious: boolean;
     nextPage: number | null;
   };
+};
+
+type MiniAppMyMarketListingsResponse = {
+  pokecoinBalance: number;
+  entries: MiniAppMarketEntry[];
+};
+
+type MiniAppMyMarketRequestsResponse = {
+  pokecoinBalance: number;
+  entries: MiniAppMarketRequestEntry[];
+};
+
+type MiniAppPokemonInstancesResponse = {
+  entries: MiniAppPokemonInstanceEntry[];
 };
 
 type TelegramAuthPreview = {
@@ -311,6 +353,7 @@ function getMockCollection(): MiniAppCollectionResponse {
 
 function getMockMarket(): MiniAppMarketResponse {
   return {
+    pokecoinBalance: 880,
     entries: [
       {
         listingId: 1,
@@ -487,6 +530,37 @@ export async function getMarketPage(pageParam = 1): Promise<MiniAppMarketRespons
   return parseJsonResponse<MiniAppMarketResponse>(response);
 }
 
+export async function getMyMarketListings(): Promise<MiniAppMyMarketListingsResponse> {
+  if (!canUseLiveBackend()) {
+    const market = getMockMarket();
+    return {
+      pokecoinBalance: market.pokecoinBalance,
+      entries: market.entries.slice(0, 1),
+    };
+  }
+
+  const response = await fetch(buildApiUrl("/api/market/my/listings"), {
+    headers: getAuthHeaders(),
+    cache: "no-store",
+  });
+  return parseJsonResponse<MiniAppMyMarketListingsResponse>(response);
+}
+
+export async function getMyMarketRequests(): Promise<MiniAppMyMarketRequestsResponse> {
+  if (!canUseLiveBackend()) {
+    return {
+      pokecoinBalance: 880,
+      entries: [],
+    };
+  }
+
+  const response = await fetch(buildApiUrl("/api/market/my/requests"), {
+    headers: getAuthHeaders(),
+    cache: "no-store",
+  });
+  return parseJsonResponse<MiniAppMyMarketRequestsResponse>(response);
+}
+
 export async function getMarketDetail(listingId: number): Promise<MiniAppMarketDetail> {
   if (!canUseLiveBackend()) {
     return getMockMarketDetail(listingId);
@@ -512,6 +586,35 @@ export async function getPokemonDetail(userPokemonId: number): Promise<MiniAppPo
     cache: "no-store",
   });
   return parseJsonResponse<MiniAppPokemonDetail>(response);
+}
+
+export async function getPokemonInstances(
+  userPokemonId: number,
+): Promise<MiniAppPokemonInstancesResponse> {
+  if (!canUseLiveBackend()) {
+    const detail = getMockPokemonDetail(userPokemonId);
+    return {
+      entries: [
+        {
+          userPokemonId,
+          pokemonId: detail.id,
+          dexFormCode: detail.dexFormCode,
+          name: detail.name,
+          rarity: detail.rarity,
+          type: detail.type,
+          formBadge: detail.formBadge,
+          isLocked: detail.isLocked,
+          isInPvpTeam: detail.isInPvpTeam,
+        },
+      ],
+    };
+  }
+
+  const response = await fetch(buildApiUrl(`/api/pokemon/${userPokemonId}/instances`), {
+    headers: getAuthHeaders(),
+    cache: "no-store",
+  });
+  return parseJsonResponse<MiniAppPokemonInstancesResponse>(response);
 }
 
 export async function togglePokemonLock(userPokemonId: number): Promise<MiniAppPokemonDetail> {
