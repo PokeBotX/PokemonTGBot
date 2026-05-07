@@ -25,7 +25,7 @@ import {
   usePokemonLockToggle,
 } from "@/hooks/use-pokemon-detail";
 import { cn } from "@/lib/utils";
-import { ChevronLeft, Heart, ShoppingCart, Trash2 } from "lucide-react";
+import { ChevronLeft, DoorOpen, Heart, ShoppingCart } from "lucide-react";
 
 const STAT_MAX = {
   hp: 255,
@@ -163,29 +163,28 @@ function PokemonDetailScreen() {
         />
       ) : (
         <>
-          <div className="sticky top-3 z-30 mb-3 flex justify-start">
-            <Button
-              type="button"
-              variant="secondary"
-              size="icon-sm"
-              className="rounded-full border border-slate-700 bg-slate-800/95 text-slate-100 shadow-[0_8px_20px_rgba(15,23,42,0.35)] backdrop-blur hover:bg-slate-700"
-              onClick={handleBack}
-              aria-label="Назад к списку"
-            >
-              <ChevronLeft className="h-4 w-4" />
-            </Button>
-          </div>
-
           <SectionCard>
-            <PageHeader
-              eyebrow={`#${formatPokemonDisplayId(data.id, data.dexFormCode)}`}
-              title={formatPokemonDisplayName(data.name, data.formBadge)}
-              description={
-                data.formBadge
-                  ? `Редкость: ${normalizePokemonRarity(data.rarity).toUpperCase()} • Форма: ${data.formBadge}`
-                  : `Редкость: ${normalizePokemonRarity(data.rarity).toUpperCase()}`
-              }
-            />
+            <div className="relative">
+              <PageHeader
+                eyebrow={`#${formatPokemonDisplayId(data.id, data.dexFormCode)}`}
+                title={formatPokemonDisplayName(data.name, data.formBadge)}
+                description={
+                  data.formBadge
+                    ? `Редкость: ${normalizePokemonRarity(data.rarity).toUpperCase()} • Форма: ${data.formBadge}`
+                    : `Редкость: ${normalizePokemonRarity(data.rarity).toUpperCase()}`
+                }
+              />
+              <Button
+                type="button"
+                variant="secondary"
+                size="icon-sm"
+                className="absolute right-0 top-0 z-20 rounded-full border border-slate-700 bg-slate-800/95 text-slate-100 shadow-[0_8px_20px_rgba(15,23,42,0.35)] backdrop-blur hover:bg-slate-700"
+                onClick={handleBack}
+                aria-label="Назад к списку"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
+            </div>
 
             <div className="mt-5">
               {data.imageUrl ? (
@@ -247,33 +246,33 @@ function PokemonDetailScreen() {
             </div>
 
             <div className="mt-3 grid grid-cols-2 gap-3">
-              <Button
-                type="button"
-                variant="secondary"
-                className={cn(
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className={cn(
+                    "rounded-xl border border-slate-700 bg-slate-800 text-slate-100 hover:bg-slate-700",
+                    isActionBlocked && "cursor-not-allowed border-slate-800 bg-slate-900 text-slate-500 hover:bg-slate-900",
+                  )}
+                  disabled={isActionBlocked}
+                  onClick={() => void handleOpenDialog("sell")}
+                >
+                  <ShoppingCart className="h-4 w-4" />
+                  Продать
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className={cn(
                   "rounded-xl border border-slate-700 bg-slate-800 text-slate-100 hover:bg-slate-700",
                   isActionBlocked && "cursor-not-allowed border-slate-800 bg-slate-900 text-slate-500 hover:bg-slate-900",
-                )}
-                disabled={isActionBlocked}
-                onClick={() => void handleOpenDialog("sell")}
-              >
-                <ShoppingCart className="h-4 w-4" />
-                Продать
-              </Button>
-              <Button
-                type="button"
-                variant="secondary"
-                className={cn(
-                  "rounded-xl border border-slate-700 bg-slate-800 text-slate-100 hover:bg-slate-700",
-                  isActionBlocked && "cursor-not-allowed border-slate-800 bg-slate-900 text-slate-500 hover:bg-slate-900",
-                )}
-                disabled={isActionBlocked}
-                onClick={() => void handleOpenDialog("release")}
-              >
-                <Trash2 className="h-4 w-4" />
-                Отпустить
-              </Button>
-            </div>
+                  )}
+                  disabled={isActionBlocked}
+                  onClick={() => void handleOpenDialog("release")}
+                >
+                  <DoorOpen className="h-4 w-4" />
+                  Отпустить
+                </Button>
+              </div>
 
             {actionSuccess ? (
               <div className="mt-3 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
@@ -333,83 +332,89 @@ function PokemonDetailScreen() {
           </SectionCard>
 
           {activeDialog ? (
-            <SectionCard
-              title={activeDialog === "sell" ? "Подтверждение продажи" : "Подтверждение отпуска"}
-            >
-              <div className="space-y-4">
-                {activeDialog === "sell" ? (
-                  <>
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 px-4 backdrop-blur-sm">
+              <div className="w-full max-w-md rounded-3xl border border-slate-700 bg-slate-900 p-5 shadow-[0_24px_80px_rgba(2,6,23,0.7)]">
+                <div className="space-y-4">
+                  <div>
+                    <h3 className="text-lg font-semibold text-white">
+                      {activeDialog === "sell" ? "Подтверждение продажи" : "Подтверждение отпуска"}
+                    </h3>
+                  </div>
+
+                  {activeDialog === "sell" ? (
+                    <>
+                      <p className="text-sm leading-relaxed text-slate-300">
+                        Укажи цену лота для
+                        {" "}
+                        <span className="font-semibold text-white">
+                          {formatPokemonDisplayName(data.name, data.formBadge)}
+                        </span>
+                        .
+                      </p>
+                      <input
+                        type="number"
+                        min={1}
+                        inputMode="numeric"
+                        value={sellPrice}
+                        onChange={(event) => setSellPrice(event.target.value)}
+                        placeholder="Например, 500"
+                        className="h-11 w-full rounded-2xl border border-slate-700 bg-slate-950 px-4 text-sm text-slate-100 outline-none transition focus:border-cyan-400"
+                      />
+                      <p className="text-xs text-slate-400">
+                        Комиссия и остальные ограничения останутся такими же, как в боте.
+                      </p>
+                    </>
+                  ) : (
                     <p className="text-sm leading-relaxed text-slate-300">
-                      Укажи цену лота для
+                      Отпустить
                       {" "}
                       <span className="font-semibold text-white">
                         {formatPokemonDisplayName(data.name, data.formBadge)}
                       </span>
-                      .
+                      ?
+                      {" "}
+                      После подтверждения экземпляр исчезнет из коллекции навсегда.
                     </p>
-                    <input
-                      type="number"
-                      min={1}
-                      inputMode="numeric"
-                      value={sellPrice}
-                      onChange={(event) => setSellPrice(event.target.value)}
-                      placeholder="Например, 500"
-                      className="h-11 w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 text-sm text-slate-100 outline-none transition focus:border-cyan-400"
-                    />
-                    <p className="text-xs text-slate-400">
-                      Комиссия и остальные ограничения останутся такими же, как в боте.
-                    </p>
-                  </>
-                ) : (
-                  <p className="text-sm leading-relaxed text-slate-300">
-                    Отпустить
-                    {" "}
-                    <span className="font-semibold text-white">
-                      {formatPokemonDisplayName(data.name, data.formBadge)}
-                    </span>
-                    ?
-                    {" "}
-                    После подтверждения экземпляр исчезнет из коллекции навсегда.
-                  </p>
-                )}
+                  )}
 
-                {actionError ? (
-                  <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
-                    {actionError}
+                  {actionError ? (
+                    <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+                      {actionError}
+                    </div>
+                  ) : null}
+
+                  <div className="flex gap-3">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      className="flex-1 rounded-xl bg-slate-800 text-slate-100 hover:bg-slate-700"
+                      onClick={closeDialog}
+                      disabled={sellMutation.isPending || releaseMutation.isPending}
+                    >
+                      Назад
+                    </Button>
+                    <Button
+                      type="button"
+                      variant={activeDialog === "sell" ? "secondary" : "destructive"}
+                      className={cn(
+                        "flex-1 rounded-xl",
+                        activeDialog === "sell"
+                          ? "bg-amber-500/15 text-amber-200 hover:bg-amber-500/25"
+                          : "",
+                      )}
+                      onClick={activeDialog === "sell" ? handleSell : handleRelease}
+                      disabled={sellMutation.isPending || releaseMutation.isPending}
+                    >
+                      {sellMutation.isPending || releaseMutation.isPending
+                        ? "Подтверждаем..."
+                        : activeDialog === "sell"
+                          ? "Подтвердить продажу"
+                          : "Подтвердить отпуск"}
+                    </Button>
                   </div>
-                ) : null}
-
-                <div className="flex gap-3">
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    className="flex-1 rounded-xl bg-slate-800 text-slate-100 hover:bg-slate-700"
-                    onClick={closeDialog}
-                    disabled={sellMutation.isPending || releaseMutation.isPending}
-                  >
-                    Назад
-                  </Button>
-                  <Button
-                    type="button"
-                    variant={activeDialog === "sell" ? "secondary" : "destructive"}
-                    className={cn(
-                      "flex-1 rounded-xl",
-                      activeDialog === "sell"
-                        ? "bg-amber-500/15 text-amber-200 hover:bg-amber-500/25"
-                        : "",
-                    )}
-                    onClick={activeDialog === "sell" ? handleSell : handleRelease}
-                    disabled={sellMutation.isPending || releaseMutation.isPending}
-                  >
-                    {sellMutation.isPending || releaseMutation.isPending
-                      ? "Подтверждаем..."
-                      : activeDialog === "sell"
-                        ? "Подтвердить продажу"
-                        : "Подтвердить отпуск"}
-                  </Button>
                 </div>
               </div>
-            </SectionCard>
+            </div>
           ) : null}
 
           <Button
