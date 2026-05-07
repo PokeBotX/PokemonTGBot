@@ -106,6 +106,7 @@ export type MiniAppPokemonDetail = {
   baseDefense: number;
   baseStamina: number;
   isLocked: boolean;
+  isInPvpTeam: boolean;
   imageCreditId: number | null;
   imageUrl: string | null;
   sourceUrl: string | null;
@@ -393,6 +394,7 @@ function getMockPokemonDetail(userPokemonId: number): MiniAppPokemonDetail {
     baseDefense: 40,
     baseStamina: 90,
     isLocked: false,
+    isInPvpTeam: false,
     imageCreditId: null,
     imageUrl: null,
     sourceUrl: null,
@@ -537,6 +539,101 @@ export async function cyclePokemonImage(userPokemonId: number): Promise<MiniAppP
     cache: "no-store",
   });
   return parseJsonResponse<MiniAppPokemonDetail>(response);
+}
+
+export async function releasePokemon(userPokemonId: number): Promise<{
+  userPokemonId: number;
+  pokemonId: number;
+  name: string;
+  rarity: string;
+  rewardAmount: number;
+}> {
+  if (!canUseLiveBackend()) {
+    const detail = getMockPokemonDetail(userPokemonId);
+    return {
+      userPokemonId,
+      pokemonId: detail.id,
+      name: detail.name,
+      rarity: detail.rarity,
+      rewardAmount: 25,
+    };
+  }
+
+  const response = await fetch(buildApiUrl(`/api/pokemon/${userPokemonId}/release`), {
+    method: "POST",
+    headers: getAuthHeaders(),
+    cache: "no-store",
+  });
+  return parseJsonResponse<{
+    userPokemonId: number;
+    pokemonId: number;
+    name: string;
+    rarity: string;
+    rewardAmount: number;
+  }>(response);
+}
+
+export async function getPokemonSellPrecheck(userPokemonId: number): Promise<{
+  ok: boolean;
+  error: string | null;
+}> {
+  if (!canUseLiveBackend()) {
+    return {
+      ok: true,
+      error: null,
+    };
+  }
+
+  const response = await fetch(buildApiUrl(`/api/pokemon/${userPokemonId}/sell-precheck`), {
+    headers: getAuthHeaders(),
+    cache: "no-store",
+  });
+  return parseJsonResponse<{
+    ok: boolean;
+    error: string | null;
+  }>(response);
+}
+
+export async function sellPokemon(
+  userPokemonId: number,
+  price: number,
+): Promise<{
+  listingId: number;
+  userPokemonId: number;
+  pokemonId: number;
+  price: number;
+  sellerLabel: string;
+  daysRemaining: number;
+}> {
+  if (!canUseLiveBackend()) {
+    const detail = getMockPokemonDetail(userPokemonId);
+    return {
+      listingId: 999,
+      userPokemonId,
+      pokemonId: detail.id,
+      price,
+      sellerLabel: "termenater",
+      daysRemaining: 7,
+    };
+  }
+
+  const response = await fetch(buildApiUrl(`/api/pokemon/${userPokemonId}/sell`), {
+    method: "POST",
+    headers: {
+      ...getAuthHeaders(),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ price }),
+    cache: "no-store",
+  });
+  return parseJsonResponse<{
+    listingId: number;
+    userPokemonId: number;
+    pokemonId: number;
+    price: number;
+    sellerLabel: string;
+    daysRemaining: number;
+  }>(response);
 }
 
 export async function getTelegramAuthPreview(): Promise<TelegramAuthPreview> {

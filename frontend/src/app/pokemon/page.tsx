@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useMemo } from "react";
+import { Suspense, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import { AppShell } from "@/components/app-shell";
@@ -19,9 +19,13 @@ import { PokemonTypeIcons } from "@/components/pokemon-type-icon";
 import {
   usePokemonDetail,
   usePokemonImageCycle,
+  usePokemonRelease,
+  usePokemonSell,
+  usePokemonSellPrecheck,
   usePokemonLockToggle,
 } from "@/hooks/use-pokemon-detail";
-import { ChevronLeft } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { ChevronLeft, Heart, ShoppingCart, Trash2 } from "lucide-react";
 
 const STAT_MAX = {
   hp: 255,
@@ -33,6 +37,10 @@ const STAT_MAX = {
 function PokemonDetailScreen() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const [activeDialog, setActiveDialog] = useState<"sell" | "release" | null>(null);
+  const [sellPrice, setSellPrice] = useState("");
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionSuccess, setActionSuccess] = useState<string | null>(null);
   const userPokemonId = useMemo(() => {
     const raw = searchParams.get("id");
     if (!raw) {
@@ -45,6 +53,9 @@ function PokemonDetailScreen() {
   const detailQuery = usePokemonDetail(userPokemonId);
   const lockMutation = usePokemonLockToggle(userPokemonId);
   const imageMutation = usePokemonImageCycle(userPokemonId);
+  const releaseMutation = usePokemonRelease(userPokemonId);
+  const sellMutation = usePokemonSell(userPokemonId);
+  const sellPrecheckMutation = usePokemonSellPrecheck(userPokemonId);
   const data = detailQuery.data;
 
   const handleBack = () => {
@@ -54,6 +65,74 @@ function PokemonDetailScreen() {
     }
     router.push("/");
   };
+
+  const closeDialog = () => {
+    setActiveDialog(null);
+    setActionError(null);
+  };
+
+  const handleOpenDialog = async (dialog: "sell" | "release") => {
+    if (dialog === "sell") {
+      setActionError(null);
+      setActionSuccess(null);
+      try {
+        const precheck = await sellPrecheckMutation.mutateAsync();
+        if (!precheck.ok) {
+          setActiveDialog(null);
+          setActionError(precheck.error ?? "Все слоты для продажи заняты.");
+          return;
+        }
+      } catch (error) {
+        setActiveDialog(null);
+        setActionError(error instanceof Error ? error.message : "Не удалось проверить продажу.");
+        return;
+      }
+    }
+    setActiveDialog(dialog);
+    setActionError(null);
+    setActionSuccess(null);
+  };
+
+  const handleRelease = async () => {
+    setActionError(null);
+    try {
+      const result = await releaseMutation.mutateAsync();
+      setActionSuccess(`Покемон отпущен. Получено ${result.rewardAmount} PokéDollar.`);
+      setActiveDialog(null);
+      router.push("/");
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Не удалось отпустить покемона.");
+    }
+  };
+
+  const handleSell = async () => {
+    const parsedPrice = Number(sellPrice.trim());
+    if (!Number.isInteger(parsedPrice) || parsedPrice <= 0) {
+      setActionError("Введите цену лота больше нуля.");
+      return;
+    }
+
+    setActionError(null);
+    try {
+      const result = await sellMutation.mutateAsync(parsedPrice);
+      setActionSuccess(`Лот создан за ${result.price} PokéDollar.`);
+      setActiveDialog(null);
+      router.push("/shop");
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Не удалось выставить покемона на рынок.");
+    }
+  };
+
+  const isActionBlocked = Boolean(data?.isLocked || data?.isInPvpTeam);
+  const statusLabel = data
+    ? data.isLocked && data.isInPvpTeam
+      ? "В Избранном • В Боевой Команде"
+      : data.isLocked
+        ? "В Избранном"
+        : data.isInPvpTeam
+          ? "В Боевой Команде"
+          : "Не в Избранном"
+    : "Не в Избранном";
 
   return (
     <AppShell
@@ -84,29 +163,29 @@ function PokemonDetailScreen() {
         />
       ) : (
         <>
-          <SectionCard>
-            <div className="relative">
-              <Button
-                type="button"
-                variant="secondary"
-                size="icon-sm"
-                className="absolute right-0 top-0 z-10 rounded-full border border-slate-700 bg-slate-800/95 text-slate-100 shadow-[0_8px_20px_rgba(15,23,42,0.35)] hover:bg-slate-700"
-                onClick={handleBack}
-                aria-label="Назад к списку"
-              >
-                <ChevronLeft className="h-4 w-4" />
-              </Button>
+          <div className="sticky top-3 z-30 mb-3 flex justify-start">
+            <Button
+              type="button"
+              variant="secondary"
+              size="icon-sm"
+              className="rounded-full border border-slate-700 bg-slate-800/95 text-slate-100 shadow-[0_8px_20px_rgba(15,23,42,0.35)] backdrop-blur hover:bg-slate-700"
+              onClick={handleBack}
+              aria-label="Назад к списку"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
+          </div>
 
-              <PageHeader
-                eyebrow={`#${formatPokemonDisplayId(data.id, data.dexFormCode)}`}
-                title={formatPokemonDisplayName(data.name, data.formBadge)}
-                description={
-                  data.formBadge
-                    ? `Редкость: ${normalizePokemonRarity(data.rarity).toUpperCase()} • Форма: ${data.formBadge}`
-                    : `Редкость: ${normalizePokemonRarity(data.rarity).toUpperCase()}`
-                }
-              />
-            </div>
+          <SectionCard>
+            <PageHeader
+              eyebrow={`#${formatPokemonDisplayId(data.id, data.dexFormCode)}`}
+              title={formatPokemonDisplayName(data.name, data.formBadge)}
+              description={
+                data.formBadge
+                  ? `Редкость: ${normalizePokemonRarity(data.rarity).toUpperCase()} • Форма: ${data.formBadge}`
+                  : `Редкость: ${normalizePokemonRarity(data.rarity).toUpperCase()}`
+              }
+            />
 
             <div className="mt-5">
               {data.imageUrl ? (
@@ -114,10 +193,10 @@ function PokemonDetailScreen() {
                 <img
                   src={data.imageUrl}
                   alt={formatPokemonDisplayName(data.name, data.formBadge)}
-                  className="mx-auto h-52 w-52 rounded-3xl object-cover"
+                  className="mx-auto h-[44vh] max-h-[520px] min-h-[280px] w-full rounded-3xl object-contain"
                 />
               ) : (
-                <div className="mx-auto h-52 w-52 rounded-3xl bg-slate-700" />
+                <div className="mx-auto h-[44vh] max-h-[520px] min-h-[280px] w-full rounded-3xl bg-slate-700" />
               )}
             </div>
 
@@ -145,11 +224,12 @@ function PokemonDetailScreen() {
                 onClick={() => void lockMutation.mutateAsync()}
                 disabled={lockMutation.isPending}
               >
+                <Heart className={cn("h-4 w-4", data.isLocked && "fill-current")} />
                 {lockMutation.isPending
                   ? "Сохраняем..."
                   : data.isLocked
-                    ? "🔓 Убрать из Избранного"
-                    : "🔒 В Избранное"}
+                    ? "Убрать из Избранного"
+                    : "В Избранное"}
               </Button>
               {data.imageVariant.canSwitch ? (
                 <Button
@@ -165,6 +245,47 @@ function PokemonDetailScreen() {
                 </Button>
               ) : null}
             </div>
+
+            <div className="mt-3 grid grid-cols-2 gap-3">
+              <Button
+                type="button"
+                variant="secondary"
+                className={cn(
+                  "rounded-xl border border-slate-700 bg-slate-800 text-slate-100 hover:bg-slate-700",
+                  isActionBlocked && "cursor-not-allowed border-slate-800 bg-slate-900 text-slate-500 hover:bg-slate-900",
+                )}
+                disabled={isActionBlocked}
+                onClick={() => void handleOpenDialog("sell")}
+              >
+                <ShoppingCart className="h-4 w-4" />
+                Продать
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                className={cn(
+                  "rounded-xl border border-slate-700 bg-slate-800 text-slate-100 hover:bg-slate-700",
+                  isActionBlocked && "cursor-not-allowed border-slate-800 bg-slate-900 text-slate-500 hover:bg-slate-900",
+                )}
+                disabled={isActionBlocked}
+                onClick={() => void handleOpenDialog("release")}
+              >
+                <Trash2 className="h-4 w-4" />
+                Отпустить
+              </Button>
+            </div>
+
+            {actionSuccess ? (
+              <div className="mt-3 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
+                {actionSuccess}
+              </div>
+            ) : null}
+
+            {actionError && !activeDialog ? (
+              <div className="mt-3 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+                {actionError}
+              </div>
+            ) : null}
 
             {data.sourceUrl ? (
               <div className="mt-3">
@@ -183,10 +304,7 @@ function PokemonDetailScreen() {
           <SectionCard title="Характеристики">
             <div className="space-y-3">
               <InfoRow label="Количество" value={data.quantity} />
-              <InfoRow
-                label="Статус"
-                value={data.isLocked ? "В Избранном" : "Не в Избранном"}
-              />
+              <InfoRow label="Статус" value={statusLabel} />
               <ProgressInfoRow
                 label="HP"
                 value={data.baseHp}
@@ -213,6 +331,86 @@ function PokemonDetailScreen() {
               />
             </div>
           </SectionCard>
+
+          {activeDialog ? (
+            <SectionCard
+              title={activeDialog === "sell" ? "Подтверждение продажи" : "Подтверждение отпуска"}
+            >
+              <div className="space-y-4">
+                {activeDialog === "sell" ? (
+                  <>
+                    <p className="text-sm leading-relaxed text-slate-300">
+                      Укажи цену лота для
+                      {" "}
+                      <span className="font-semibold text-white">
+                        {formatPokemonDisplayName(data.name, data.formBadge)}
+                      </span>
+                      .
+                    </p>
+                    <input
+                      type="number"
+                      min={1}
+                      inputMode="numeric"
+                      value={sellPrice}
+                      onChange={(event) => setSellPrice(event.target.value)}
+                      placeholder="Например, 500"
+                      className="h-11 w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 text-sm text-slate-100 outline-none transition focus:border-cyan-400"
+                    />
+                    <p className="text-xs text-slate-400">
+                      Комиссия и остальные ограничения останутся такими же, как в боте.
+                    </p>
+                  </>
+                ) : (
+                  <p className="text-sm leading-relaxed text-slate-300">
+                    Отпустить
+                    {" "}
+                    <span className="font-semibold text-white">
+                      {formatPokemonDisplayName(data.name, data.formBadge)}
+                    </span>
+                    ?
+                    {" "}
+                    После подтверждения экземпляр исчезнет из коллекции навсегда.
+                  </p>
+                )}
+
+                {actionError ? (
+                  <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+                    {actionError}
+                  </div>
+                ) : null}
+
+                <div className="flex gap-3">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    className="flex-1 rounded-xl bg-slate-800 text-slate-100 hover:bg-slate-700"
+                    onClick={closeDialog}
+                    disabled={sellMutation.isPending || releaseMutation.isPending}
+                  >
+                    Назад
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={activeDialog === "sell" ? "secondary" : "destructive"}
+                    className={cn(
+                      "flex-1 rounded-xl",
+                      activeDialog === "sell"
+                        ? "bg-amber-500/15 text-amber-200 hover:bg-amber-500/25"
+                        : "",
+                    )}
+                    onClick={activeDialog === "sell" ? handleSell : handleRelease}
+                    disabled={sellMutation.isPending || releaseMutation.isPending}
+                  >
+                    {sellMutation.isPending || releaseMutation.isPending
+                      ? "Подтверждаем..."
+                      : activeDialog === "sell"
+                        ? "Подтвердить продажу"
+                        : "Подтвердить отпуск"}
+                  </Button>
+                </div>
+              </div>
+            </SectionCard>
+          ) : null}
 
           <Button
             type="button"

@@ -1277,6 +1277,24 @@ class Database:
                 )
                 return await self._fetch_pvp_team(conn, user_id)
 
+    async def is_user_pokemon_in_pvp_team(
+        self,
+        telegram_id: int,
+        username: Optional[str],
+        *,
+        user_pokemon_id: int,
+    ) -> bool:
+        """Return whether one owned pokemon instance is currently in the user's PvP team."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                user_id = await self._ensure_user(conn, telegram_id, username)
+                return await self._is_user_pokemon_in_pvp_team(
+                    conn,
+                    user_id=user_id,
+                    user_pokemon_id=user_pokemon_id,
+                )
+
     async def create_pvp_challenge(
         self,
         *,

@@ -12,7 +12,7 @@ from urllib.parse import parse_qsl
 
 import structlog
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException, Query, Request, Response, status
+from fastapi import Body, FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -126,6 +126,12 @@ class TelegramAuthRequest(BaseModel):
     """Request payload for Mini App Telegram auth handshake."""
 
     initData: str
+
+
+class MiniAppMarketSellRequest(BaseModel):
+    """Request payload for creating one Mini App market listing."""
+
+    price: int
 
 
 def _build_health_payload(*, db_connected: bool | None = None, redis_configured: bool | None = None) -> dict[str, object]:
@@ -591,6 +597,11 @@ async def _build_mini_app_pokemon_detail_payload(
         username,
         pokemon_id=entry.pokemon_id,
     )
+    is_in_pvp_team = await db.is_user_pokemon_in_pvp_team(
+        telegram_id,
+        username,
+        user_pokemon_id=user_pokemon_id,
+    )
     active_image_credit_id = image_selection.image_credit_id or entry.image_credit_id
     image_url = await _resolve_image_url(image_credit_id=active_image_credit_id)
 
@@ -608,6 +619,7 @@ async def _build_mini_app_pokemon_detail_payload(
         "baseDefense": entry.base_defense,
         "baseStamina": entry.base_stamina,
         "isLocked": entry.is_locked,
+        "isInPvpTeam": is_in_pvp_team,
         "imageCreditId": active_image_credit_id,
         "imageUrl": image_url,
         "sourceUrl": image_selection.source_url,
@@ -1108,6 +1120,95 @@ async def mini_app_pokemon_image_cycle(
         username,
         user_pokemon_id=user_pokemon_id,
     )
+
+
+@app.post("/api/pokemon/{user_pokemon_id}/release")
+async def mini_app_pokemon_release(
+    user_pokemon_id: int,
+    request: Request,
+    x_telegram_init_data: str | None = Header(default=None, alias="X-Telegram-Init-Data"),
+    x_dev_telegram_id: str | None = Header(default=None, alias="X-Dev-Telegram-Id"),
+):
+    """Release one owned pokemon from Mini App."""
+    telegram_id, username = _resolve_mini_app_identity(
+        x_telegram_init_data=x_telegram_init_data,
+        x_dev_telegram_id=x_dev_telegram_id,
+        request_host=request.headers.get("host"),
+    )
+    try:
+        result = await db.release_user_pokemon(
+            telegram_id,
+            username,
+            user_pokemon_id=user_pokemon_id,
+        )
+    except ShopError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    return {
+        "userPokemonId": result.user_pokemon_id,
+        "pokemonId": result.pokemon_id,
+        "name": result.name,
+        "rarity": result.rarity,
+        "rewardAmount": result.reward_amount,
+    }
+
+
+@app.get("/api/pokemon/{user_pokemon_id}/sell-precheck")
+async def mini_app_pokemon_sell_precheck(
+    user_pokemon_id: int,
+    request: Request,
+    x_telegram_init_data: str | None = Header(default=None, alias="X-Telegram-Init-Data"),
+    x_dev_telegram_id: str | None = Header(default=None, alias="X-Dev-Telegram-Id"),
+):
+    """Return whether one owned pokemon can enter Mini App sell flow."""
+    telegram_id, username = _resolve_mini_app_identity(
+        x_telegram_init_data=x_telegram_init_data,
+        x_dev_telegram_id=x_dev_telegram_id,
+        request_host=request.headers.get("host"),
+    )
+    error = await db.get_market_sell_precheck_error(
+        telegram_id,
+        username,
+        user_pokemon_id=user_pokemon_id,
+    )
+    return {
+        "ok": error is None,
+        "error": error,
+    }
+
+
+@app.post("/api/pokemon/{user_pokemon_id}/sell")
+async def mini_app_pokemon_sell(
+    user_pokemon_id: int,
+    request: Request,
+    payload: MiniAppMarketSellRequest = Body(...),
+    x_telegram_init_data: str | None = Header(default=None, alias="X-Telegram-Init-Data"),
+    x_dev_telegram_id: str | None = Header(default=None, alias="X-Dev-Telegram-Id"),
+):
+    """Create one market listing from Mini App."""
+    telegram_id, username = _resolve_mini_app_identity(
+        x_telegram_init_data=x_telegram_init_data,
+        x_dev_telegram_id=x_dev_telegram_id,
+        request_host=request.headers.get("host"),
+    )
+    try:
+        listing = await db.create_market_listing(
+            telegram_id,
+            username,
+            user_pokemon_id=user_pokemon_id,
+            price=payload.price,
+        )
+    except ShopError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    return {
+        "listingId": listing.listing_id,
+        "userPokemonId": listing.user_pokemon_id,
+        "pokemonId": listing.pokemon_id,
+        "price": listing.price,
+        "sellerLabel": listing.seller_label or "Тренер",
+        "daysRemaining": listing.days_remaining,
+    }
 
 
 @app.post(WEBHOOK_PATH)

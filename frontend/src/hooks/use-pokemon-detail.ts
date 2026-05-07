@@ -1,6 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { cyclePokemonImage, getPokemonDetail, togglePokemonLock } from "@/lib/api";
+import {
+  cyclePokemonImage,
+  getPokemonDetail,
+  getPokemonSellPrecheck,
+  releasePokemon,
+  sellPokemon,
+  togglePokemonLock,
+} from "@/lib/api";
 import { useMiniAppDataReady } from "@/lib/telegram";
 
 export function usePokemonDetail(userPokemonId: number | null) {
@@ -40,5 +47,37 @@ export function usePokemonImageCycle(userPokemonId: number | null) {
     onSuccess: (data) => {
       queryClient.setQueryData(["pokemon-detail", isReady ? "live" : "waiting", userPokemonId], data);
     },
+  });
+}
+
+export function usePokemonRelease(userPokemonId: number | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: () => releasePokemon(userPokemonId as number),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["pokemons"] });
+      await queryClient.invalidateQueries({ queryKey: ["profile"] });
+      await queryClient.invalidateQueries({ queryKey: ["pokemon-detail"] });
+    },
+  });
+}
+
+export function usePokemonSell(userPokemonId: number | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (price: number) => sellPokemon(userPokemonId as number, price),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["pokemons"] });
+      await queryClient.invalidateQueries({ queryKey: ["market"] });
+      await queryClient.invalidateQueries({ queryKey: ["pokemon-detail"] });
+    },
+  });
+}
+
+export function usePokemonSellPrecheck(userPokemonId: number | null) {
+  return useMutation({
+    mutationFn: () => getPokemonSellPrecheck(userPokemonId as number),
   });
 }
