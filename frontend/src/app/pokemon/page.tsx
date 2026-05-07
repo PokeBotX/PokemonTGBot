@@ -21,6 +21,40 @@ import {
   usePokemonLockToggle,
 } from "@/hooks/use-pokemon-detail";
 
+const STAT_MAX = {
+  hp: 255,
+  atk: 181,
+  def: 230,
+  spd: 200,
+} as const;
+
+type StatBarProps = {
+  label: string;
+  value: number;
+  max: number;
+  barClassName: string;
+};
+
+function StatBar({ label, value, max, barClassName }: StatBarProps) {
+  const percentage = Math.max(0, Math.min((value / max) * 100, 100));
+
+  return (
+    <div className="rounded-2xl bg-slate-800/70 px-4 py-3">
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-sm text-slate-400">{label}</span>
+        <span className="font-medium text-white">{value}</span>
+      </div>
+
+      <div className="mt-3 h-2.5 overflow-hidden rounded-full bg-slate-700/80">
+        <div
+          className={`h-full rounded-full transition-[width] duration-300 ${barClassName}`}
+          style={{ width: `${percentage}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
 function PokemonDetailScreen() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -161,13 +195,33 @@ function PokemonDetailScreen() {
           <SectionCard title="Характеристики">
             <div className="space-y-3">
               <InfoRow label="Количество" value={data.quantity} />
-              <InfoRow label="HP" value={data.baseHp} />
-              <InfoRow label="ATK" value={data.baseAttack} />
-              <InfoRow label="DEF" value={data.baseDefense} />
-              <InfoRow label="SPD" value={data.baseStamina} />
               <InfoRow
                 label="Статус"
                 value={data.isLocked ? "В Избранном" : "Не в Избранном"}
+              />
+              <StatBar
+                label="HP"
+                value={data.baseHp}
+                max={STAT_MAX.hp}
+                barClassName="bg-gradient-to-r from-rose-500 to-rose-300"
+              />
+              <StatBar
+                label="ATK"
+                value={data.baseAttack}
+                max={STAT_MAX.atk}
+                barClassName="bg-gradient-to-r from-amber-500 to-orange-300"
+              />
+              <StatBar
+                label="DEF"
+                value={data.baseDefense}
+                max={STAT_MAX.def}
+                barClassName="bg-gradient-to-r from-cyan-500 to-sky-300"
+              />
+              <StatBar
+                label="SPD"
+                value={data.baseStamina}
+                max={STAT_MAX.spd}
+                barClassName="bg-gradient-to-r from-violet-500 to-fuchsia-300"
               />
             </div>
           </SectionCard>
