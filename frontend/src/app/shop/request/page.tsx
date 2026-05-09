@@ -15,25 +15,20 @@ import { normalizePokemonRarity } from "@/components/pokemon-rarity";
 import { PokemonFormBadge } from "@/components/pokemon-form-badge";
 import { PokemonTypeIcons } from "@/components/pokemon-type-icon";
 import {
-  useMarketDetail,
-  useMarketListingPurchase,
-  useMarketListingRemove,
-  useMyMarketListingDetail,
+  useMarketRequestCancel,
+  useMyMarketRequestDetail,
 } from "@/hooks/use-market-detail";
 import { formatPokemonDisplayId, formatPokemonDisplayName } from "@/lib/pokemon-display";
-import { cn } from "@/lib/utils";
-import { ChevronLeft, ShoppingCart, XCircle } from "lucide-react";
+import { ChevronLeft, XCircle } from "lucide-react";
 
-type ListingScope = "market" | "mine";
-
-function MarketListingDetailScreen() {
+function MarketRequestDetailScreen() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const [activeDialog, setActiveDialog] = useState<"buy" | "remove" | null>(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
 
-  const listingId = useMemo(() => {
+  const requestId = useMemo(() => {
     const raw = searchParams.get("id");
     if (!raw) {
       return null;
@@ -42,51 +37,27 @@ function MarketListingDetailScreen() {
     return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
   }, [searchParams]);
 
-  const scope: ListingScope = searchParams.get("scope") === "mine" ? "mine" : "market";
-  const isOwnListing = scope === "mine";
-
-  const marketDetailQuery = useMarketDetail(isOwnListing ? null : listingId);
-  const ownDetailQuery = useMyMarketListingDetail(isOwnListing ? listingId : null);
-  const detailQuery = isOwnListing ? ownDetailQuery : marketDetailQuery;
+  const detailQuery = useMyMarketRequestDetail(requestId);
+  const cancelMutation = useMarketRequestCancel(requestId);
   const data = detailQuery.data;
-
-  const purchaseMutation = useMarketListingPurchase(isOwnListing ? null : listingId);
-  const removeMutation = useMarketListingRemove(isOwnListing ? listingId : null);
 
   const handleBack = () => {
     if (typeof window !== "undefined" && window.history.length > 1) {
       router.back();
       return;
     }
-    router.push(isOwnListing ? "/shop?tab=listings" : "/shop");
+    router.push("/shop?tab=requests");
   };
 
-  const closeDialog = () => {
-    setActiveDialog(null);
-    setActionError(null);
-  };
-
-  const handleBuy = async () => {
+  const handleCancel = async () => {
     setActionError(null);
     try {
-      const result = await purchaseMutation.mutateAsync();
-      setActionSuccess(`Покупка завершена. Потрачено 🪙 ${result.price}.`);
-      setActiveDialog(null);
-      router.push("/shop");
+      const result = await cancelMutation.mutateAsync();
+      setActionSuccess(`Заявка отменена. Возвращено 🪙 ${result.reservedAmount}.`);
+      setConfirmOpen(false);
+      router.push("/shop?tab=requests");
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : "Не удалось купить лот.");
-    }
-  };
-
-  const handleRemove = async () => {
-    setActionError(null);
-    try {
-      await removeMutation.mutateAsync();
-      setActionSuccess("Лот снят с продажи.");
-      setActiveDialog(null);
-      router.push("/shop?tab=listings");
-    } catch (error) {
-      setActionError(error instanceof Error ? error.message : "Не удалось снять лот.");
+      setActionError(error instanceof Error ? error.message : "Не удалось отменить заявку.");
     }
   };
 
@@ -97,11 +68,11 @@ function MarketListingDetailScreen() {
     >
       <TopHeader />
 
-      {listingId === null ? (
+      {requestId === null ? (
         <EmptyState
-          icon="🛒"
-          title="Лот не выбран"
-          description="Открой карточку из списка рынка."
+          icon="📨"
+          title="Заявка не выбрана"
+          description="Открой карточку из списка заявок."
         />
       ) : detailQuery.isLoading ? (
         <SectionCard>
@@ -113,16 +84,16 @@ function MarketListingDetailScreen() {
         </SectionCard>
       ) : detailQuery.isError || !data ? (
         <ErrorState
-          icon="🛒"
-          title="Не удалось загрузить лот"
-          description="Попробуй открыть рынок ещё раз чуть позже."
+          icon="📨"
+          title="Не удалось загрузить заявку"
+          description="Попробуй открыть раздел ещё раз чуть позже."
         />
       ) : (
         <>
           <SectionCard>
             <div className="relative">
               <PageHeader
-                eyebrow={`#${formatPokemonDisplayId(data.pokemonId, data.dexFormCode)} • Лот #${data.listingId}`}
+                eyebrow={`#${formatPokemonDisplayId(data.pokemonId, data.dexFormCode)} • Заявка #${data.requestId}`}
                 title={formatPokemonDisplayName(data.name, data.formBadge)}
                 description={
                   data.formBadge
@@ -178,43 +149,24 @@ function MarketListingDetailScreen() {
 
             <div className="mt-4 space-y-3 rounded-2xl border border-slate-800 bg-slate-950/70 px-4 py-3 text-sm">
               <InfoRow label="Цена" value={`🪙 ${data.price}`} />
-              <InfoRow label={isOwnListing ? "Продавец" : "Продавец"} value={data.sellerLabel} />
-              <InfoRow label="Осталось" value={`${data.daysRemaining} дн.`} />
+              <InfoRow label="Зарезервировано" value={`🪙 ${data.reservedAmount}`} />
+              <InfoRow label="Покупатель" value={data.requesterLabel} />
             </div>
 
             <div className="mt-4">
               <Button
                 type="button"
-                variant={isOwnListing ? "secondary" : "default"}
-                className={cn(
-                  "w-full rounded-xl",
-                  isOwnListing
-                    ? "border border-rose-500/30 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20"
-                    : "bg-cyan-300 text-slate-950 hover:bg-cyan-200",
-                )}
+                variant="secondary"
+                className="w-full rounded-xl border border-rose-500/30 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20"
                 onClick={() => {
                   setActionError(null);
                   setActionSuccess(null);
-                  if (!isOwnListing && data.pokecoinBalance < data.price) {
-                    setActiveDialog(null);
-                    setActionError("Недостаточно pokecoin для покупки.");
-                    return;
-                  }
-                  setActiveDialog(isOwnListing ? "remove" : "buy");
+                  setConfirmOpen(true);
                 }}
-                disabled={purchaseMutation.isPending || removeMutation.isPending}
+                disabled={cancelMutation.isPending}
               >
-                {isOwnListing ? (
-                  <>
-                    <XCircle className="h-4 w-4" />
-                    Снять лот
-                  </>
-                ) : (
-                  <>
-                    <ShoppingCart className="h-4 w-4" />
-                    Купить
-                  </>
-                )}
+                <XCircle className="h-4 w-4" />
+                Снять заявку
               </Button>
             </div>
 
@@ -224,7 +176,7 @@ function MarketListingDetailScreen() {
               </div>
             ) : null}
 
-            {actionError && !activeDialog ? (
+            {actionError && !confirmOpen ? (
               <div className="mt-3 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
                 {actionError}
               </div>
@@ -253,35 +205,20 @@ function MarketListingDetailScreen() {
             </div>
           </SectionCard>
 
-          {activeDialog ? (
+          {confirmOpen ? (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 px-4 backdrop-blur-sm">
               <div className="w-full max-w-md rounded-3xl border border-slate-700 bg-slate-900 p-5 shadow-[0_24px_80px_rgba(2,6,23,0.7)]">
                 <div className="space-y-4">
                   <div>
-                    <h3 className="text-lg font-semibold text-white">
-                      {activeDialog === "buy" ? "Подтверждение покупки" : "Снять лот"}
-                    </h3>
+                    <h3 className="text-lg font-semibold text-white">Отменить заявку</h3>
                     <p className="mt-2 text-sm leading-relaxed text-slate-300">
-                      {activeDialog === "buy" ? (
-                        <>
-                          Купить
-                          {" "}
-                          <span className="font-semibold text-white">
-                            {formatPokemonDisplayName(data.name, data.formBadge)}
-                          </span>
-                          {" "}за{" "}
-                          <span className="font-semibold text-amber-200">🪙 {data.price}</span>?
-                        </>
-                      ) : (
-                        <>
-                          Снять с продажи
-                          {" "}
-                          <span className="font-semibold text-white">
-                            {formatPokemonDisplayName(data.name, data.formBadge)}
-                          </span>
-                          ?
-                        </>
-                      )}
+                      Снять заявку на
+                      {" "}
+                      <span className="font-semibold text-white">
+                        {formatPokemonDisplayName(data.name, data.formBadge)}
+                      </span>
+                      {" "}и вернуть{" "}
+                      <span className="font-semibold text-amber-200">🪙 {data.reservedAmount}</span>?
                     </p>
                   </div>
 
@@ -296,28 +233,19 @@ function MarketListingDetailScreen() {
                       type="button"
                       variant="secondary"
                       className="flex-1 rounded-xl bg-slate-800 text-slate-100 hover:bg-slate-700"
-                      onClick={closeDialog}
-                      disabled={purchaseMutation.isPending || removeMutation.isPending}
+                      onClick={() => setConfirmOpen(false)}
+                      disabled={cancelMutation.isPending}
                     >
                       Назад
                     </Button>
                     <Button
                       type="button"
-                      variant={activeDialog === "buy" ? "default" : "secondary"}
-                      className={cn(
-                        "flex-1 rounded-xl",
-                        activeDialog === "buy"
-                          ? "bg-cyan-300 text-slate-950 hover:bg-cyan-200"
-                          : "border border-rose-500/30 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20",
-                      )}
-                      onClick={activeDialog === "buy" ? handleBuy : handleRemove}
-                      disabled={purchaseMutation.isPending || removeMutation.isPending}
+                      variant="secondary"
+                      className="flex-1 rounded-xl border border-rose-500/30 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20"
+                      onClick={handleCancel}
+                      disabled={cancelMutation.isPending}
                     >
-                      {purchaseMutation.isPending || removeMutation.isPending
-                        ? "Подтверждаем..."
-                        : activeDialog === "buy"
-                          ? "Подтвердить покупку"
-                          : "Подтвердить снятие"}
+                      {cancelMutation.isPending ? "Подтверждаем..." : "Подтвердить отмену"}
                     </Button>
                   </div>
                 </div>
@@ -339,7 +267,7 @@ function MarketListingDetailScreen() {
   );
 }
 
-export default function MarketListingDetailPage() {
+export default function MarketRequestDetailPage() {
   return (
     <Suspense
       fallback={
@@ -358,7 +286,7 @@ export default function MarketListingDetailPage() {
         </AppShell>
       }
     >
-      <MarketListingDetailScreen />
+      <MarketRequestDetailScreen />
     </Suspense>
   );
 }

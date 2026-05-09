@@ -83,6 +83,7 @@ export type MiniAppMarketRequestEntry = {
 
 export type MiniAppMarketDetail = {
   listingId: number;
+  pokecoinBalance: number;
   userPokemonId: number;
   pokemonId: number;
   dexFormCode?: string | null;
@@ -93,6 +94,32 @@ export type MiniAppMarketDetail = {
   price: number;
   sellerLabel: string;
   daysRemaining: number;
+  baseHp: number;
+  baseAttack: number;
+  baseDefense: number;
+  baseStamina: number;
+  imageCreditId: number | null;
+  imageUrl: string | null;
+  sourceUrl: string | null;
+  imageVariant: {
+    position: number;
+    total: number;
+    canSwitch: boolean;
+  };
+};
+
+export type MiniAppMarketRequestDetail = {
+  requestId: number;
+  pokecoinBalance: number;
+  pokemonId: number;
+  dexFormCode?: string | null;
+  name: string;
+  rarity: string;
+  formBadge?: string | null;
+  type: string;
+  price: number;
+  reservedAmount: number;
+  requesterLabel: string;
   baseHp: number;
   baseAttack: number;
   baseDefense: number;
@@ -122,6 +149,7 @@ export type MiniAppPokemonDetail = {
   baseStamina: number;
   isLocked: boolean;
   isInPvpTeam: boolean;
+  releaseRewardAmount: number;
   imageCreditId: number | null;
   imageUrl: string | null;
   sourceUrl: string | null;
@@ -399,6 +427,7 @@ function getMockMarket(): MiniAppMarketResponse {
 function getMockMarketDetail(listingId: number): MiniAppMarketDetail {
   return {
     listingId,
+    pokecoinBalance: 880,
     userPokemonId: 1001,
     pokemonId: 25,
     name: "Pikachu",
@@ -438,6 +467,35 @@ function getMockPokemonDetail(userPokemonId: number): MiniAppPokemonDetail {
     baseStamina: 90,
     isLocked: false,
     isInPvpTeam: false,
+    releaseRewardAmount: 25,
+    imageCreditId: null,
+    imageUrl: null,
+    sourceUrl: null,
+    imageVariant: {
+      position: 1,
+      total: 1,
+      canSwitch: false,
+    },
+  };
+}
+
+function getMockMarketRequestDetail(requestId: number): MiniAppMarketRequestDetail {
+  return {
+    requestId,
+    pokecoinBalance: 880,
+    pokemonId: 25,
+    dexFormCode: "25",
+    name: "Pikachu",
+    rarity: "Rare",
+    formBadge: null,
+    type: "Electric",
+    price: 240,
+    reservedAmount: 240,
+    requesterLabel: "termenater",
+    baseHp: 35,
+    baseAttack: 55,
+    baseDefense: 40,
+    baseStamina: 90,
     imageCreditId: null,
     imageUrl: null,
     sourceUrl: null,
@@ -571,6 +629,30 @@ export async function getMarketDetail(listingId: number): Promise<MiniAppMarketD
     cache: "no-store",
   });
   return parseJsonResponse<MiniAppMarketDetail>(response);
+}
+
+export async function getMyMarketListingDetail(listingId: number): Promise<MiniAppMarketDetail> {
+  if (!canUseLiveBackend()) {
+    return getMockMarketDetail(listingId);
+  }
+
+  const response = await fetch(buildApiUrl(`/api/market/my/listings/${listingId}`), {
+    headers: getAuthHeaders(),
+    cache: "no-store",
+  });
+  return parseJsonResponse<MiniAppMarketDetail>(response);
+}
+
+export async function getMyMarketRequestDetail(requestId: number): Promise<MiniAppMarketRequestDetail> {
+  if (!canUseLiveBackend()) {
+    return getMockMarketRequestDetail(requestId);
+  }
+
+  const response = await fetch(buildApiUrl(`/api/market/my/requests/${requestId}`), {
+    headers: getAuthHeaders(),
+    cache: "no-store",
+  });
+  return parseJsonResponse<MiniAppMarketRequestDetail>(response);
 }
 
 export async function getPokemonDetail(userPokemonId: number): Promise<MiniAppPokemonDetail> {
@@ -736,6 +818,90 @@ export async function sellPokemon(
     price: number;
     sellerLabel: string;
     daysRemaining: number;
+  }>(response);
+}
+
+export async function buyMarketListing(
+  listingId: number,
+): Promise<{
+  listingId: number;
+  userPokemonId: number;
+  pokemonId: number;
+  price: number;
+}> {
+  if (!canUseLiveBackend()) {
+    return {
+      listingId,
+      userPokemonId: 1001,
+      pokemonId: 25,
+      price: 240,
+    };
+  }
+
+  const response = await fetch(buildApiUrl(`/api/market/${listingId}/buy`), {
+    method: "POST",
+    headers: getAuthHeaders(),
+    cache: "no-store",
+  });
+  return parseJsonResponse<{
+    listingId: number;
+    userPokemonId: number;
+    pokemonId: number;
+    price: number;
+  }>(response);
+}
+
+export async function removeMarketListing(
+  listingId: number,
+): Promise<{
+  listingId: number;
+  userPokemonId: number;
+  pokemonId: number;
+}> {
+  if (!canUseLiveBackend()) {
+    return {
+      listingId,
+      userPokemonId: 1001,
+      pokemonId: 25,
+    };
+  }
+
+  const response = await fetch(buildApiUrl(`/api/market/my/listings/${listingId}/remove`), {
+    method: "POST",
+    headers: getAuthHeaders(),
+    cache: "no-store",
+  });
+  return parseJsonResponse<{
+    listingId: number;
+    userPokemonId: number;
+    pokemonId: number;
+  }>(response);
+}
+
+export async function cancelMarketRequest(
+  requestId: number,
+): Promise<{
+  requestId: number;
+  pokemonId: number;
+  reservedAmount: number;
+}> {
+  if (!canUseLiveBackend()) {
+    return {
+      requestId,
+      pokemonId: 25,
+      reservedAmount: 240,
+    };
+  }
+
+  const response = await fetch(buildApiUrl(`/api/market/my/requests/${requestId}/cancel`), {
+    method: "POST",
+    headers: getAuthHeaders(),
+    cache: "no-store",
+  });
+  return parseJsonResponse<{
+    requestId: number;
+    pokemonId: number;
+    reservedAmount: number;
   }>(response);
 }
 

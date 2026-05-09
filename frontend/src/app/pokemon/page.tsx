@@ -274,6 +274,7 @@ function PokemonDetailScreen() {
                     isActionBlocked && "cursor-not-allowed border-slate-800 bg-slate-900 text-slate-500 hover:bg-slate-900",
                   )}
                   disabled={isActionBlocked}
+                  title={isActionBlocked ? undefined : `Выставить на рынок за свою цену`}
                   onClick={() => void handleOpenDialog("sell")}
                 >
                   <ShoppingCart className="h-4 w-4" />
@@ -287,6 +288,11 @@ function PokemonDetailScreen() {
                   isActionBlocked && "cursor-not-allowed border-slate-800 bg-slate-900 text-slate-500 hover:bg-slate-900",
                   )}
                   disabled={isActionBlocked}
+                  title={
+                    isActionBlocked || !data
+                      ? undefined
+                      : `Отпустить за ${data.releaseRewardAmount} PokéDollar`
+                  }
                   onClick={() => void handleOpenDialog("release")}
                 >
                   <DoorOpen className="h-4 w-4" />
@@ -393,7 +399,12 @@ function PokemonDetailScreen() {
                       </span>
                       ?
                       {" "}
-                      После подтверждения экземпляр исчезнет из коллекции навсегда.
+                      После подтверждения экземпляр исчезнет из коллекции навсегда, а вы получите
+                      {" "}
+                      <span className="font-semibold text-amber-200">
+                        {data.releaseRewardAmount} PokéDollar
+                      </span>
+                      .
                     </p>
                   )}
 

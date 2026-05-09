@@ -3627,6 +3627,25 @@ class Database:
                 )
         return [_map_market_listing_summary(row) for row in rows]
 
+    async def get_my_market_listing_summary(
+        self,
+        telegram_id: int,
+        username: Optional[str],
+        *,
+        listing_id: int,
+    ) -> MarketListingSummary:
+        """Load one active listing owned by the current user."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                user_id = await self._ensure_user(conn, telegram_id, username)
+                listing = await self._fetch_market_listing_summary(conn, listing_id)
+                if listing.seller_user_id != user_id:
+                    raise ShopError("Лот не найден.")
+                if listing.status != MARKET_LISTING_STATUS_ACTIVE:
+                    raise ShopError("Этот лот уже не активен.")
+                return listing
+
     async def get_my_market_buy_requests(
         self,
         telegram_id: int,
@@ -3666,6 +3685,25 @@ class Database:
                     MARKET_REQUEST_STATUS_ACTIVE,
                 )
         return [_map_market_buy_request_summary(row) for row in rows]
+
+    async def get_my_market_buy_request_summary(
+        self,
+        telegram_id: int,
+        username: Optional[str],
+        *,
+        request_id: int,
+    ) -> MarketBuyRequestSummary:
+        """Load one active buy request owned by the current user."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                user_id = await self._ensure_user(conn, telegram_id, username)
+                market_request = await self._fetch_market_buy_request_summary(conn, request_id)
+                if market_request.requester_user_id != user_id:
+                    raise ShopError("Заявка не найдена.")
+                if market_request.status != MARKET_REQUEST_STATUS_ACTIVE:
+                    raise ShopError("Эта заявка уже не активна.")
+                return market_request
 
     async def get_sellable_market_buy_requests(
         self,

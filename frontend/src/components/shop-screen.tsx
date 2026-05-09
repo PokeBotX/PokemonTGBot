@@ -122,7 +122,11 @@ export function ShopScreen() {
         ) : listingsQuery.data && listingsQuery.data.entries.length > 0 ? (
           <div className="grid grid-cols-2 gap-4">
             {listingsQuery.data.entries.map((entry) => (
-              <Link key={entry.listingId} href={`/shop/listing?id=${entry.listingId}`} className="block">
+              <Link
+                key={entry.listingId}
+                href={`/shop/listing?id=${entry.listingId}&scope=mine`}
+                className="block"
+              >
                 <PokemonCard
                   pokemonId={entry.pokemonId}
                   dexFormCode={entry.dexFormCode}
@@ -162,34 +166,36 @@ export function ShopScreen() {
         ) : requestsQuery.data && requestsQuery.data.entries.length > 0 ? (
           <div className="space-y-3">
             {requestsQuery.data.entries.map((entry) => (
-              <SectionCard key={entry.requestId}>
-                <div className="flex gap-4">
-                  <div className="h-24 w-24 shrink-0 overflow-hidden rounded-2xl bg-slate-800">
-                    {entry.imageUrl ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={entry.imageUrl}
-                        alt={entry.name}
-                        className="h-full w-full object-cover"
-                      />
-                    ) : null}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-semibold text-white">
-                      {entry.name}
-                      {entry.formBadge ? ` (${entry.formBadge.toLowerCase()})` : ""}
-                    </p>
-                    <p className="mt-1 text-xs uppercase tracking-[0.14em] text-slate-400">
-                      #{entry.dexFormCode ?? entry.pokemonId}
-                    </p>
-                    <p className="mt-2 text-sm text-slate-300">{entry.type}</p>
-                    <div className="mt-3 space-y-1 text-sm text-slate-300">
-                      <p>Цена: 🪙 {entry.price}</p>
-                      <p>Зарезервировано: 🪙 {entry.reservedAmount}</p>
+              <Link key={entry.requestId} href={`/shop/request?id=${entry.requestId}`} className="block">
+                <SectionCard>
+                  <div className="flex gap-4">
+                    <div className="h-24 w-24 shrink-0 overflow-hidden rounded-2xl bg-slate-800">
+                      {entry.imageUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={entry.imageUrl}
+                          alt={entry.name}
+                          className="h-full w-full object-cover"
+                        />
+                      ) : null}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-semibold text-white">
+                        {entry.name}
+                        {entry.formBadge ? ` (${entry.formBadge.toLowerCase()})` : ""}
+                      </p>
+                      <p className="mt-1 text-xs uppercase tracking-[0.14em] text-slate-400">
+                        #{entry.dexFormCode ?? entry.pokemonId}
+                      </p>
+                      <p className="mt-2 text-sm text-slate-300">{entry.type}</p>
+                      <div className="mt-3 space-y-1 text-sm text-slate-300">
+                        <p>Цена: 🪙 {entry.price}</p>
+                        <p>Зарезервировано: 🪙 {entry.reservedAmount}</p>
+                      </div>
                     </div>
                   </div>
-                </div>
-              </SectionCard>
+                </SectionCard>
+              </Link>
             ))}
           </div>
         ) : (
