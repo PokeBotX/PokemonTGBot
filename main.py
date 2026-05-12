@@ -923,7 +923,7 @@ async def _build_mini_app_pokedex_detail_payload(
     )
     image_url = await _resolve_image_url(image_credit_id=detail.image_credit_id)
     image_credit = await db.get_image_credit(detail.image_credit_id) if detail.image_credit_id is not None else None
-    profile_summary = await db.get_profile_summary(telegram_id, username)
+    shop_view = await db.get_shop_view(telegram_id, username)
     precheck_error = await db.get_market_buy_request_precheck_error(
         telegram_id,
         username,
@@ -946,7 +946,7 @@ async def _build_mini_app_pokedex_detail_payload(
         "sourceUrl": image_credit.source if image_credit else None,
         "isCollected": detail.is_collected,
         "ownedQuantity": detail.owned_quantity,
-        "pokecoinBalance": profile_summary.pokecoin_balance,
+        "pokecoinBalance": shop_view.pokecoin_balance,
         "buyRequestPrecheck": {
             "ok": precheck_error is None,
             "error": precheck_error,
