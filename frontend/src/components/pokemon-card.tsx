@@ -18,6 +18,8 @@ type PokemonCardProps = {
   formBadge?: string | null;
   imageUrl?: string | null;
   priceLabel?: string | null;
+  stateBadgeLabel?: string | null;
+  dimmed?: boolean;
 };
 
 export function PokemonCard({
@@ -29,13 +31,15 @@ export function PokemonCard({
   formBadge,
   imageUrl,
   priceLabel,
+  stateBadgeLabel,
+  dimmed = false,
 }: PokemonCardProps) {
   const displayName = formatPokemonDisplayName(name, formBadge);
   const displayId = formatPokemonDisplayId(pokemonId, dexFormCode);
 
   return (
     <Card
-      className={`relative h-[220px] gap-0 overflow-hidden rounded-2xl border bg-slate-900 py-0 text-slate-100 shadow-[0_2px_12px_rgba(0,0,0,0.35)] ${getRarityBorderClass(rarity)}`}
+      className={`relative h-[220px] gap-0 overflow-hidden rounded-2xl border bg-slate-900 py-0 text-slate-100 shadow-[0_2px_12px_rgba(0,0,0,0.35)] ${getRarityBorderClass(rarity)} ${dimmed ? "opacity-70 saturate-50" : ""}`}
     >
       <CardContent className="relative h-full overflow-hidden p-0">
         <div className="absolute inset-0">
@@ -57,6 +61,12 @@ export function PokemonCard({
           iconClassName="h-4 w-4"
           wrapperClassName="absolute left-2 top-2 z-10 flex items-center gap-1 rounded-full border border-slate-200/5 bg-slate-950/30 px-2 py-1 shadow-[0_8px_24px_rgba(15,23,42,0.18)] backdrop-blur-xl"
         />
+
+        {stateBadgeLabel ? (
+          <div className="absolute right-2 top-2 z-10 rounded-full border border-slate-200/5 bg-slate-950/65 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-100 shadow-[0_8px_24px_rgba(15,23,42,0.18)] backdrop-blur-xl">
+            {stateBadgeLabel}
+          </div>
+        ) : null}
 
         <div className="absolute inset-x-0 bottom-0 z-10 flex min-h-[96px] flex-col justify-end bg-gradient-to-t from-slate-950 via-slate-950/72 via-35% to-transparent px-3 pb-8 pt-20">
           <CardTitle className="line-clamp-1 text-sm font-medium leading-tight">

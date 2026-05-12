@@ -27,6 +27,7 @@ from bot.db.database import (
     TRADE_MAINTENANCE_INTERVAL_SECONDS,
     CollectionFilterState,
     MarketBrowseState,
+    PokedexFilterState,
     ShopError,
     _pokemon_release_reward,
 )
@@ -110,6 +111,7 @@ db: Database = None
 
 MINI_APP_AUTH_MAX_AGE_SECONDS = 24 * 60 * 60
 MINI_APP_COLLECTION_PAGE_SIZE = 24
+MINI_APP_POKEDEX_PAGE_SIZE = 24
 MINI_APP_DEV_FALLBACK_ENABLED = os.getenv("MINI_APP_DEV_FALLBACK_ENABLED", "false").lower() == "true"
 MINI_APP_DEV_FALLBACK_TELEGRAM_ID = int(os.getenv("MINI_APP_DEV_FALLBACK_TELEGRAM_ID", "1640978922"))
 MINI_APP_DEV_FALLBACK_USERNAME = os.getenv("MINI_APP_DEV_FALLBACK_USERNAME", "termenater").strip() or "termenater"
@@ -449,6 +451,71 @@ async def _build_mini_app_collection_payload_with_filters(
             "types": list(collection_page.filter_state.types),
             "duplicatesOnly": collection_page.filter_state.duplicates_only,
             "lockedOnly": collection_page.filter_state.locked_only,
+        },
+    }
+
+
+async def _build_mini_app_pokedex_payload_with_filters(
+    telegram_id: int,
+    username: str | None,
+    *,
+    filter_state: PokedexFilterState,
+    page_size: int,
+) -> dict[str, Any]:
+    """Build the Mini App pokedex response with exact-form ownership flags."""
+    if not DB_ENABLED or db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database is not available for Mini App pokedex requests",
+        )
+
+    pokedex_page = await db.get_mini_app_pokedex_page(
+        telegram_id,
+        username,
+        filter_state,
+        page_size=page_size,
+    )
+    image_urls: list[str | None] = await asyncio.gather(
+        *[
+            _resolve_image_url(image_credit_id=entry.image_credit_id)
+            for entry in pokedex_page.entries
+        ]
+    )
+    return {
+        "entries": [
+            {
+                "id": entry.pokemon_id,
+                "dexFormCode": entry.dex_form_code,
+                "name": entry.name,
+                "type": entry.pokemon_type or "Unknown",
+                "rarity": entry.rarity,
+                "formBadge": entry.form_badge,
+                "baseHp": entry.base_hp,
+                "baseAttack": entry.base_attack,
+                "baseDefense": entry.base_defense,
+                "baseStamina": entry.base_stamina,
+                "imageCreditId": entry.image_credit_id,
+                "imageUrl": image_urls[index],
+                "ownedQuantity": entry.owned_quantity,
+                "isCollected": entry.is_collected,
+            }
+            for index, entry in enumerate(pokedex_page.entries)
+        ],
+        "pageInfo": {
+            "totalEntries": pokedex_page.total_entries,
+            "currentPage": pokedex_page.current_page,
+            "totalPages": pokedex_page.total_pages,
+            "pageSize": pokedex_page.page_size,
+            "hasNext": pokedex_page.has_next(),
+            "hasPrevious": pokedex_page.has_previous(),
+            "nextPage": pokedex_page.current_page + 1 if pokedex_page.has_next() else None,
+        },
+        "appliedFilters": {
+            "rarities": list(pokedex_page.filter_state.rarities),
+            "types": list(pokedex_page.filter_state.types),
+            "collectedState": pokedex_page.filter_state.collected_state,
+            "formKinds": list(pokedex_page.filter_state.form_kinds),
+            "query": pokedex_page.filter_state.query,
         },
     }
 
@@ -833,6 +900,66 @@ async def _build_mini_app_pokemon_detail_payload(
             "total": image_selection.total,
             "canSwitch": bool(image_selection.total > 1),
         },
+    }
+
+
+async def _build_mini_app_pokedex_detail_payload(
+    telegram_id: int,
+    username: str | None,
+    *,
+    pokemon_id: int,
+) -> dict[str, Any]:
+    """Build one read-only pokedex detail payload for Mini App."""
+    if not DB_ENABLED or db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database is not available for Mini App pokedex requests",
+        )
+
+    detail = await db.get_pokedex_detail(
+        telegram_id,
+        username,
+        pokemon_id=pokemon_id,
+    )
+    image_url = await _resolve_image_url(image_credit_id=detail.image_credit_id)
+    image_credit = await db.get_image_credit(detail.image_credit_id) if detail.image_credit_id is not None else None
+    profile_summary = await db.get_profile_summary(telegram_id, username)
+    precheck_error = await db.get_market_buy_request_precheck_error(
+        telegram_id,
+        username,
+        pokemon_id=detail.pokemon_id,
+    )
+
+    return {
+        "id": detail.pokemon_id,
+        "dexFormCode": detail.dex_form_code,
+        "name": detail.name,
+        "rarity": detail.rarity,
+        "formBadge": detail.form_badge,
+        "type": detail.pokemon_type or "Unknown",
+        "baseHp": detail.base_hp,
+        "baseAttack": detail.base_attack,
+        "baseDefense": detail.base_defense,
+        "baseStamina": detail.base_stamina,
+        "imageCreditId": detail.image_credit_id,
+        "imageUrl": image_url,
+        "sourceUrl": image_credit.source if image_credit else None,
+        "isCollected": detail.is_collected,
+        "ownedQuantity": detail.owned_quantity,
+        "pokecoinBalance": profile_summary.pokecoin_balance,
+        "buyRequestPrecheck": {
+            "ok": precheck_error is None,
+            "error": precheck_error,
+        },
+        "relatedForms": [
+            {
+                "id": related.pokemon_id,
+                "dexFormCode": related.dex_form_code,
+                "formBadge": related.form_badge,
+                "isCollected": related.is_collected,
+            }
+            for related in detail.related_forms
+        ],
     }
 
 
@@ -1258,6 +1385,131 @@ async def mini_app_collection(
         filter_state=filter_state,
         page_size=page_size,
     )
+
+
+@app.get("/api/pokedex")
+async def mini_app_pokedex(
+    request: Request,
+    x_telegram_init_data: str | None = Header(default=None, alias="X-Telegram-Init-Data"),
+    x_dev_telegram_id: str | None = Header(default=None, alias="X-Dev-Telegram-Id"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=MINI_APP_POKEDEX_PAGE_SIZE, ge=1, le=100),
+    collected: str = Query(default="all"),
+    query: str = Query(default=""),
+    rarities: list[str] | None = Query(default=None),
+    types: list[str] | None = Query(default=None),
+    form_kinds: list[str] | None = Query(default=None),
+):
+    """Return the Mini App pokedex using validated Telegram initData."""
+    telegram_id, username = _resolve_mini_app_identity(
+        x_telegram_init_data=x_telegram_init_data,
+        x_dev_telegram_id=x_dev_telegram_id,
+        request_host=request.headers.get("host"),
+    )
+    normalized_collected = collected.strip().lower()
+    if normalized_collected not in {"all", "collected", "missing"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid collected filter.")
+    filter_state = PokedexFilterState(
+        rarities=_parse_csv_query_values(rarities),
+        types=_parse_csv_query_values(types),
+        collected_state=normalized_collected,
+        form_kinds=_parse_csv_query_values(form_kinds),
+        query=query.strip(),
+        page=page,
+    )
+    return await _build_mini_app_pokedex_payload_with_filters(
+        telegram_id,
+        username,
+        filter_state=filter_state,
+        page_size=page_size,
+    )
+
+
+@app.get("/api/pokedex/{pokemon_id}")
+async def mini_app_pokedex_detail(
+    pokemon_id: int,
+    request: Request,
+    x_telegram_init_data: str | None = Header(default=None, alias="X-Telegram-Init-Data"),
+    x_dev_telegram_id: str | None = Header(default=None, alias="X-Dev-Telegram-Id"),
+):
+    """Return one read-only pokedex detail payload for Mini App."""
+    telegram_id, username = _resolve_mini_app_identity(
+        x_telegram_init_data=x_telegram_init_data,
+        x_dev_telegram_id=x_dev_telegram_id,
+        request_host=request.headers.get("host"),
+    )
+    return await _build_mini_app_pokedex_detail_payload(
+        telegram_id,
+        username,
+        pokemon_id=pokemon_id,
+    )
+
+
+@app.get("/api/pokedex/{pokemon_id}/buy-request-precheck")
+async def mini_app_pokedex_buy_request_precheck(
+    pokemon_id: int,
+    request: Request,
+    x_telegram_init_data: str | None = Header(default=None, alias="X-Telegram-Init-Data"),
+    x_dev_telegram_id: str | None = Header(default=None, alias="X-Dev-Telegram-Id"),
+):
+    """Return a buy-request precheck for one catalog entry from pokedex detail."""
+    if not DB_ENABLED or db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database is not available for Mini App pokedex requests",
+        )
+    telegram_id, username = _resolve_mini_app_identity(
+        x_telegram_init_data=x_telegram_init_data,
+        x_dev_telegram_id=x_dev_telegram_id,
+        request_host=request.headers.get("host"),
+    )
+    error = await db.get_market_buy_request_precheck_error(
+        telegram_id,
+        username,
+        pokemon_id=pokemon_id,
+    )
+    return {
+        "ok": error is None,
+        "error": error,
+    }
+
+
+@app.post("/api/pokedex/{pokemon_id}/buy-request")
+async def mini_app_pokedex_create_buy_request(
+    pokemon_id: int,
+    request: Request,
+    payload: dict[str, int] = Body(...),
+    x_telegram_init_data: str | None = Header(default=None, alias="X-Telegram-Init-Data"),
+    x_dev_telegram_id: str | None = Header(default=None, alias="X-Dev-Telegram-Id"),
+):
+    """Create one market buy request from pokedex detail."""
+    if not DB_ENABLED or db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database is not available for Mini App pokedex requests",
+        )
+    telegram_id, username = _resolve_mini_app_identity(
+        x_telegram_init_data=x_telegram_init_data,
+        x_dev_telegram_id=x_dev_telegram_id,
+        request_host=request.headers.get("host"),
+    )
+    price = int(payload.get("price", 0))
+    try:
+        market_request = await db.create_market_buy_request(
+            telegram_id,
+            username,
+            pokemon_id=pokemon_id,
+            price=price,
+        )
+    except ShopError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    return {
+        "requestId": market_request.request_id,
+        "pokemonId": market_request.pokemon_id,
+        "price": market_request.price,
+        "reservedAmount": market_request.reserved_amount,
+    }
 
 
 @app.get("/api/market")

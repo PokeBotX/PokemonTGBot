@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 
 import { ErrorState } from "@/components/error-state";
 import { ProgressInfoRow } from "@/components/progress-info-row";
@@ -26,6 +27,7 @@ function getRarityProgressClass(rarity: string) {
 }
 
 export function ProfileCard() {
+  const router = useRouter();
   const { data, isLoading, isError } = useProfile();
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
 
@@ -160,7 +162,11 @@ export function ProfileCard() {
           <Button className="rounded-xl bg-slate-700 text-slate-100 hover:bg-slate-600">
             Язык: {data.language.toUpperCase()}
           </Button>
-          <Button className="rounded-xl bg-slate-700 text-slate-100 hover:bg-slate-600">
+          <Button
+            type="button"
+            className="rounded-xl bg-slate-700 text-slate-100 hover:bg-slate-600"
+            onClick={() => router.push("/pokedex")}
+          >
             Всего форм: {data.totalFormCatalog}
           </Button>
         </div>

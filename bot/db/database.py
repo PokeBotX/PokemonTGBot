@@ -6,7 +6,7 @@ import asyncio
 import json
 import os
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Optional, Sequence
@@ -358,6 +358,28 @@ class CollectionFilterState:
 
 
 @dataclass(slots=True)
+class PokedexFilterState:
+    """Current pokedex filters used for Mini App browsing."""
+
+    rarities: tuple[str, ...] = ()
+    types: tuple[str, ...] = ()
+    collected_state: str = "all"
+    form_kinds: tuple[str, ...] = ()
+    query: str = ""
+    page: int = 1
+
+    def with_page(self, page: int) -> "PokedexFilterState":
+        return PokedexFilterState(
+            rarities=self.rarities,
+            types=self.types,
+            collected_state=self.collected_state,
+            form_kinds=self.form_kinds,
+            query=self.query,
+            page=page,
+        )
+
+
+@dataclass(slots=True)
 class CollectionEntry:
     """Aggregated collection entry for one pokemon species."""
 
@@ -449,6 +471,79 @@ class MiniAppCollectionPage:
 
     def has_next(self) -> bool:
         return self.current_page < self.total_pages
+
+
+@dataclass(slots=True)
+class PokedexEntry:
+    """One exact pokedex catalog entry, including collected state for the current user."""
+
+    pokemon_id: int
+    name: str
+    rarity: str
+    pokemon_type: Optional[str]
+    base_hp: int
+    base_attack: int
+    base_defense: int
+    base_stamina: int
+    image_credit_id: Optional[int]
+    dex_form_code: Optional[str] = None
+    form_badge: Optional[str] = None
+    owned_quantity: int = 0
+
+    @property
+    def is_collected(self) -> bool:
+        return self.owned_quantity > 0
+
+
+@dataclass(slots=True)
+class MiniAppPokedexPage:
+    """Paginated Mini App pokedex results with exact-form ownership flags."""
+
+    entries: list[PokedexEntry]
+    filter_state: PokedexFilterState
+    total_entries: int
+    current_page: int
+    total_pages: int
+    page_size: int
+
+    def has_previous(self) -> bool:
+        return self.current_page > 1
+
+    def has_next(self) -> bool:
+        return self.current_page < self.total_pages
+
+
+@dataclass(slots=True)
+class PokedexRelatedForm:
+    """Sibling form metadata for one pokedex detail page."""
+
+    pokemon_id: int
+    dex_form_code: Optional[str]
+    form_badge: Optional[str]
+    is_collected: bool
+
+
+@dataclass(slots=True)
+class PokedexDetail:
+    """Read-only Mini App pokedex detail payload."""
+
+    pokemon_id: int
+    name: str
+    rarity: str
+    pokemon_type: Optional[str]
+    base_hp: int
+    base_attack: int
+    base_defense: int
+    base_stamina: int
+    image_credit_id: Optional[int]
+    dex_form_code: Optional[str] = None
+    form_badge: Optional[str] = None
+    owned_quantity: int = 0
+    related_forms: list[PokedexRelatedForm] = field(default_factory=list)
+
+    @property
+    def is_collected(self) -> bool:
+        return self.owned_quantity > 0
 
 
 @dataclass(slots=True)
@@ -1121,6 +1216,41 @@ class Database:
                     requested_state,
                     page_size=page_size,
                 )
+
+    async def get_mini_app_pokedex_page(
+        self,
+        telegram_id: int,
+        username: Optional[str],
+        filter_state: Optional[PokedexFilterState] = None,
+        *,
+        page_size: int,
+    ) -> MiniAppPokedexPage:
+        """Load one Mini App pokedex page across the full catalog."""
+        self._ensure_pool()
+        requested_state = filter_state or PokedexFilterState()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                user_id = await self._ensure_user(conn, telegram_id, username)
+                return await self._fetch_pokedex_page_with_page_size(
+                    conn,
+                    user_id,
+                    requested_state,
+                    page_size=page_size,
+                )
+
+    async def get_pokedex_detail(
+        self,
+        telegram_id: int,
+        username: Optional[str],
+        *,
+        pokemon_id: int,
+    ) -> PokedexDetail:
+        """Load one read-only pokedex detail entry for the current user."""
+        self._ensure_pool()
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                user_id = await self._ensure_user(conn, telegram_id, username)
+                return await self._fetch_pokedex_detail(conn, user_id, pokemon_id=pokemon_id)
 
     async def get_profile_summary(self, telegram_id: int, username: Optional[str]) -> ProfileSummary:
         """Load the profile summary for the current user."""
@@ -6740,6 +6870,196 @@ class Database:
             page_size=resolved_page_size,
         )
 
+    async def _fetch_pokedex_page_with_page_size(
+        self,
+        conn: asyncpg.Connection,
+        user_id: int,
+        filter_state: PokedexFilterState,
+        *,
+        page_size: int,
+    ) -> MiniAppPokedexPage:
+        current_page = max(1, filter_state.page)
+        resolved_page_size = max(1, min(page_size, 100))
+        offset = (current_page - 1) * resolved_page_size
+
+        where_sql, having_sql, params = _build_pokedex_filter_clauses(user_id, filter_state)
+        count_sql = f"""
+            SELECT COUNT(*)::int AS total_entries
+            FROM (
+              SELECT pc.id
+              FROM pokemon_catalog pc
+              LEFT JOIN user_pokemon up
+                ON up.pokemon_id = pc.id
+               AND up.owner_user_id = $1
+               AND up.released_at IS NULL
+              {where_sql}
+              GROUP BY pc.id
+              {having_sql}
+            ) filtered_catalog
+        """
+        total_entries = int(await conn.fetchval(count_sql, *params) or 0)
+        total_pages = max(1, (total_entries + resolved_page_size - 1) // resolved_page_size)
+        current_page = min(current_page, total_pages)
+        offset = (current_page - 1) * resolved_page_size
+
+        data_params = [*params, resolved_page_size, offset]
+        limit_index = len(params) + 1
+        offset_index = len(params) + 2
+        rows = await conn.fetch(
+            f"""
+            SELECT
+              pc.id AS pokemon_id,
+              pc.dex_form_code,
+              pc.name,
+              pc.rarity,
+              pc.type,
+              pc.base_hp,
+              pc.base_attack,
+              pc.base_defense,
+              pc.base_stamina,
+              pc.image_credit_id,
+              COUNT(up.id)::int AS owned_quantity
+            FROM pokemon_catalog pc
+            LEFT JOIN user_pokemon up
+              ON up.pokemon_id = pc.id
+             AND up.owner_user_id = $1
+             AND up.released_at IS NULL
+            {where_sql}
+            GROUP BY
+              pc.id,
+              pc.dex_form_code,
+              pc.name,
+              pc.rarity,
+              pc.type,
+              pc.base_hp,
+              pc.base_attack,
+              pc.base_defense,
+              pc.base_stamina,
+              pc.image_credit_id
+            {having_sql}
+            ORDER BY {_dex_form_sort_sql(qualified_column="pc.dex_form_code")}
+            LIMIT ${limit_index}
+            OFFSET ${offset_index}
+            """,
+            *data_params,
+        )
+        entries = [
+            PokedexEntry(
+                pokemon_id=int(row["pokemon_id"]),
+                name=str(row["name"]),
+                rarity=str(row["rarity"]),
+                pokemon_type=row["type"],
+                base_hp=int(row["base_hp"]),
+                base_attack=int(row["base_attack"]),
+                base_defense=int(row["base_defense"]),
+                base_stamina=int(row["base_stamina"]),
+                image_credit_id=row["image_credit_id"],
+                dex_form_code=row["dex_form_code"],
+                form_badge=_form_badge_from_dex_form_code(row["dex_form_code"]),
+                owned_quantity=int(row["owned_quantity"]),
+            )
+            for row in rows
+        ]
+        return MiniAppPokedexPage(
+            entries=entries,
+            filter_state=filter_state.with_page(current_page),
+            total_entries=total_entries,
+            current_page=current_page,
+            total_pages=total_pages,
+            page_size=resolved_page_size,
+        )
+
+    async def _fetch_pokedex_detail(
+        self,
+        conn: asyncpg.Connection,
+        user_id: int,
+        *,
+        pokemon_id: int,
+    ) -> PokedexDetail:
+        row = await conn.fetchrow(
+            """
+            SELECT
+              pc.id AS pokemon_id,
+              pc.dex_form_code,
+              pc.name,
+              pc.rarity,
+              pc.type,
+              pc.base_hp,
+              pc.base_attack,
+              pc.base_defense,
+              pc.base_stamina,
+              pc.image_credit_id,
+              COUNT(up.id)::int AS owned_quantity
+            FROM pokemon_catalog pc
+            LEFT JOIN user_pokemon up
+              ON up.pokemon_id = pc.id
+             AND up.owner_user_id = $1
+             AND up.released_at IS NULL
+            WHERE pc.id = $2
+            GROUP BY
+              pc.id,
+              pc.dex_form_code,
+              pc.name,
+              pc.rarity,
+              pc.type,
+              pc.base_hp,
+              pc.base_attack,
+              pc.base_defense,
+              pc.base_stamina,
+              pc.image_credit_id
+            """,
+            user_id,
+            pokemon_id,
+        )
+        if not row:
+            raise ShopError("Покемон не найден.")
+
+        base_dex_code = _base_dex_from_form_code(row["dex_form_code"]) or str(pokemon_id)
+        related_rows = await conn.fetch(
+            f"""
+            SELECT
+              pc.id AS pokemon_id,
+              pc.dex_form_code,
+              COUNT(up.id)::int AS owned_quantity
+            FROM pokemon_catalog pc
+            LEFT JOIN user_pokemon up
+              ON up.pokemon_id = pc.id
+             AND up.owner_user_id = $1
+             AND up.released_at IS NULL
+            WHERE split_part(COALESCE(pc.dex_form_code, pc.id::text), '-', 1) = $2
+              AND pc.id <> $3
+            GROUP BY pc.id, pc.dex_form_code
+            ORDER BY {_dex_form_sort_sql(qualified_column="pc.dex_form_code")}
+            """,
+            user_id,
+            base_dex_code,
+            pokemon_id,
+        )
+        related_forms = [
+            PokedexRelatedForm(
+                pokemon_id=int(related_row["pokemon_id"]),
+                dex_form_code=related_row["dex_form_code"],
+                form_badge=_form_badge_from_dex_form_code(related_row["dex_form_code"]),
+                is_collected=int(related_row["owned_quantity"]) > 0,
+            )
+            for related_row in related_rows
+        ]
+        return PokedexDetail(
+            pokemon_id=int(row["pokemon_id"]),
+            name=str(row["name"]),
+            rarity=str(row["rarity"]),
+            pokemon_type=row["type"],
+            base_hp=int(row["base_hp"]),
+            base_attack=int(row["base_attack"]),
+            base_defense=int(row["base_defense"]),
+            base_stamina=int(row["base_stamina"]),
+            image_credit_id=row["image_credit_id"],
+            dex_form_code=row["dex_form_code"],
+            form_badge=_form_badge_from_dex_form_code(row["dex_form_code"]),
+            owned_quantity=int(row["owned_quantity"]),
+            related_forms=related_forms,
+        )
+
     async def _ensure_chat_encounter_state(self, conn: asyncpg.Connection, chat_id: int) -> None:
         await conn.execute(
             """
@@ -7387,6 +7707,66 @@ def _build_collection_filter_clauses(
 
     where_sql = "WHERE " + " AND ".join(where_conditions)
     having_sql = "HAVING COUNT(*) > 1" if filter_state.duplicates_only else ""
+    return where_sql, having_sql, params
+
+
+def _build_pokedex_filter_clauses(
+    user_id: int,
+    filter_state: PokedexFilterState,
+) -> tuple[str, str, list[object]]:
+    params: list[object] = [user_id]
+    where_conditions = ["1 = 1"]
+    having_conditions: list[str] = []
+
+    if filter_state.rarities:
+        params.append(list(filter_state.rarities))
+        where_conditions.append(f"pc.rarity = ANY(${len(params)}::text[])")
+
+    for pokemon_type in filter_state.types:
+        params.append(pokemon_type.lower())
+        where_conditions.append(
+            f"EXISTS ("
+            f"SELECT 1 "
+            f"FROM unnest(string_to_array(COALESCE(lower(pc.type), ''), '/')) AS part "
+            f"WHERE btrim(part) = ${len(params)}"
+            f")"
+        )
+
+    if filter_state.form_kinds:
+        params.append(list(filter_state.form_kinds))
+        where_conditions.append(
+            f"CASE "
+            f"WHEN position('-' in COALESCE(pc.dex_form_code, '')) = 0 THEN '{FORM_KIND_BASE}' "
+            f"ELSE COALESCE("
+            f"  CASE split_part(pc.dex_form_code, '-', 2) "
+            f"    WHEN '{FORM_SUFFIX_MAP[FORM_KIND_SHINY]}' THEN '{FORM_KIND_SHINY}' "
+            f"    WHEN '{FORM_SUFFIX_MAP[FORM_KIND_MEGA]}' THEN '{FORM_KIND_MEGA}' "
+            f"    WHEN '{FORM_SUFFIX_MAP[FORM_KIND_GIGANTAMAX]}' THEN '{FORM_KIND_GIGANTAMAX}' "
+            f"    ELSE '{FORM_KIND_BASE}' "
+            f"  END, "
+            f"  '{FORM_KIND_BASE}'"
+            f") "
+            f"END = ANY(${len(params)}::text[])"
+        )
+
+    normalized_query = filter_state.query.strip()
+    if normalized_query:
+        params.append(normalized_query)
+        where_conditions.append(
+            f"("
+            f"pc.name ILIKE '%' || ${len(params)} || '%' "
+            f"OR COALESCE(pc.dex_form_code, pc.id::text) ILIKE '%' || ${len(params)} || '%' "
+            f"OR split_part(COALESCE(pc.dex_form_code, pc.id::text), '-', 1) = ${len(params)}"
+            f")"
+        )
+
+    if filter_state.collected_state == "collected":
+        having_conditions.append("COUNT(up.id) > 0")
+    elif filter_state.collected_state == "missing":
+        having_conditions.append("COUNT(up.id) = 0")
+
+    where_sql = "WHERE " + " AND ".join(where_conditions)
+    having_sql = f"HAVING {' AND '.join(having_conditions)}" if having_conditions else ""
     return where_sql, having_sql, params
 
 

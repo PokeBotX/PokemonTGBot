@@ -185,6 +185,11 @@ async def test_build_mini_app_market_listing_detail_payload_uses_active_variant(
                 object_key="cloyster/alt.png",
             )
         ),
+        get_shop_view=AsyncMock(
+            return_value=SimpleNamespace(
+                pokecoin_balance=880,
+            )
+        ),
     )
     monkeypatch.setattr(main, "DB_ENABLED", True)
     monkeypatch.setattr(main, "db", fake_db)
@@ -202,6 +207,7 @@ async def test_build_mini_app_market_listing_detail_payload_uses_active_variant(
     assert payload["price"] == 900
     assert payload["sellerLabel"] == "@seller"
     assert payload["formBadge"] == "Gigantamax"
+    assert payload["pokecoinBalance"] == 880
     assert payload["imageCreditId"] == 88
     assert payload["imageVariant"] == {"position": 2, "total": 4, "canSwitch": True}
     assert payload["sourceUrl"] == "https://example.com/cloyster-alt"

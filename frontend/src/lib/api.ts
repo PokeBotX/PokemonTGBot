@@ -50,6 +50,23 @@ export type MiniAppCollectionEntry = {
   isLocked: boolean;
 };
 
+export type MiniAppPokedexEntry = {
+  id: number;
+  dexFormCode?: string | null;
+  name: string;
+  type: string;
+  rarity: string;
+  formBadge?: string | null;
+  baseHp: number;
+  baseAttack: number;
+  baseDefense: number;
+  baseStamina: number;
+  imageCreditId: number | null;
+  imageUrl: string | null;
+  ownedQuantity: number;
+  isCollected: boolean;
+};
+
 export type MiniAppMarketEntry = {
   listingId: number;
   pokemonId: number;
@@ -189,6 +206,55 @@ type MiniAppCollectionResponse = {
     duplicatesOnly: boolean;
     lockedOnly: boolean;
   };
+};
+
+export type MiniAppPokedexResponse = {
+  entries: MiniAppPokedexEntry[];
+  pageInfo: {
+    totalEntries: number;
+    currentPage: number;
+    totalPages: number;
+    pageSize: number;
+    hasNext: boolean;
+    hasPrevious: boolean;
+    nextPage: number | null;
+  };
+  appliedFilters: {
+    rarities: string[];
+    types: string[];
+    collectedState: string;
+    formKinds: string[];
+    query: string;
+  };
+};
+
+export type MiniAppPokedexDetail = {
+  id: number;
+  dexFormCode?: string | null;
+  name: string;
+  rarity: string;
+  formBadge?: string | null;
+  type: string;
+  baseHp: number;
+  baseAttack: number;
+  baseDefense: number;
+  baseStamina: number;
+  imageCreditId: number | null;
+  imageUrl: string | null;
+  sourceUrl: string | null;
+  isCollected: boolean;
+  ownedQuantity: number;
+  pokecoinBalance: number;
+  buyRequestPrecheck: {
+    ok: boolean;
+    error: string | null;
+  };
+  relatedForms: Array<{
+    id: number;
+    dexFormCode?: string | null;
+    formBadge?: string | null;
+    isCollected: boolean;
+  }>;
 };
 
 type MiniAppMarketResponse = {
@@ -379,6 +445,77 @@ function getMockCollection(): MiniAppCollectionResponse {
   };
 }
 
+function getMockPokedex(): MiniAppPokedexResponse {
+  return {
+    entries: [
+      {
+        id: 1,
+        dexFormCode: "1",
+        name: "Bulbasaur",
+        type: "Grass/Poison",
+        rarity: "Common",
+        formBadge: null,
+        baseHp: 45,
+        baseAttack: 49,
+        baseDefense: 49,
+        baseStamina: 45,
+        imageCreditId: null,
+        imageUrl: null,
+        ownedQuantity: 1,
+        isCollected: true,
+      },
+      {
+        id: 10001,
+        dexFormCode: "1-0",
+        name: "Bulbasaur",
+        type: "Grass/Poison",
+        rarity: "Common",
+        formBadge: "Shiny",
+        baseHp: 45,
+        baseAttack: 49,
+        baseDefense: 49,
+        baseStamina: 45,
+        imageCreditId: null,
+        imageUrl: null,
+        ownedQuantity: 0,
+        isCollected: false,
+      },
+      {
+        id: 25,
+        dexFormCode: "25",
+        name: "Pikachu",
+        type: "Electric",
+        rarity: "Rare",
+        formBadge: null,
+        baseHp: 35,
+        baseAttack: 55,
+        baseDefense: 40,
+        baseStamina: 90,
+        imageCreditId: null,
+        imageUrl: null,
+        ownedQuantity: 1,
+        isCollected: true,
+      },
+    ],
+    pageInfo: {
+      totalEntries: 3,
+      currentPage: 1,
+      totalPages: 1,
+      pageSize: 24,
+      hasNext: false,
+      hasPrevious: false,
+      nextPage: null,
+    },
+    appliedFilters: {
+      rarities: [],
+      types: [],
+      collectedState: "all",
+      formKinds: [],
+      query: "",
+    },
+  };
+}
+
 function getMockMarket(): MiniAppMarketResponse {
   return {
     pokecoinBalance: 880,
@@ -507,6 +644,39 @@ function getMockMarketRequestDetail(requestId: number): MiniAppMarketRequestDeta
   };
 }
 
+function getMockPokedexDetail(pokemonId: number): MiniAppPokedexDetail {
+  return {
+    id: pokemonId,
+    dexFormCode: pokemonId === 10001 ? "1-0" : "1",
+    name: "Bulbasaur",
+    rarity: "Common",
+    formBadge: pokemonId === 10001 ? "Shiny" : null,
+    type: "Grass/Poison",
+    baseHp: 45,
+    baseAttack: 49,
+    baseDefense: 49,
+    baseStamina: 45,
+    imageCreditId: null,
+    imageUrl: null,
+    sourceUrl: null,
+    isCollected: pokemonId !== 10001,
+    ownedQuantity: pokemonId !== 10001 ? 1 : 0,
+    pokecoinBalance: 880,
+    buyRequestPrecheck: {
+      ok: true,
+      error: null,
+    },
+    relatedForms: [
+      {
+        id: pokemonId === 10001 ? 1 : 10001,
+        dexFormCode: pokemonId === 10001 ? "1" : "1-0",
+        formBadge: pokemonId === 10001 ? null : "Shiny",
+        isCollected: pokemonId === 10001,
+      },
+    ],
+  };
+}
+
 export async function getProfile(): Promise<MiniAppProfile> {
   if (!canUseLiveBackend()) {
     return getMockProfile();
@@ -571,6 +741,62 @@ export async function getPokemonsPage({
     cache: "no-store",
   });
   return parseJsonResponse<MiniAppCollectionResponse>(response);
+}
+
+type GetPokedexPageOptions = {
+  pageParam?: number;
+  rarities?: string[];
+  types?: string[];
+  collectedState?: "all" | "collected" | "missing";
+  formKinds?: string[];
+  query?: string;
+  pageSize?: number;
+};
+
+export async function getPokedexPage({
+  pageParam = 1,
+  rarities = [],
+  types = [],
+  collectedState = "all",
+  formKinds = [],
+  query = "",
+  pageSize = 24,
+}: GetPokedexPageOptions = {}): Promise<MiniAppPokedexResponse> {
+  if (!canUseLiveBackend()) {
+    const mock = getMockPokedex();
+    return {
+      ...mock,
+      appliedFilters: {
+        rarities,
+        types,
+        collectedState,
+        formKinds,
+        query,
+      },
+    };
+  }
+
+  const searchParams = new URLSearchParams({
+    page: String(pageParam),
+    page_size: String(pageSize),
+    collected: collectedState,
+    query,
+  });
+  for (const rarity of rarities) {
+    searchParams.append("rarities", rarity);
+  }
+  for (const pokemonType of types) {
+    searchParams.append("types", pokemonType);
+  }
+  for (const formKind of formKinds) {
+    searchParams.append("form_kinds", formKind);
+  }
+
+  const response = await fetch(buildApiUrl(`/api/pokedex?${searchParams.toString()}`), {
+    headers: getAuthHeaders(),
+    cache: "no-store",
+  });
+  return parseJsonResponse<MiniAppPokedexResponse>(response);
 }
 
 export async function getMarketPage(pageParam = 1): Promise<MiniAppMarketResponse> {
@@ -668,6 +894,18 @@ export async function getPokemonDetail(userPokemonId: number): Promise<MiniAppPo
     cache: "no-store",
   });
   return parseJsonResponse<MiniAppPokemonDetail>(response);
+}
+
+export async function getPokedexDetail(pokemonId: number): Promise<MiniAppPokedexDetail> {
+  if (!canUseLiveBackend()) {
+    return getMockPokedexDetail(pokemonId);
+  }
+
+  const response = await fetch(buildApiUrl(`/api/pokedex/${pokemonId}`), {
+    headers: getAuthHeaders(),
+    cache: "no-store",
+  });
+  return parseJsonResponse<MiniAppPokedexDetail>(response);
 }
 
 export async function getPokemonInstances(
@@ -770,6 +1008,27 @@ export async function getPokemonSellPrecheck(userPokemonId: number): Promise<{
   }
 
   const response = await fetch(buildApiUrl(`/api/pokemon/${userPokemonId}/sell-precheck`), {
+    headers: getAuthHeaders(),
+    cache: "no-store",
+  });
+  return parseJsonResponse<{
+    ok: boolean;
+    error: string | null;
+  }>(response);
+}
+
+export async function getPokedexBuyRequestPrecheck(pokemonId: number): Promise<{
+  ok: boolean;
+  error: string | null;
+}> {
+  if (!canUseLiveBackend()) {
+    return {
+      ok: true,
+      error: null,
+    };
+  }
+
+  const response = await fetch(buildApiUrl(`/api/pokedex/${pokemonId}/buy-request-precheck`), {
     headers: getAuthHeaders(),
     cache: "no-store",
   });
@@ -901,6 +1160,41 @@ export async function cancelMarketRequest(
   return parseJsonResponse<{
     requestId: number;
     pokemonId: number;
+    reservedAmount: number;
+  }>(response);
+}
+
+export async function createPokedexBuyRequest(
+  pokemonId: number,
+  price: number,
+): Promise<{
+  requestId: number;
+  pokemonId: number;
+  price: number;
+  reservedAmount: number;
+}> {
+  if (!canUseLiveBackend()) {
+    return {
+      requestId: 999,
+      pokemonId,
+      price,
+      reservedAmount: price,
+    };
+  }
+
+  const response = await fetch(buildApiUrl(`/api/pokedex/${pokemonId}/buy-request`), {
+    method: "POST",
+    headers: {
+      ...getAuthHeaders(),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ price }),
+    cache: "no-store",
+  });
+  return parseJsonResponse<{
+    requestId: number;
+    pokemonId: number;
+    price: number;
     reservedAmount: number;
   }>(response);
 }
