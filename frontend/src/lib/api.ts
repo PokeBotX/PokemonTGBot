@@ -205,6 +205,7 @@ type MiniAppCollectionResponse = {
     types: string[];
     duplicatesOnly: boolean;
     lockedOnly: boolean;
+    query: string;
   };
 };
 
@@ -441,6 +442,7 @@ function getMockCollection(): MiniAppCollectionResponse {
       types: [],
       duplicatesOnly: false,
       lockedOnly: false,
+      query: "",
     }
   };
 }
@@ -695,6 +697,7 @@ type GetPokemonsPageOptions = {
   rarities?: string[];
   types?: string[];
   duplicatesOnly?: boolean;
+  query?: string;
   pageSize?: number;
 };
 
@@ -704,21 +707,37 @@ export async function getPokemonsPage({
   rarities = [],
   types = [],
   duplicatesOnly = false,
+  query = "",
   pageSize = 24,
 }: GetPokemonsPageOptions = {}): Promise<MiniAppCollectionResponse> {
   if (!canUseLiveBackend()) {
     const mockCollection = getMockCollection();
+    const normalizedQuery = query.trim().toLowerCase();
+    const filteredEntries = mockCollection.entries.filter((entry) => {
+      if (lockedOnly && !entry.isLocked) {
+        return false;
+      }
+      if (!normalizedQuery) {
+        return true;
+      }
+      return (
+        entry.name.toLowerCase().includes(normalizedQuery) ||
+        String(entry.id).includes(normalizedQuery) ||
+        String(entry.userPokemonId).includes(normalizedQuery) ||
+        (entry.dexFormCode ?? "").toLowerCase().includes(normalizedQuery)
+      );
+    });
+
     return {
       ...mockCollection,
-      entries: lockedOnly
-        ? mockCollection.entries.filter((entry) => entry.isLocked)
-        : mockCollection.entries,
+      entries: filteredEntries,
       appliedFilters: {
         ...mockCollection.appliedFilters,
         lockedOnly,
         rarities,
         types,
         duplicatesOnly,
+        query,
       },
     };
   }
@@ -728,6 +747,7 @@ export async function getPokemonsPage({
     page_size: String(pageSize),
     locked: String(lockedOnly),
     duplicates_only: String(duplicatesOnly),
+    query,
   });
   for (const rarity of rarities) {
     searchParams.append("rarities", rarity);
@@ -799,13 +819,32 @@ export async function getPokedexPage({
   return parseJsonResponse<MiniAppPokedexResponse>(response);
 }
 
-export async function getMarketPage(pageParam = 1): Promise<MiniAppMarketResponse> {
+export async function getMarketPage(
+  pageParam = 1,
+  query = "",
+): Promise<MiniAppMarketResponse> {
   if (!canUseLiveBackend()) {
-    return getMockMarket();
+    const normalizedQuery = query.trim().toLowerCase();
+    const market = getMockMarket();
+    if (!normalizedQuery) {
+      return market;
+    }
+    return {
+      ...market,
+      entries: market.entries.filter((entry) => {
+        return (
+          entry.name.toLowerCase().includes(normalizedQuery) ||
+          String(entry.pokemonId).includes(normalizedQuery) ||
+          String(entry.userPokemonId).includes(normalizedQuery) ||
+          (entry.dexFormCode ?? "").toLowerCase().includes(normalizedQuery)
+        );
+      }),
+    };
   }
 
   const searchParams = new URLSearchParams({
     page: String(pageParam),
+    query,
   });
   const response = await fetch(buildApiUrl(`/api/market?${searchParams.toString()}`), {
     headers: getAuthHeaders(),

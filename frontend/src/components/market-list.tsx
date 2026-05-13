@@ -10,7 +10,11 @@ import { PokemonListSkeleton } from "@/components/pokemon-list-skeleton";
 import { normalizePokemonRarity } from "@/components/pokemon-rarity";
 import { useMarket } from "@/hooks/use-market";
 
-export function MarketList() {
+type MarketListProps = {
+  query?: string;
+};
+
+export function MarketList({ query = "" }: MarketListProps) {
   const {
     entries,
     isLoading,
@@ -18,7 +22,7 @@ export function MarketList() {
     hasNextPage,
     isFetchingNextPage,
     fetchNextPage,
-  } = useMarket();
+  } = useMarket(query);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {

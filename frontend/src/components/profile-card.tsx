@@ -145,7 +145,7 @@ export function ProfileCard() {
             <ProgressInfoRow
               key={progress.rarity}
               label={progress.rarity}
-              value={`${progress.ownedUnique} из ${progress.totalCatalog} (${progress.percent}%)`}
+              value={`${progress.ownedUnique} из ${progress.totalCatalog}`}
               percentage={progress.percent}
               barClassName={getRarityProgressClass(progress.rarity)}
             />

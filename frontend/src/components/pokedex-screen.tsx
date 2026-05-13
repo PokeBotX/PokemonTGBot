@@ -182,7 +182,7 @@ export function PokedexScreen() {
               type="search"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Поиск по имени или id"
+              placeholder="Поиск по имени/id"
               className="min-w-0 flex-1 rounded-2xl border border-slate-700 bg-slate-950 px-4 py-2 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-cyan-400"
             />
             <button

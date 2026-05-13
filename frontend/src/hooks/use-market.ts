@@ -3,22 +3,22 @@ import { useInfiniteQuery } from "@tanstack/react-query";
 import { getMarketPage } from "@/lib/api";
 import { useMiniAppDataReady } from "@/lib/telegram";
 
-export function useMarket() {
+export function useMarket(query = "") {
   const isReady = useMiniAppDataReady();
 
-  const query = useInfiniteQuery({
-    queryKey: ["market", isReady ? "live" : "waiting"],
+  const marketQuery = useInfiniteQuery({
+    queryKey: ["market", isReady ? "live" : "waiting", query],
     initialPageParam: 1,
     enabled: isReady,
-    queryFn: ({ pageParam }) => getMarketPage(pageParam),
+    queryFn: ({ pageParam }) => getMarketPage(pageParam, query),
     getNextPageParam: (lastPage) => lastPage.pageInfo.nextPage ?? undefined,
   });
 
   return {
-    ...query,
-    isLoading: query.isLoading || !isReady,
-    entries: query.data?.pages.flatMap((page) => page.entries) ?? [],
-    pageInfo: query.data?.pages.at(-1)?.pageInfo ?? null,
-    pokecoinBalance: query.data?.pages.at(0)?.pokecoinBalance ?? 0,
+    ...marketQuery,
+    isLoading: marketQuery.isLoading || !isReady,
+    entries: marketQuery.data?.pages.flatMap((page) => page.entries) ?? [],
+    pageInfo: marketQuery.data?.pages.at(-1)?.pageInfo ?? null,
+    pokecoinBalance: marketQuery.data?.pages.at(0)?.pokecoinBalance ?? 0,
   };
 }

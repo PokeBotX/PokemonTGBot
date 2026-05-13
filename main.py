@@ -451,6 +451,7 @@ async def _build_mini_app_collection_payload_with_filters(
             "types": list(collection_page.filter_state.types),
             "duplicatesOnly": collection_page.filter_state.duplicates_only,
             "lockedOnly": collection_page.filter_state.locked_only,
+            "query": collection_page.filter_state.query,
         },
     }
 
@@ -525,6 +526,7 @@ async def _build_mini_app_market_payload(
     username: str | None,
     *,
     page: int,
+    query: str = "",
 ) -> dict[str, Any]:
     """Build the current market browse response for Mini App."""
     if not DB_ENABLED or db is None:
@@ -536,7 +538,7 @@ async def _build_mini_app_market_payload(
     market_page = await db.get_market_listings_page(
         telegram_id,
         username,
-        filter_state=MarketBrowseState(page=page),
+        filter_state=MarketBrowseState(page=page, query=query.strip()),
     )
 
     image_urls: list[str | None] = await asyncio.gather(
@@ -1363,6 +1365,7 @@ async def mini_app_collection(
     page_size: int = Query(default=MINI_APP_COLLECTION_PAGE_SIZE, ge=1, le=100),
     locked: bool = Query(default=False),
     duplicates_only: bool = Query(default=False),
+    query: str = Query(default=""),
     rarities: list[str] | None = Query(default=None),
     types: list[str] | None = Query(default=None),
 ):
@@ -1377,6 +1380,7 @@ async def mini_app_collection(
         types=_parse_csv_query_values(types),
         duplicates_only=duplicates_only,
         locked_only=locked,
+        query=query.strip(),
         page=page,
     )
     return await _build_mini_app_collection_payload_with_filters(
@@ -1518,6 +1522,7 @@ async def mini_app_market(
     x_telegram_init_data: str | None = Header(default=None, alias="X-Telegram-Init-Data"),
     x_dev_telegram_id: str | None = Header(default=None, alias="X-Dev-Telegram-Id"),
     page: int = Query(default=1, ge=1),
+    query: str = Query(default=""),
 ):
     """Return active market listings for Mini App browsing."""
     telegram_id, username = _resolve_mini_app_identity(
@@ -1529,6 +1534,7 @@ async def mini_app_market(
         telegram_id,
         username,
         page=page,
+        query=query,
     )
 
 

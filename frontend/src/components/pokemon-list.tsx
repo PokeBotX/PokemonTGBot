@@ -16,6 +16,7 @@ type PokemonListProps = {
   rarities?: string[];
   types?: string[];
   duplicatesOnly?: boolean;
+  query?: string;
 };
 
 export function PokemonList({
@@ -23,6 +24,7 @@ export function PokemonList({
   rarities = [],
   types = [],
   duplicatesOnly = false,
+  query = "",
 }: PokemonListProps) {
   const pathname = usePathname();
   const {
@@ -32,9 +34,9 @@ export function PokemonList({
     hasNextPage,
     isFetchingNextPage,
     fetchNextPage,
-  } = usePokemons({ lockedOnly, rarities, types, duplicatesOnly });
+  } = usePokemons({ lockedOnly, rarities, types, duplicatesOnly, query });
   const sentinelRef = useRef<HTMLDivElement | null>(null);
-  const restoreKey = `scroll:${pathname}:${lockedOnly}:${duplicatesOnly}:${rarities.join(",")}:${types.join(",")}`;
+  const restoreKey = `scroll:${pathname}:${lockedOnly}:${duplicatesOnly}:${query}:${rarities.join(",")}:${types.join(",")}`;
 
   useEffect(() => {
     if (typeof window === "undefined") {

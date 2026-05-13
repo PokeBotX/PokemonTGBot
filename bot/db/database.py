@@ -321,6 +321,7 @@ class CollectionFilterState:
     types: tuple[str, ...] = ()
     duplicates_only: bool = False
     locked_only: bool = False
+    query: str = ""
     page: int = 1
 
     def with_page(self, page: int) -> "CollectionFilterState":
@@ -330,6 +331,7 @@ class CollectionFilterState:
             types=self.types,
             duplicates_only=self.duplicates_only,
             locked_only=self.locked_only,
+            query=self.query,
             page=page,
         )
 
@@ -340,6 +342,7 @@ class CollectionFilterState:
             "types": list(self.types),
             "duplicates_only": self.duplicates_only,
             "locked_only": self.locked_only,
+            "query": self.query,
             "page": self.page,
         }
 
@@ -353,6 +356,7 @@ class CollectionFilterState:
             types=tuple(str(value) for value in payload.get("types", []) if value),
             duplicates_only=bool(payload.get("duplicates_only", False)),
             locked_only=bool(payload.get("locked_only", False)),
+            query=str(payload.get("query") or "").strip(),
             page=max(1, int(payload.get("page", 1))),
         )
 
@@ -750,6 +754,7 @@ class MarketBrowseState:
     rarities: tuple[str, ...] = ()
     affordable_only: bool = False
     sort_mode: str = MARKET_SORT_NEWEST
+    query: str = ""
     page: int = 1
 
     def with_page(self, page: int) -> "MarketBrowseState":
@@ -757,6 +762,7 @@ class MarketBrowseState:
             rarities=self.rarities,
             affordable_only=self.affordable_only,
             sort_mode=self.sort_mode,
+            query=self.query,
             page=page,
         )
 
@@ -765,6 +771,7 @@ class MarketBrowseState:
             "rarities": list(self.rarities),
             "affordable_only": self.affordable_only,
             "sort_mode": self.sort_mode,
+            "query": self.query,
             "page": self.page,
         }
 
@@ -779,6 +786,7 @@ class MarketBrowseState:
             rarities=tuple(str(value) for value in payload.get("rarities", []) if value),
             affordable_only=bool(payload.get("affordable_only", False)),
             sort_mode=sort_mode,
+            query=str(payload.get("query") or "").strip(),
             page=max(1, int(payload.get("page", 1))),
         )
 
@@ -7321,6 +7329,17 @@ class Database:
             params.append(balance)
             conditions.append(f"ml.price <= ${len(params)}")
 
+        normalized_query = filter_state.query.strip()
+        if normalized_query:
+            params.append(normalized_query)
+            conditions.append(
+                f"("
+                f"pc.name ILIKE '%' || ${len(params)} || '%' "
+                f"OR COALESCE(pc.dex_form_code, pc.id::text) ILIKE '%' || ${len(params)} || '%' "
+                f"OR split_part(COALESCE(pc.dex_form_code, pc.id::text), '-', 1) = ${len(params)}"
+                f")"
+            )
+
         return "WHERE " + " AND ".join(conditions), params
 
     async def _fetch_market_listing_summary(
@@ -7702,6 +7721,17 @@ def _build_collection_filter_clauses(
             f"SELECT 1 "
             f"FROM unnest(string_to_array(COALESCE(lower(pc.type), ''), '/')) AS part "
             f"WHERE btrim(part) = ${len(params)}"
+            f")"
+        )
+
+    normalized_query = filter_state.query.strip()
+    if normalized_query:
+        params.append(normalized_query)
+        where_conditions.append(
+            f"("
+            f"pc.name ILIKE '%' || ${len(params)} || '%' "
+            f"OR COALESCE(pc.dex_form_code, pc.id::text) ILIKE '%' || ${len(params)} || '%' "
+            f"OR split_part(COALESCE(pc.dex_form_code, pc.id::text), '-', 1) = ${len(params)}"
             f")"
         )
 

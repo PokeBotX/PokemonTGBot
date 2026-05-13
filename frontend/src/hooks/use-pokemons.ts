@@ -8,6 +8,7 @@ type UsePokemonsOptions = {
   rarities?: string[];
   types?: string[];
   duplicatesOnly?: boolean;
+  query?: string;
 };
 
 export function usePokemons({
@@ -15,11 +16,12 @@ export function usePokemons({
   rarities = [],
   types = [],
   duplicatesOnly = false,
+  query = "",
 }: UsePokemonsOptions = {}) {
   const isReady = useMiniAppDataReady();
 
-  const query = useInfiniteQuery({
-    queryKey: ["pokemons", isReady ? "live" : "waiting", { lockedOnly, rarities, types, duplicatesOnly }],
+  const pokemonQuery = useInfiniteQuery({
+    queryKey: ["pokemons", isReady ? "live" : "waiting", { lockedOnly, rarities, types, duplicatesOnly, query }],
     initialPageParam: 1,
     enabled: isReady,
     queryFn: ({ pageParam }) =>
@@ -29,14 +31,15 @@ export function usePokemons({
         rarities,
         types,
         duplicatesOnly,
+        query,
       }),
     getNextPageParam: (lastPage) => lastPage.pageInfo.nextPage ?? undefined,
   });
 
   return {
-    ...query,
-    isLoading: query.isLoading || !isReady,
-    entries: query.data?.pages.flatMap((page) => page.entries) ?? [],
-    pageInfo: query.data?.pages.at(-1)?.pageInfo ?? null,
+    ...pokemonQuery,
+    isLoading: pokemonQuery.isLoading || !isReady,
+    entries: pokemonQuery.data?.pages.flatMap((page) => page.entries) ?? [],
+    pageInfo: pokemonQuery.data?.pages.at(-1)?.pageInfo ?? null,
   };
 }

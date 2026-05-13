@@ -33,13 +33,14 @@ type CollectionScreenProps = {
 
 export function CollectionScreen({ showTopHeader = true }: CollectionScreenProps) {
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [query, setQuery] = useState("");
   const [rarities, setRarities] = useState<string[]>([]);
   const [types, setTypes] = useState<string[]>([]);
   const [duplicatesOnly, setDuplicatesOnly] = useState(false);
 
   const activeFilterCount = useMemo(
-    () => rarities.length + types.length + (duplicatesOnly ? 1 : 0),
-    [duplicatesOnly, rarities.length, types.length],
+    () => rarities.length + types.length + (duplicatesOnly ? 1 : 0) + (query.trim() ? 1 : 0),
+    [duplicatesOnly, query, rarities.length, types.length],
   );
 
   const toggleRarity = (rarity: string) => {
@@ -63,6 +64,7 @@ export function CollectionScreen({ showTopHeader = true }: CollectionScreenProps
   };
 
   const resetFilters = () => {
+    setQuery("");
     setRarities([]);
     setTypes([]);
     setDuplicatesOnly(false);
@@ -71,7 +73,15 @@ export function CollectionScreen({ showTopHeader = true }: CollectionScreenProps
   return (
     <>
       {showTopHeader ? <TopHeader /> : null}
-      <section className="flex items-center gap-2">
+      <section className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
+        <div className="flex gap-2">
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Поиск по имени/id"
+            className="min-w-0 flex-1 rounded-2xl border border-slate-700 bg-slate-950 px-4 py-2 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-cyan-400"
+          />
           <button
             type="button"
             onClick={() => setFiltersOpen((current) => !current)}
@@ -79,11 +89,12 @@ export function CollectionScreen({ showTopHeader = true }: CollectionScreenProps
           >
             ⚙️ Фильтры{activeFilterCount > 0 ? ` · ${activeFilterCount}` : ""}
           </button>
+        </div>
           {activeFilterCount > 0 ? (
             <button
               type="button"
               onClick={resetFilters}
-              className="rounded-2xl border border-slate-800 px-3 py-2 text-sm text-slate-300 transition hover:border-slate-600 hover:text-white"
+              className="mt-3 rounded-2xl border border-slate-800 px-3 py-2 text-sm text-slate-300 transition hover:border-slate-600 hover:text-white"
             >
               Сбросить
             </button>
@@ -173,6 +184,7 @@ export function CollectionScreen({ showTopHeader = true }: CollectionScreenProps
         rarities={rarities}
         types={types}
         duplicatesOnly={duplicatesOnly}
+        query={query}
       />
     </>
   );
