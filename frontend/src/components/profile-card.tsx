@@ -58,7 +58,7 @@ export function ProfileCard() {
       <ErrorState
         icon="👤"
         title="Не удалось загрузить профиль"
-        description="Попробуй обновить страницу чуть позже."
+        description="Попробуйте обновить страницу чуть позже."
       />
     );
   }

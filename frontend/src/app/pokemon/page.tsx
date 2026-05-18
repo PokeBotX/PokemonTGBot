@@ -150,7 +150,7 @@ function PokemonDetailScreen() {
         <EmptyState
           icon="📘"
           title="Покемон не выбран"
-          description="Открой карточку из коллекции или избранного."
+          description="Откройте карточку из коллекции или избранного."
         />
       ) : detailQuery.isLoading ? (
         <SectionCard>
@@ -164,7 +164,7 @@ function PokemonDetailScreen() {
         <ErrorState
           icon="📘"
           title="Не удалось загрузить карточку"
-          description="Попробуй открыть покемона ещё раз чуть позже."
+          description="Попробуйте открыть покемона ещё раз чуть позже."
         />
       ) : (
         <>
@@ -370,7 +370,7 @@ function PokemonDetailScreen() {
                   {activeDialog === "sell" ? (
                     <>
                       <p className="text-sm leading-relaxed text-slate-300">
-                        Укажи цену лота для
+                        Укажите цену лота для
                         {" "}
                         <span className="font-semibold text-white">
                           {formatPokemonDisplayName(data.name, data.formBadge)}
@@ -455,7 +455,7 @@ function PokemonDetailScreen() {
                   <div>
                     <h3 className="text-lg font-semibold text-white">Выберите экземпляр</h3>
                     <p className="mt-1 text-sm text-slate-400">
-                      Так ты сможешь точно выбрать, какого покемона продавать или отпускать.
+                      Так вы сможете точно выбрать, какого покемона продавать или отпускать.
                     </p>
                   </div>
 

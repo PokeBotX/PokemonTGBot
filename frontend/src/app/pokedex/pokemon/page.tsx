@@ -103,7 +103,7 @@ function PokedexPokemonDetailScreen() {
         <EmptyState
           icon="📘"
           title="Покемон не выбран"
-          description="Открой запись из покедекса."
+          description="Откройте запись из покедекса."
         />
       ) : detailQuery.isLoading ? (
         <SectionCard>
@@ -117,7 +117,7 @@ function PokedexPokemonDetailScreen() {
         <ErrorState
           icon="📘"
           title="Не удалось загрузить запись покедекса"
-          description="Попробуй открыть её ещё раз чуть позже."
+          description="Попробуйте открыть её ещё раз чуть позже."
         />
       ) : (
         <>
@@ -238,7 +238,7 @@ function PokedexPokemonDetailScreen() {
                   <div>
                     <h3 className="text-lg font-semibold text-white">Заявка на покупку</h3>
                     <p className="mt-2 text-sm leading-relaxed text-slate-300">
-                      Укажи, сколько pokecoin ты готов зарезервировать на
+                      Укажите, сколько pokecoin вы готовы зарезервировать на
                       {" "}
                       <span className="font-semibold text-white">
                         {formatPokemonDisplayName(data.name, data.formBadge)}

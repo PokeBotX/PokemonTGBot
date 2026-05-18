@@ -101,7 +101,7 @@ function MarketListingDetailScreen() {
         <EmptyState
           icon="🛒"
           title="Лот не выбран"
-          description="Открой карточку из списка рынка."
+          description="Откройте карточку из списка рынка."
         />
       ) : detailQuery.isLoading ? (
         <SectionCard>
@@ -115,7 +115,7 @@ function MarketListingDetailScreen() {
         <ErrorState
           icon="🛒"
           title="Не удалось загрузить лот"
-          description="Попробуй открыть рынок ещё раз чуть позже."
+          description="Попробуйте открыть рынок ещё раз чуть позже."
         />
       ) : (
         <>

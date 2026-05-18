@@ -325,13 +325,13 @@ export function PokedexScreen() {
         <ErrorState
           icon="📘"
           title="Не удалось загрузить покедекс"
-          description="Попробуй обновить страницу чуть позже."
+          description="Попробуйте обновить страницу чуть позже."
         />
       ) : entries.length === 0 ? (
         <EmptyState
           icon="📘"
           title="Ничего не найдено"
-          description="Попробуй изменить поиск или фильтры."
+          description="Попробуйте изменить поиск или фильтры."
         />
       ) : (
         <div className="grid grid-cols-2 gap-4">

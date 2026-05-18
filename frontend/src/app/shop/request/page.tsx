@@ -72,7 +72,7 @@ function MarketRequestDetailScreen() {
         <EmptyState
           icon="📨"
           title="Заявка не выбрана"
-          description="Открой карточку из списка заявок."
+          description="Откройте карточку из списка заявок."
         />
       ) : detailQuery.isLoading ? (
         <SectionCard>
@@ -86,7 +86,7 @@ function MarketRequestDetailScreen() {
         <ErrorState
           icon="📨"
           title="Не удалось загрузить заявку"
-          description="Попробуй открыть раздел ещё раз чуть позже."
+          description="Попробуйте открыть раздел ещё раз чуть позже."
         />
       ) : (
         <>

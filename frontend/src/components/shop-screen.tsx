@@ -91,10 +91,10 @@ export function ShopScreen() {
             <h2 className="text-lg font-semibold text-white">Рынок покемонов</h2>
             <p className="mt-1 text-sm text-slate-400">
               {activeTab === "market"
-                ? "Покупай активные лоты других тренеров."
+                ? "Покупайте активные лоты других тренеров."
                 : activeTab === "listings"
-                  ? "Управляй своими выставленными лотами."
-                  : "Отслеживай свои заявки на покупку."}
+                  ? "Управляйте своими выставленными лотами."
+                  : "Отслеживайте свои заявки на покупку."}
             </p>
           </div>
           <div className="rounded-2xl border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-right">
@@ -144,7 +144,7 @@ export function ShopScreen() {
           <ErrorState
             icon="🧾"
             title="Не удалось загрузить ваши лоты"
-            description="Попробуй открыть раздел ещё раз чуть позже."
+            description="Попробуйте открыть раздел ещё раз чуть позже."
           />
         ) : listingsQuery.data && listingsQuery.data.entries.length > 0 ? (
           <div className="grid grid-cols-2 gap-4">
@@ -188,7 +188,7 @@ export function ShopScreen() {
           <ErrorState
             icon="📨"
             title="Не удалось загрузить ваши заявки"
-            description="Попробуй открыть раздел ещё раз чуть позже."
+            description="Попробуйте открыть раздел ещё раз чуть позже."
           />
         ) : requestsQuery.data && requestsQuery.data.entries.length > 0 ? (
           <div className="space-y-3">

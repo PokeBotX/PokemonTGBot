@@ -54,7 +54,7 @@ export function MarketList({ query = "" }: MarketListProps) {
       <ErrorState
         icon="🛒"
         title="Не удалось загрузить рынок"
-        description="Попробуй обновить страницу чуть позже."
+        description="Попробуйте обновить страницу чуть позже."
       />
     );
   }
